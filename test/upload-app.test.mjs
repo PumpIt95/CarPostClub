@@ -433,6 +433,27 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(photoTechMarketplaceDraft.body.draft.descriptionSource, "template-upload");
     assert.notEqual(uploadedMarketplaceDraft.draft.description, photoTechMarketplaceDraft.body.draft.description);
 
+    const regeneratedMarketplaceDraft = await postJson(harness, "/api/marketplace-draft/regenerate", {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+    });
+    assert.equal(regeneratedMarketplaceDraft.status, 200);
+    assert.equal(regeneratedMarketplaceDraft.body.draft.descriptionSource, "template-upload");
+    assert.notEqual(
+      regeneratedMarketplaceDraft.body.draft.descriptionVariantId,
+      uploadedMarketplaceDraft.draft.descriptionVariantId,
+    );
+    assert.notEqual(
+      regeneratedMarketplaceDraft.body.draft.description,
+      uploadedMarketplaceDraft.draft.description,
+    );
+    const refreshedMarketplaceDraft = await getJson(
+      harness,
+      `/api/marketplace-draft?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
+    );
+    assert.equal(refreshedMarketplaceDraft.draft.description, regeneratedMarketplaceDraft.body.draft.description);
+
     for (const photo of uploaded.body.photos) {
       const diskPath = path.join(harness.uploadRoot, TEST_ALBUM_ID, photo.filename);
       const stats = await fs.stat(diskPath);

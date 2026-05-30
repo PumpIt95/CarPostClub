@@ -1363,7 +1363,7 @@ async function prepareMarketplaceDescriptionsForUpload(car, user, { album = null
   return promise;
 }
 
-async function getMarketplaceDescriptionForUser({ car, fields, user, album }) {
+async function getMarketplaceDescriptionForUser({ car, fields, user, album, force = false }) {
   const fallback = {
     description: "",
     source: "not_generated",
@@ -1381,7 +1381,7 @@ async function getMarketplaceDescriptionForUser({ car, fields, user, album }) {
   const store = await readMarketplaceCopyStore(copyPath);
   if (!isMarketplaceUploadPoolCurrent(store, inputHash)) return { ...fallback, inputHash };
 
-  const assigned = await assignMarketplaceDescriptionToUser(copyPath, user, inputHash);
+  const assigned = await assignMarketplaceDescriptionToUser(copyPath, user, inputHash, { force });
   return assigned || { ...fallback, source: "unassigned", inputHash };
 }
 
@@ -1586,7 +1586,7 @@ async function assignMarketplaceDescriptionsToUsers(copyPath, users, inputHash) 
   return assigned;
 }
 
-async function assignMarketplaceDescriptionToUser(copyPath, user, inputHash) {
+async function assignMarketplaceDescriptionToUser(copyPath, user, inputHash, { force = false } = {}) {
   const userKey = marketplaceUserKey(user);
   return updateMarketplaceCopyStore(copyPath, (store) => {
     if (!isMarketplaceUploadPoolCurrent(store, inputHash)) return { write: false, value: null };
@@ -1595,16 +1595,21 @@ async function assignMarketplaceDescriptionToUser(copyPath, user, inputHash) {
     store.assignments = store.assignments && typeof store.assignments === "object" ? store.assignments : {};
 
     const existing = store.users[userKey];
-    if (existing?.inputHash === inputHash && existing.promptVersion === marketplaceDescriptionPromptVersion) {
+    if (!force && existing?.inputHash === inputHash && existing.promptVersion === marketplaceDescriptionPromptVersion) {
       return { write: false, value: marketplaceAssignedCopyResponse(existing, inputHash) };
     }
 
     const assignedVariantIds = new Set(Object.entries(store.assignments)
       .filter(([key]) => key !== userKey)
       .map(([, variantId]) => variantId));
-    const currentVariantId = store.assignments[userKey];
-    const variant = store.variants.find((candidate) => candidate.id === currentVariantId)
-      || store.variants.find((candidate) => !assignedVariantIds.has(candidate.id));
+    const currentVariantId = store.assignments[userKey] || existing?.variantId || "";
+    const availableVariants = store.variants.filter((candidate) => !assignedVariantIds.has(candidate.id));
+    const variant = force
+      ? availableVariants.find((candidate) => candidate.id !== currentVariantId)
+        || store.variants.find((candidate) => candidate.id !== currentVariantId)
+        || store.variants.find((candidate) => candidate.id === currentVariantId)
+      : store.variants.find((candidate) => candidate.id === currentVariantId)
+        || availableVariants[0];
     if (!variant) return { write: false, value: null };
 
     store.assignments[userKey] = variant.id;

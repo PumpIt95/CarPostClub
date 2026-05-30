@@ -318,7 +318,7 @@ function bindEvents() {
 
   els.marketplaceRegenerateButton.addEventListener("click", () => {
     haptic("tap");
-    loadMarketplaceDraft().catch((error) => showError(error));
+    regenerateMarketplaceDraft().catch((error) => showError(error));
   });
 
   els.logoutForm?.addEventListener("submit", handleLogoutSubmit);
@@ -1041,6 +1041,16 @@ function renderActiveCar() {
 }
 
 async function loadMarketplaceDraft() {
+  await requestMarketplaceDraft({ regenerate: false });
+}
+
+async function regenerateMarketplaceDraft() {
+  await requestMarketplaceDraft({ regenerate: true });
+  haptic("success");
+  showStatus("Marketplace draft refreshed.");
+}
+
+async function requestMarketplaceDraft({ regenerate = false } = {}) {
   const car = selectedCar();
   if (!car) {
     resetMarketplaceDraft();
@@ -1053,7 +1063,13 @@ async function loadMarketplaceDraft() {
   renderMarketplaceDraft();
 
   const payload = carRequestPayload(car);
-  const response = await apiJson(`/api/marketplace-draft?${new URLSearchParams(payload)}`);
+  const response = regenerate
+    ? await apiJson("/api/marketplace-draft/regenerate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+    : await apiJson(`/api/marketplace-draft?${new URLSearchParams(payload)}`);
 
   if (state.marketplaceRequestId !== requestId) return;
   state.marketplaceDraft = response.draft;

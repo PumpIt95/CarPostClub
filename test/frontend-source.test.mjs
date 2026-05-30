@@ -98,7 +98,10 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /Enter the vehicle details before uploading media/);
   assert.match(source, /\/api\/vehicle-album/);
   assert.match(source, /\/api\/marketplace-draft/);
-  assert.doesNotMatch(source, /\/api\/marketplace-draft\/regenerate/);
+  assert.match(source, /regenerateMarketplaceDraft/);
+  assert.match(source, /requestMarketplaceDraft/);
+  assert.match(source, /\/api\/marketplace-draft\/regenerate/);
+  assert.match(source, /Marketplace draft refreshed/);
   assert.match(source, /els\.carSelect\.addEventListener\("change"/);
   assert.match(source, /inventoryKey/);
   assert.match(source, /carRequestPayload/);
