@@ -16,6 +16,7 @@ const state = {
   selectedDealershipId: localStorage.getItem("konner.selectedDealershipId") || "15",
   selectedInventoryTypeId: localStorage.getItem("konner.selectedInventoryTypeId") || "2",
   selectedVin: localStorage.getItem("konner.selectedVin") || "",
+  carSearch: localStorage.getItem("konner.carSearch") || "",
   manualFormOpen: false,
   uploading: false,
   uploadCelebrationTimer: 0,
@@ -31,6 +32,7 @@ const els = {
   cameraButton: document.querySelector("#cameraButton"),
   cameraInput: document.querySelector("#cameraInput"),
   carCount: document.querySelector("#carCount"),
+  carSearchInput: document.querySelector("#carSearchInput"),
   carSelect: document.querySelector("#carSelect"),
   chatClose: document.querySelector("#chatClose"),
   chatEmpty: document.querySelector("#chatEmpty"),
@@ -133,6 +135,12 @@ function bindEvents() {
       return;
     }
     selectCar(vin).catch((error) => showError(error));
+  });
+
+  els.carSearchInput.addEventListener("input", () => {
+    state.carSearch = els.carSearchInput.value;
+    localStorage.setItem("konner.carSearch", state.carSearch);
+    renderCarOptions();
   });
 
   els.refreshButton.addEventListener("click", () => {
@@ -502,14 +510,18 @@ async function loadCars({ keepSelectedCar = false, forceAlbumRefresh = false } =
 }
 
 function renderCarOptions() {
-  els.carCount.textContent = String(state.cars.length);
+  els.carSearchInput.value = state.carSearch;
+  const matchingCars = filteredCars();
+  els.carCount.textContent = state.carSearch.trim()
+    ? `${matchingCars.length}/${state.cars.length}`
+    : String(state.cars.length);
   const options = [
-    new Option(state.cars.length ? "Choose a car" : "No cars found", ""),
-    ...state.cars.map((car) => new Option(carOptionLabel(car), carInventoryKey(car))),
+    new Option(carSelectPlaceholder(matchingCars.length), ""),
+    ...matchingCars.map((car) => new Option(carOptionLabel(car), carInventoryKey(car))),
   ];
   els.carSelect.replaceChildren(...options);
-  els.carSelect.value = state.cars.some((car) => carInventoryKey(car) === state.selectedVin) ? state.selectedVin : "";
-  els.carSelect.disabled = state.uploading || !state.cars.length;
+  els.carSelect.value = matchingCars.some((car) => carInventoryKey(car) === state.selectedVin) ? state.selectedVin : "";
+  els.carSelect.disabled = state.uploading || !matchingCars.length;
 }
 
 async function selectCar(inventoryKey) {
@@ -876,6 +888,22 @@ function selectedCar() {
   return state.cars.find((car) => carInventoryKey(car) === state.selectedVin) || null;
 }
 
+function filteredCars() {
+  const query = normalizeSearchText(state.carSearch);
+  if (!query) return state.cars;
+  const terms = query.split(" ").filter(Boolean);
+  return state.cars.filter((car) => {
+    const haystack = normalizeSearchText(carSearchText(car));
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
+function carSelectPlaceholder(count) {
+  if (!state.cars.length) return "No cars found";
+  if (!count) return "No matches";
+  return "Choose a car";
+}
+
 function carInventoryKey(car) {
   return car?.inventoryKey || car?.manualInventoryId || car?.vin || "";
 }
@@ -996,6 +1024,36 @@ function formatDate(value) {
 
 function plural(count, word) {
   return Number(count) === 1 ? word : `${word}s`;
+}
+
+function carSearchText(car) {
+  return [
+    car.source === "manual" ? "manual" : "oregans",
+    carInventoryKey(car),
+    car.stockNumber,
+    car.vin,
+    car.title,
+    car.year,
+    car.make,
+    car.model,
+    car.trim,
+    car.price,
+    car.priceValue,
+    car.odometer,
+    car.odometerValue,
+    car.exteriorColor,
+    car.interiorColor,
+    car.bodyStyle,
+    car.fuelType,
+    car.transmission,
+    car.descriptionPreview,
+    car.dealership?.name,
+    car.inventoryType,
+  ].filter(Boolean).join(" ");
+}
+
+function normalizeSearchText(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function carOptionLabel(car) {
