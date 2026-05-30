@@ -76,17 +76,45 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       confirmPassword: NEW_PASSWORD,
     });
     assert.equal(signup.status, 200);
-    assert.match(signup.body, /Konner needs to approve/i);
+    assert.match(signup.body, /CarPostClub admin needs to approve/i);
 
     const pendingLogin = await loginAttempt(harness.baseUrl, NEW_USERNAME, NEW_PASSWORD);
     assert.equal(pendingLogin.status, 401);
-    assert.match(pendingLogin.body, /waiting for Konner to approve/i);
+    assert.match(pendingLogin.body, /waiting for a CarPostClub admin to approve/i);
     assert.equal(pendingLogin.cookie, null);
 
     harness.cookie = await login(harness.baseUrl);
     const me = await getJson(harness, "/api/me");
     assert.equal(me.user.username, TEST_USERNAME);
     assert.equal(me.user.role, "admin");
+
+    const pushConfig = await getJson(harness, "/api/push/config");
+    assert.equal(pushConfig.ok, true);
+    assert.match(pushConfig.publicKey, /^[A-Za-z0-9_-]{80,}$/);
+
+    const pushSubscription = {
+      endpoint: "https://push.example.test/send/sub-1",
+      keys: {
+        p256dh: "B".repeat(88),
+        auth: "A".repeat(22),
+      },
+    };
+    const savedPush = await postJson(harness, "/api/push/subscriptions", { subscription: pushSubscription });
+    assert.equal(savedPush.status, 201);
+    assert.equal(savedPush.body.ok, true);
+    assert.equal(savedPush.body.subscription.endpoint, pushSubscription.endpoint);
+    assert.equal(savedPush.body.subscription.username, TEST_USERNAME);
+
+    const testPush = await postJson(harness, "/api/push/test", {});
+    assert.equal(testPush.status, 200);
+    assert.equal(testPush.body.delivery.requested, 1);
+    assert.equal(testPush.body.delivery.skipped, 1);
+
+    const deletedPush = await deleteJson(harness, "/api/push/subscriptions", {
+      endpoint: pushSubscription.endpoint,
+    });
+    assert.equal(deletedPush.status, 200);
+    assert.equal(deletedPush.body.removed, true);
 
     const adminPage = await fetch(`${harness.baseUrl}/admin/users`, {
       headers: { Cookie: harness.cookie },
@@ -183,11 +211,22 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.match(chatStream.headers.get("content-type") || "", /^text\/event-stream/);
     streamController.abort();
 
+    await postJson(harness, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("admin-chat"),
+    });
+    const approvedPush = await postJsonWithCookie(harness, approvedCookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("photo-tech-chat"),
+    });
+    assert.equal(approvedPush.status, 201);
+    assert.equal(approvedPush.body.subscription.username, NEW_USERNAME);
+
     const chatPost = await postJson(harness, "/api/chat/messages", { text: "Ready for photos" });
     assert.equal(chatPost.status, 201);
     assert.equal(chatPost.body.ok, true);
     assert.equal(chatPost.body.message.text, "Ready for photos");
     assert.equal(chatPost.body.message.author, TEST_USERNAME);
+    assert.equal(chatPost.body.pushDelivery.requested, 1);
+    assert.equal(chatPost.body.pushDelivery.skipped, 1);
 
     const chatAfterPost = await getJson(harness, "/api/chat/messages");
     assert.equal(chatAfterPost.messages.length, 1);
@@ -285,6 +324,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(uploaded.body.ok, true);
     assert.equal(uploaded.body.album.vehicle.vin, TEST_CAR.vin);
     assert.equal(uploaded.body.count, 3);
+    assert.ok(uploaded.body.photos.every((photo) => photo.uploadedBy?.username === TEST_USERNAME));
+    assert.ok(uploaded.body.photos.every((photo) => photo.uploadedBy?.displayName === TEST_USERNAME));
     assert.equal(uploaded.body.marketplaceGeneration.source, "template-upload");
     assert.equal(uploaded.body.marketplaceGeneration.variantCount, 6);
     assert.equal(uploaded.body.marketplaceGeneration.assignedCount, 2);
@@ -321,6 +362,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
 
     const firstPhoto = afterUpload.photos.find((photo) => photo.originalName === "front.jpg");
     assert.ok(firstPhoto);
+    assert.equal(firstPhoto.uploadedBy.username, TEST_USERNAME);
+    assert.equal(firstPhoto.uploadedBy.displayName, TEST_USERNAME);
     assert.match(firstPhoto.thumbnailUrl, /\/thumbnail$/);
     assert.match(firstPhoto.downloadUrl, /download=1/);
     const imageResponse = await fetch(`${harness.baseUrl}${firstPhoto.url}`, {
@@ -344,6 +387,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
 
     const firstVideo = afterUpload.photos.find((photo) => photo.originalName === "walkaround.mp4");
     assert.ok(firstVideo);
+    assert.equal(firstVideo.uploadedBy.username, TEST_USERNAME);
+    assert.equal(firstVideo.uploadedBy.displayName, TEST_USERNAME);
     assert.equal(firstVideo.kind, "video");
     assert.match(firstVideo.contentType, /^video\/mp4/);
     assert.match(firstVideo.url, /\/api\/albums\/[^/]+\/media\//);
@@ -420,8 +465,121 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
   }
 });
 
+test("multiple approved accounts can use live chat and upload to the same album concurrently", async () => {
+  const harness = await startTestServer();
+  const testAccounts = [
+    { username: "lot.runner", displayName: "Lot Runner", password: "lot-runner-123" },
+    { username: "photo.desk", displayName: "Photo Desk", password: "photo-desk-123" },
+    { username: "sales.floor", displayName: "Sales Floor", password: "sales-floor-123" },
+  ];
+  const collectors = [];
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+
+    const approvedUsers = await Promise.all(testAccounts.map((account) => createApprovedAccount(harness, account)));
+    const chatUsers = [
+      { username: TEST_USERNAME, displayName: TEST_USERNAME, cookie: harness.cookie },
+      ...approvedUsers,
+    ];
+
+    for (const user of chatUsers) {
+      collectors.push(await openChatCollector(harness, user.cookie));
+    }
+    await sleep(100);
+
+    const chatPosts = await Promise.all(chatUsers.map((user, index) => postJsonWithCookie(
+      harness,
+      user.cookie,
+      "/api/chat/messages",
+      { text: `Concurrent message ${index + 1} from ${user.displayName}` },
+    )));
+    for (const [index, post] of chatPosts.entries()) {
+      assert.equal(post.status, 201);
+      assert.equal(post.body.message.author, chatUsers[index].displayName);
+      assert.equal(post.body.message.text, `Concurrent message ${index + 1} from ${chatUsers[index].displayName}`);
+    }
+
+    for (const collector of collectors) {
+      const streamedMessages = await collector.waitForMessages(chatUsers.length);
+      assert.deepEqual(
+        streamedMessages.map((message) => message.author).sort(),
+        chatUsers.map((user) => user.displayName).sort(),
+      );
+    }
+
+    const persistedChat = await getJson(harness, "/api/chat/messages");
+    assert.equal(persistedChat.messages.length, chatUsers.length);
+    assert.deepEqual(
+      persistedChat.messages.map((message) => message.text).sort(),
+      chatUsers.map((user, index) => `Concurrent message ${index + 1} from ${user.displayName}`).sort(),
+    );
+
+    const uploadUsers = chatUsers.slice(0, 3);
+    const expectedOriginalNames = uploadUsers.flatMap((user) => [
+      `${user.username}-front.jpg`,
+      `${user.username}-walkaround.mp4`,
+    ]).sort();
+    const expectedUploaderByOriginalName = new Map(uploadUsers.flatMap((user) => [
+      [`${user.username}-front.jpg`, user],
+      [`${user.username}-walkaround.mp4`, user],
+    ]));
+
+    const uploads = await Promise.all(uploadUsers.map((user) => uploadPhotosWithCookie(harness, user.cookie, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [
+        { filename: `${user.username}-front.jpg`, type: "image/jpeg", body: jpegBytes(`${user.username}-front`) },
+        { filename: `${user.username}-walkaround.mp4`, type: "video/mp4", body: mp4Bytes(`${user.username}-walkaround`) },
+      ],
+    })));
+
+    for (const upload of uploads) {
+      assert.equal(upload.status, 201);
+      assert.equal(upload.body.ok, true);
+      assert.equal(upload.body.album.id, TEST_ALBUM_ID);
+      assert.equal(upload.body.count, 2);
+      for (const photo of upload.body.photos) {
+        const expectedUploader = expectedUploaderByOriginalName.get(photo.originalName);
+        assert.equal(photo.uploadedBy.username, expectedUploader.username);
+        assert.equal(photo.uploadedBy.displayName, expectedUploader.displayName);
+      }
+    }
+
+    const albumAfterConcurrentUploads = await getJson(
+      harness,
+      `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
+    );
+    assert.equal(albumAfterConcurrentUploads.photos.length, expectedOriginalNames.length);
+    assert.deepEqual(
+      albumAfterConcurrentUploads.photos.map((photo) => photo.originalName).sort(),
+      expectedOriginalNames,
+    );
+    for (const photo of albumAfterConcurrentUploads.photos) {
+      const expectedUploader = expectedUploaderByOriginalName.get(photo.originalName);
+      assert.equal(photo.uploadedBy.username, expectedUploader.username);
+      assert.equal(photo.uploadedBy.displayName, expectedUploader.displayName);
+    }
+
+    const savedMetadata = JSON.parse(await fs.readFile(path.join(harness.uploadRoot, TEST_ALBUM_ID, ".photos.json"), "utf8"));
+    assert.deepEqual(
+      Object.values(savedMetadata).map((meta) => meta.originalName).sort(),
+      expectedOriginalNames,
+    );
+    for (const meta of Object.values(savedMetadata)) {
+      const expectedUploader = expectedUploaderByOriginalName.get(meta.originalName);
+      assert.equal(meta.uploadedBy.username, expectedUploader.username);
+      assert.equal(meta.uploadedBy.displayName, expectedUploader.displayName);
+    }
+  } finally {
+    await Promise.all(collectors.map((collector) => collector.close()));
+    await stopTestServer(harness);
+  }
+});
+
 async function startTestServer() {
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "konner-albums-test-"));
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "carpostclub-test-"));
   const uploadRoot = path.join(tempRoot, "uploads");
   const tmpRoot = path.join(tempRoot, "tmp");
   const inventoryMockFile = path.join(tempRoot, "inventory.json");
@@ -438,11 +596,12 @@ async function startTestServer() {
       UPLOAD_ROOT: uploadRoot,
       TMP_ROOT: tmpRoot,
       OREGANS_INVENTORY_MOCK_FILE: inventoryMockFile,
-      KONNER_AUTH_USERNAME: TEST_USERNAME,
-      KONNER_AUTH_PASSWORD: TEST_PASSWORD,
-      KONNER_AUTH_PASSWORD_HASH: "",
-      KONNER_AUTH_SESSION_SECRET: "test-session-secret",
-      KONNER_AUTH_COOKIE_SECURE: "false",
+      CARPOSTCLUB_AUTH_USERNAME: TEST_USERNAME,
+      CARPOSTCLUB_AUTH_PASSWORD: TEST_PASSWORD,
+      CARPOSTCLUB_AUTH_PASSWORD_HASH: "",
+      CARPOSTCLUB_AUTH_SESSION_SECRET: "test-session-secret",
+      CARPOSTCLUB_AUTH_COOKIE_SECURE: "false",
+      CARPOSTCLUB_PUSH_DELIVERY_DISABLED: "true",
       OPENAI_API_KEY: "",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -491,7 +650,7 @@ async function waitForHealth(baseUrl, child, output) {
 async function login(baseUrl, username = TEST_USERNAME, password = TEST_PASSWORD) {
   const attempt = await loginAttempt(baseUrl, username, password);
   assert.equal(attempt.status, 303);
-  assert.match(attempt.cookie || "", /^konner_upload_session=/);
+  assert.match(attempt.cookie || "", /^carpostclub_session=/);
   return attempt.cookie;
 }
 
@@ -523,6 +682,29 @@ async function requestSignup(baseUrl, body) {
   };
 }
 
+async function createApprovedAccount(harness, account) {
+  const signup = await requestSignup(harness.baseUrl, {
+    displayName: account.displayName,
+    username: account.username,
+    password: account.password,
+    confirmPassword: account.password,
+  });
+  assert.equal(signup.status, 200);
+  assert.match(signup.body, /CarPostClub admin needs to approve/i);
+
+  const approved = await fetch(`${harness.baseUrl}/admin/users/${encodeURIComponent(account.username)}/approve`, {
+    method: "POST",
+    headers: { Cookie: harness.cookie },
+    redirect: "manual",
+  });
+  assert.equal(approved.status, 303);
+
+  return {
+    ...account,
+    cookie: await login(harness.baseUrl, account.username, account.password),
+  };
+}
+
 async function getJson(harness, pathname) {
   const response = await fetch(`${harness.baseUrl}${pathname}`, {
     headers: { Cookie: harness.cookie, Accept: "application/json" },
@@ -548,6 +730,101 @@ async function postJson(harness, pathname, body) {
   };
 }
 
+async function postJsonWithCookie(harness, cookie, pathname, body) {
+  const response = await fetch(`${harness.baseUrl}${pathname}`, {
+    method: "POST",
+    headers: {
+      Cookie: cookie,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  return {
+    status: response.status,
+    body: await response.json(),
+  };
+}
+
+async function openChatCollector(harness, cookie) {
+  const controller = new AbortController();
+  const response = await fetch(`${harness.baseUrl}/api/chat/stream`, {
+    headers: { Cookie: cookie },
+    signal: controller.signal,
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") || "", /^text\/event-stream/);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const messages = [];
+  let buffer = "";
+  const done = (async () => {
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) return;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let separatorIndex;
+        while ((separatorIndex = buffer.indexOf("\n\n")) >= 0) {
+          const block = buffer.slice(0, separatorIndex);
+          buffer = buffer.slice(separatorIndex + 2);
+          const data = block.split("\n")
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart())
+            .join("\n");
+          if (data) messages.push(JSON.parse(data));
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) throw error;
+    }
+  })();
+
+  return {
+    messages,
+    async waitForMessages(count) {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (messages.length >= count) return messages.slice(0, count);
+        await sleep(25);
+      }
+      throw new Error(`Timed out waiting for ${count} chat messages; received ${messages.length}.`);
+    },
+    async close() {
+      controller.abort();
+      await reader.cancel().catch(() => {});
+      await done.catch(() => {});
+    },
+  };
+}
+
+async function deleteJson(harness, pathname, body) {
+  const response = await fetch(`${harness.baseUrl}${pathname}`, {
+    method: "DELETE",
+    headers: {
+      Cookie: harness.cookie,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  return {
+    status: response.status,
+    body: await response.json(),
+  };
+}
+
+function pushSubscriptionFor(id) {
+  return {
+    endpoint: `https://push.example.test/send/${id}`,
+    keys: {
+      p256dh: "B".repeat(88),
+      auth: "A".repeat(22),
+    },
+  };
+}
+
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
     headers: { Accept: "application/json", ...(options.headers || {}) },
@@ -560,6 +837,10 @@ async function fetchJson(url, options = {}) {
 }
 
 async function uploadPhotos(harness, { dealershipId, inventoryTypeId, vin, inventoryKey, photos }) {
+  return uploadPhotosWithCookie(harness, harness.cookie, { dealershipId, inventoryTypeId, vin, inventoryKey, photos });
+}
+
+async function uploadPhotosWithCookie(harness, cookie, { dealershipId, inventoryTypeId, vin, inventoryKey, photos }) {
   const form = new FormData();
   form.set("dealershipId", dealershipId);
   form.set("inventoryTypeId", inventoryTypeId);
@@ -572,7 +853,7 @@ async function uploadPhotos(harness, { dealershipId, inventoryTypeId, vin, inven
   const response = await fetch(`${harness.baseUrl}/api/upload`, {
     method: "POST",
     headers: {
-      Cookie: harness.cookie,
+      Cookie: cookie,
       Accept: "application/json",
     },
     body: form,

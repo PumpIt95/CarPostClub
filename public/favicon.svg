@@ -1,3 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <text x="50" y="52" dominant-baseline="central" text-anchor="middle" font-size="82">🚗</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="CarPostClub car media logo">
+  <rect width="128" height="128" fill="#fafafa"/>
+  <path d="M0 16h128M0 32h128M0 48h128M0 64h128M0 80h128M0 96h128M0 112h128M16 0v128M32 0v128M48 0v128M64 0v128M80 0v128M96 0v128M112 0v128" stroke="#d8d8d8" stroke-width="1"/>
+  <rect x="14" y="14" width="100" height="100" rx="14" fill="#111111"/>
+  <path d="M25 61h54l-8-17H40L29 56c-2 1-4 3-4 5Z" fill="#fafafa"/>
+  <path d="M31 68h45v8H28c-2 0-4-2-4-4v-6l7 2Z" fill="#fafafa"/>
+  <path d="M36 56h35" stroke="#111111" stroke-width="4"/>
+  <rect x="56" y="53" width="45" height="36" rx="5" fill="#fafafa"/>
+  <rect x="61" y="58" width="35" height="18" rx="3" fill="#f35815"/>
+  <path d="M61 76 72 66l9 8 6-5 9 7" fill="#fafafa"/>
+  <circle cx="94" cy="87" r="13" fill="#f35815" stroke="#fafafa" stroke-width="4"/>
+  <path d="M94 94V81M88 87l6-6 6 6" stroke="#fafafa" stroke-width="5" stroke-linecap="square" stroke-linejoin="miter"/>
 </svg>

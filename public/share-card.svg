@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="CarPostClub vehicle media intake">
+  <rect width="1200" height="630" fill="#fafafa"/>
+  <path d="M0 70H1200M0 140H1200M0 210H1200M0 280H1200M0 350H1200M0 420H1200M0 490H1200M0 560H1200M70 0V630M140 0V630M210 0V630M280 0V630M350 0V630M420 0V630M490 0V630M560 0V630M630 0V630M700 0V630M770 0V630M840 0V630M910 0V630M980 0V630M1050 0V630M1120 0V630" stroke="#d8d8d8" stroke-width="2"/>
+  <rect x="0" y="0" width="1200" height="630" fill="none" stroke="#111111" stroke-width="10"/>
+  <rect x="98" y="130" width="370" height="370" rx="48" fill="#111111"/>
+  <path d="M144 308h210l-34-70H202l-42 52c-9 3-14 9-16 18Z" fill="#fafafa"/>
+  <path d="M158 340h196v34H152c-14 0-24-10-24-24v-26l30 16Z" fill="#fafafa"/>
+  <path d="M196 284h126" stroke="#111111" stroke-width="16"/>
+  <rect x="270" y="286" width="174" height="136" rx="20" fill="#fafafa"/>
+  <rect x="292" y="308" width="130" height="68" rx="12" fill="#f35815"/>
+  <path d="M292 376 334 334l36 34 24-22 28 30" fill="#fafafa"/>
+  <circle cx="424" cy="414" r="46" fill="#f35815" stroke="#fafafa" stroke-width="14"/>
+  <path d="M424 446V378M392 410l32-32 32 32" stroke="#fafafa" stroke-width="20" stroke-linecap="square" stroke-linejoin="miter"/>
+  <text x="520" y="176" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="70" font-weight="800" fill="#111111">CarPostClub</text>
+  <text x="522" y="244" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="29" font-weight="500" fill="#4d4d4d">Media intake for car inventory.</text>
+  <rect x="522" y="310" width="174" height="56" fill="#111111"/>
+  <text x="552" y="346" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="800" fill="#fafafa">Upload</text>
+  <rect x="720" y="310" width="146" height="56" fill="#f35815"/>
+  <text x="750" y="346" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="800" fill="#fafafa">Chat</text>
+  <rect x="890" y="310" width="132" height="56" fill="#fafafa" stroke="#111111" stroke-width="4"/>
+  <text x="922" y="346" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" font-weight="800" fill="#111111">PWA</text>
+  <text x="522" y="438" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="24" font-weight="500" fill="#111111">Photos, videos, listing copy, chat.</text>
+  <path d="M522 486H1042" stroke="#111111" stroke-width="5"/>
+  <path d="M522 514H822" stroke="#f35815" stroke-width="5"/>
+</svg>

@@ -11,9 +11,12 @@ import express from "express";
 import multer from "multer";
 import OpenAI from "openai";
 import sharp from "sharp";
+import webPush from "web-push";
 
 const appRoot = fileURLToPath(new URL("./", import.meta.url));
 const publicRoot = fileURLToPath(new URL("./public/", import.meta.url));
+const appName = "CarPostClub";
+const serviceName = "carpostclub";
 
 dotenv.config({ path: path.join(appRoot, ".env"), quiet: true });
 dotenv.config({ quiet: true });
@@ -21,11 +24,13 @@ dotenv.config({ quiet: true });
 const app = express();
 const port = Number(process.env.PORT || 3911);
 const host = process.env.HOST || "127.0.0.1";
-const uploadRoot = path.resolve(process.env.UPLOAD_ROOT || "/var/lib/konner-upload/uploads");
-const tmpRoot = path.resolve(process.env.TMP_ROOT || "/var/lib/konner-upload/tmp");
+const uploadRoot = path.resolve(process.env.UPLOAD_ROOT || "/var/lib/carpostclub/uploads");
+const tmpRoot = path.resolve(process.env.TMP_ROOT || "/var/lib/carpostclub/tmp");
 const chatMessagesPath = path.resolve(process.env.CHAT_MESSAGES_PATH || path.join(path.dirname(uploadRoot), "chat-messages.json"));
 const manualInventoryPath = path.resolve(process.env.MANUAL_INVENTORY_PATH || path.join(path.dirname(uploadRoot), "manual-inventory.json"));
-const releaseManifestPath = process.env.KONNER_RELEASE_MANIFEST || path.join(appRoot, "release-manifest.json");
+const pushSubscriptionsPath = path.resolve(process.env.CARPOSTCLUB_PUSH_SUBSCRIPTIONS_PATH || process.env.KONNER_PUSH_SUBSCRIPTIONS_PATH || process.env.PUSH_SUBSCRIPTIONS_PATH || path.join(path.dirname(uploadRoot), "push-subscriptions.json"));
+const pushVapidKeysPath = path.resolve(process.env.CARPOSTCLUB_PUSH_VAPID_KEYS_PATH || process.env.KONNER_PUSH_VAPID_KEYS_PATH || process.env.PUSH_VAPID_KEYS_PATH || path.join(path.dirname(uploadRoot), "push-vapid-keys.json"));
+const releaseManifestPath = process.env.CARPOSTCLUB_RELEASE_MANIFEST || process.env.KONNER_RELEASE_MANIFEST || path.join(appRoot, "release-manifest.json");
 const maxFileBytes = positiveInteger(process.env.MAX_FILE_BYTES, 250 * 1024 * 1024);
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 100);
 const chatMessageLimit = positiveInteger(process.env.CHAT_MESSAGE_LIMIT, 500);
@@ -39,15 +44,19 @@ const marketplaceLocation = process.env.FACEBOOK_MARKETPLACE_LOCATION || "Halifa
 const marketplaceCleanTitleDefault = parseBooleanEnv("FACEBOOK_MARKETPLACE_CLEAN_TITLE_DEFAULT", true);
 const marketplacePriceDisclosureFee = 499.95;
 const marketplacePriceDisclosureHst = 14;
-const marketplaceKonnerContactLine = "Message me for more details. If you're coming into the dealership, ask for Konner.";
-const authUsername = process.env.KONNER_AUTH_USERNAME || "konner";
-const authPassword = process.env.KONNER_AUTH_PASSWORD || "";
-const authPasswordHash = process.env.KONNER_AUTH_PASSWORD_HASH || "";
+const marketplaceContactLine = "Message me for more details. If you're coming into the dealership, mention CarPostClub.";
+const pushSubject = process.env.CARPOSTCLUB_PUSH_SUBJECT || process.env.KONNER_PUSH_SUBJECT || process.env.WEB_PUSH_SUBJECT || "mailto:hello@carpostclub.local";
+const pushTtlSeconds = positiveInteger(process.env.CARPOSTCLUB_PUSH_TTL_SECONDS || process.env.KONNER_PUSH_TTL_SECONDS, 60 * 60);
+const pushDeliveryDisabled = parseBooleanEnv("CARPOSTCLUB_PUSH_DELIVERY_DISABLED", parseBooleanEnv("KONNER_PUSH_DELIVERY_DISABLED", false));
+const pushAwaitDelivery = parseBooleanEnv("CARPOSTCLUB_PUSH_AWAIT_DELIVERY", parseBooleanEnv("KONNER_PUSH_AWAIT_DELIVERY", process.env.NODE_ENV === "test"));
+const authUsername = process.env.CARPOSTCLUB_AUTH_USERNAME || process.env.KONNER_AUTH_USERNAME || "admin";
+const authPassword = process.env.CARPOSTCLUB_AUTH_PASSWORD || process.env.KONNER_AUTH_PASSWORD || "";
+const authPasswordHash = process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH || process.env.KONNER_AUTH_PASSWORD_HASH || "";
 const authEnabled = Boolean(authPassword || authPasswordHash);
-const authUsersPath = path.resolve(process.env.KONNER_AUTH_USERS_PATH || process.env.AUTH_USERS_PATH || path.join(path.dirname(uploadRoot), "auth-users.json"));
-const authCookieName = process.env.KONNER_AUTH_COOKIE_NAME || "konner_upload_session";
-const authCookieSecure = parseBooleanEnv("KONNER_AUTH_COOKIE_SECURE", process.env.NODE_ENV === "production");
-const authSessionDays = positiveInteger(process.env.KONNER_AUTH_SESSION_DAYS, 365);
+const authUsersPath = path.resolve(process.env.CARPOSTCLUB_AUTH_USERS_PATH || process.env.KONNER_AUTH_USERS_PATH || process.env.AUTH_USERS_PATH || path.join(path.dirname(uploadRoot), "auth-users.json"));
+const authCookieName = process.env.CARPOSTCLUB_AUTH_COOKIE_NAME || process.env.KONNER_AUTH_COOKIE_NAME || "carpostclub_session";
+const authCookieSecure = parseBooleanEnv("CARPOSTCLUB_AUTH_COOKIE_SECURE", parseBooleanEnv("KONNER_AUTH_COOKIE_SECURE", process.env.NODE_ENV === "production"));
+const authSessionDays = positiveInteger(process.env.CARPOSTCLUB_AUTH_SESSION_DAYS || process.env.KONNER_AUTH_SESSION_DAYS, 365);
 const authSessionMs = authSessionDays * 24 * 60 * 60 * 1000;
 const authSessionSecret = sessionSecret();
 const releaseInfo = await readReleaseInfo();
@@ -107,9 +116,11 @@ const inventoryCache = new Map();
 const chatClients = new Set();
 const marketplaceCopyPromises = new Map();
 const marketplaceCopyStoreWritePromises = new Map();
+const photoMetadataWritePromises = new Map();
 let chatWritePromise = Promise.resolve();
 let authUsersWritePromise = Promise.resolve();
 let manualInventoryWritePromise = Promise.resolve();
+let pushSubscriptionsWritePromise = Promise.resolve();
 let openaiClient = null;
 
 await fs.mkdir(uploadRoot, { recursive: true });
@@ -117,6 +128,11 @@ await fs.mkdir(tmpRoot, { recursive: true });
 await fs.mkdir(path.dirname(chatMessagesPath), { recursive: true });
 await fs.mkdir(path.dirname(manualInventoryPath), { recursive: true });
 await fs.mkdir(path.dirname(authUsersPath), { recursive: true });
+await fs.mkdir(path.dirname(pushSubscriptionsPath), { recursive: true });
+await fs.mkdir(path.dirname(pushVapidKeysPath), { recursive: true });
+
+const pushKeys = await resolvePushVapidKeys();
+webPush.setVapidDetails(pushSubject, pushKeys.publicKey, pushKeys.privateKey);
 
 const storage = multer.diskStorage({
   destination: (_req, _file, callback) => callback(null, tmpRoot),
@@ -155,7 +171,7 @@ app.use(express.static(publicRoot, { index: false, maxAge: 0 }));
 app.get("/healthz", (_req, res) => {
   res.json({
     ok: true,
-    service: "konner-upload",
+    service: serviceName,
     mode: "photo-albums",
     port,
     release: releaseInfo,
@@ -172,7 +188,7 @@ app.get("/healthz", (_req, res) => {
 app.get("/api/version", (_req, res) => {
   res.json({
     ok: true,
-    service: "konner-upload",
+    service: serviceName,
     mode: "photo-albums",
     port,
     release: releaseInfo,
@@ -267,7 +283,7 @@ app.post("/signup", async (req, res, next) => {
     }
 
     sendSignupPage(res, {
-      success: "Account request sent. Konner needs to approve it before you can sign in.",
+      success: "Account request sent. A CarPostClub admin needs to approve it before you can sign in.",
     });
   } catch (error) {
     next(error);
@@ -394,6 +410,55 @@ app.get("/api/me", requireAuth, (req, res) => {
   });
 });
 
+app.get("/api/push/config", requireAuth, (_req, res) => {
+  res.setHeader("Cache-Control", "private, no-store");
+  res.json({
+    ok: true,
+    publicKey: pushKeys.publicKey,
+    subject: pushSubject,
+  });
+});
+
+app.post("/api/push/subscriptions", requireAuth, async (req, res, next) => {
+  try {
+    const subscription = cleanPushSubscription(req.body?.subscription || req.body);
+    const record = await upsertPushSubscription(subscription, req.authUser, req.get("user-agent") || "");
+    res.status(201).json({
+      ok: true,
+      subscription: publicPushSubscriptionRecord(record),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/push/subscriptions", requireAuth, async (req, res, next) => {
+  try {
+    const endpoint = cleanPushEndpoint(req.body?.endpoint || req.body?.subscription?.endpoint);
+    const removed = await removePushSubscription(endpoint, req.authUser);
+    res.json({ ok: true, removed });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/push/test", requireAuth, async (req, res, next) => {
+  try {
+    const delivery = await sendPushNotifications({
+      usernames: [req.authUser.username],
+      payload: {
+        title: appName,
+        body: "Push notifications are ready.",
+        tag: "carpostclub-test",
+        url: "/",
+      },
+    });
+    res.json({ ok: true, delivery });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/inventory/dealerships", requireAuth, (_req, res) => {
   res.json({
     ok: true,
@@ -505,7 +570,7 @@ app.post("/api/upload", requireAuth, upload.array("photos", maxUploadFiles), asy
 
     const saved = [];
     for (const file of files) {
-      saved.push(await saveUploadedPhoto(album.id, file));
+      saved.push(await saveUploadedPhoto(album.id, file, req.authUser));
     }
     const marketplaceGeneration = await prepareMarketplaceDescriptionsForUpload(car, req.authUser, {
       album,
@@ -522,6 +587,10 @@ app.post("/api/upload", requireAuth, upload.array("photos", maxUploadFiles), asy
       photos: saved,
       marketplaceGeneration,
       marketplaceDraft,
+    });
+    queuePushNotifications({
+      excludeUsername: req.authUser.username,
+      payload: uploadPushPayload(car, saved.length),
     });
   } catch (error) {
     await cleanupTempFiles(files);
@@ -630,9 +699,9 @@ async function deleteAlbumMedia(req, res, next) {
     await fs.unlink(thumbnailPath(albumId, filename)).catch((error) => {
       if (error?.code !== "ENOENT") throw error;
     });
-    const metadata = await readPhotoMetadata(albumId);
-    delete metadata[filename];
-    await writePhotoMetadata(albumId, metadata);
+    await updatePhotoMetadata(albumId, (metadata) => {
+      delete metadata[filename];
+    });
     res.json({ ok: true });
   } catch (error) {
     next(error);
@@ -649,7 +718,9 @@ async function deleteAlbumMediaCollection(req, res, next) {
       if (error?.code !== "ENOENT") throw error;
     })));
     await fs.rm(thumbnailDirectoryPath(albumId), { recursive: true, force: true });
-    await writePhotoMetadata(albumId, {});
+    await updatePhotoMetadata(albumId, (metadata) => {
+      for (const filename of Object.keys(metadata)) delete metadata[filename];
+    });
     res.json({ ok: true, deleted: photos.length });
   } catch (error) {
     next(error);
@@ -700,7 +771,16 @@ app.post("/api/chat/messages", requireAuth, async (req, res, next) => {
   try {
     const message = await appendChatMessage(normalizeChatMessageText(req.body?.text), req.authUser);
     broadcastChatMessage(message);
-    res.status(201).json({ ok: true, message });
+    const pushDeliveryPromise = queuePushNotifications({
+      excludeUsername: req.authUser.username,
+      payload: chatPushPayload(message),
+    });
+    const pushDelivery = pushAwaitDelivery ? await pushDeliveryPromise : null;
+    res.status(201).json({
+      ok: true,
+      message,
+      ...(pushDelivery ? { pushDelivery } : {}),
+    });
   } catch (error) {
     next(error);
   }
@@ -720,7 +800,7 @@ app.use(async (error, req, res, _next) => {
 });
 
 const server = app.listen(port, host, () => {
-  console.log(`Konner photo albums listening on ${host}:${port}`);
+  console.log(`${appName} listening on ${host}:${port}`);
 });
 
 process.on("SIGTERM", () => {
@@ -1565,7 +1645,7 @@ function marketplaceCopyPath(albumId) {
 }
 
 function marketplaceUserKey(user) {
-  return normalizeAuthUsername(user?.username || authUsername || "konner") || "konner";
+  return normalizeAuthUsername(user?.username || authUsername || "admin") || "admin";
 }
 
 function buildMarketplaceTitle(car) {
@@ -1647,7 +1727,7 @@ function buildMarketplaceCopyText({ title, fields, description, car }) {
 
 function finalizeMarketplaceBuyerDescription(description, fields, car = null) {
   return stripMarketplaceInventoryNumbers(
-    appendMarketplaceKonnerContactLine(appendMarketplacePriceDisclosure(description, fields, car)),
+    appendMarketplaceContactLine(appendMarketplacePriceDisclosure(description, fields, car)),
     car,
   );
 }
@@ -1670,20 +1750,20 @@ function buildMarketplacePriceDisclosure(fields, car = null) {
   })} Tire Road Hazard, Documentation Fee, Security Etch, and ${marketplacePriceDisclosureHst}% HST.`;
 }
 
-function appendMarketplaceKonnerContactLine(description) {
+function appendMarketplaceContactLine(description) {
   const text = String(description || "").trim();
-  if (!text) return marketplaceKonnerContactLine;
-  if (hasMarketplaceKonnerContactLine(text)) return text;
+  if (!text) return marketplaceContactLine;
+  if (hasMarketplaceContactLine(text)) return text;
   const paragraphs = text.split(/\n{2,}/);
   const finalParagraph = paragraphs[paragraphs.length - 1] || "";
   if (hasMarketplacePriceDisclosure(finalParagraph)) {
     return [
       ...paragraphs.slice(0, -1),
-      marketplaceKonnerContactLine,
+      marketplaceContactLine,
       finalParagraph,
     ].join("\n\n").trim();
   }
-  return `${text}\n\n${marketplaceKonnerContactLine}`;
+  return `${text}\n\n${marketplaceContactLine}`;
 }
 
 function stripMarketplaceInventoryNumbers(description, car = null) {
@@ -1723,9 +1803,9 @@ function isMarketplaceInventoryNumberSegment(value, stockNumberPattern) {
   return /\b(?:stock|inventory)\s*(?:number|no\.?|#)?\s*[:#]?\s*[A-Z]*\d[A-Z0-9-]*\b/i.test(text);
 }
 
-function hasMarketplaceKonnerContactLine(description) {
+function hasMarketplaceContactLine(description) {
   const text = String(description || "");
-  return /\bmessage me for more details\b/i.test(text) && /\bask for Konner\b/i.test(text);
+  return /\bmessage me for more details\b/i.test(text) && /\bCarPostClub\b/i.test(text);
 }
 
 function hasMarketplacePriceDisclosure(description) {
@@ -1982,13 +2062,14 @@ async function listAlbumPhotos(albumId) {
       bytes: stats.size,
       uploadedAt: meta.uploadedAt || stats.birthtime.toISOString(),
       contentType,
+      uploadedBy: meta.uploadedBy,
     }));
   }
 
   return photos.sort((left, right) => new Date(right.uploadedAt).getTime() - new Date(left.uploadedAt).getTime());
 }
 
-async function saveUploadedPhoto(albumId, file) {
+async function saveUploadedPhoto(albumId, file, user) {
   const directory = albumPath(albumId);
   const extension = extensionFor(file.originalname, file.mimetype);
   const baseName = sanitizeFilenameBase(path.basename(file.originalname, path.extname(file.originalname)));
@@ -1999,20 +2080,23 @@ async function saveUploadedPhoto(albumId, file) {
   const stats = await fs.stat(destination);
   const uploadedAt = new Date().toISOString();
   const contentType = contentTypeFor(filename);
-  const metadata = await readPhotoMetadata(albumId);
-  metadata[filename] = {
-    originalName: file.originalname,
-    contentType,
-    bytes: stats.size,
-    uploadedAt,
-  };
-  await writePhotoMetadata(albumId, metadata);
+  const uploadedBy = publicUploader(user);
+  await updatePhotoMetadata(albumId, (metadata) => {
+    metadata[filename] = {
+      originalName: file.originalname,
+      contentType,
+      bytes: stats.size,
+      uploadedAt,
+      uploadedBy,
+    };
+  });
 
   return photoResponse(albumId, filename, {
     originalName: file.originalname,
     contentType,
     bytes: stats.size,
     uploadedAt,
+    uploadedBy,
   });
 }
 
@@ -2057,10 +2141,21 @@ function photoResponse(albumId, filename, details) {
     contentType: details.contentType,
     bytes: details.bytes,
     uploadedAt: details.uploadedAt,
+    uploadedBy: publicUploader(details.uploadedBy),
     url: `/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}`,
     thumbnailUrl: kind === "image" ? `/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}/thumbnail` : "",
     downloadUrl: `/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}?download=1`,
     legacyUrl: `/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(filename)}`,
+  };
+}
+
+function publicUploader(user) {
+  const username = normalizeAuthUsername(user?.username);
+  const displayName = normalizeDisplayName(user?.displayName) || username;
+  if (!username && !displayName) return null;
+  return {
+    username,
+    displayName: displayName || username,
   };
 }
 
@@ -2159,6 +2254,25 @@ async function writePhotoMetadata(albumId, metadata) {
   await writeJson(path.join(albumPath(albumId), ".photos.json"), metadata);
 }
 
+async function updatePhotoMetadata(albumId, mutator) {
+  albumId = cleanAlbumId(albumId);
+  const previous = photoMetadataWritePromises.get(albumId) || Promise.resolve();
+  const next = previous.catch(() => {}).then(async () => {
+    const metadata = await readPhotoMetadata(albumId);
+    const result = await mutator(metadata);
+    await writePhotoMetadata(albumId, metadata);
+    return result;
+  });
+  photoMetadataWritePromises.set(albumId, next);
+  try {
+    return await next;
+  } finally {
+    if (photoMetadataWritePromises.get(albumId) === next) {
+      photoMetadataWritePromises.delete(albumId);
+    }
+  }
+}
+
 async function readChatMessages() {
   const messages = await readJson(chatMessagesPath, []);
   if (!Array.isArray(messages)) return [];
@@ -2240,7 +2354,301 @@ function sanitizeChatMessageText(value, { truncate = false } = {}) {
 }
 
 function normalizeChatAuthor(value) {
-  return normalizeSpace(value || "Konner").slice(0, 40) || "Konner";
+  return normalizeSpace(value || appName).slice(0, 40) || appName;
+}
+
+async function resolvePushVapidKeys() {
+  const publicKey = normalizeSpace(process.env.CARPOSTCLUB_PUSH_VAPID_PUBLIC_KEY || process.env.KONNER_PUSH_VAPID_PUBLIC_KEY || process.env.WEB_PUSH_VAPID_PUBLIC_KEY);
+  const privateKey = normalizeSpace(process.env.CARPOSTCLUB_PUSH_VAPID_PRIVATE_KEY || process.env.KONNER_PUSH_VAPID_PRIVATE_KEY || process.env.WEB_PUSH_VAPID_PRIVATE_KEY);
+
+  if (publicKey || privateKey) {
+    if (!publicKey || !privateKey) {
+      throw new Error("Both CARPOSTCLUB_PUSH_VAPID_PUBLIC_KEY and CARPOSTCLUB_PUSH_VAPID_PRIVATE_KEY are required for push notifications.");
+    }
+    return { publicKey, privateKey, source: "env" };
+  }
+
+  const stored = await readJson(pushVapidKeysPath, {});
+  if (stored?.publicKey && stored?.privateKey) {
+    return {
+      publicKey: normalizeSpace(stored.publicKey),
+      privateKey: normalizeSpace(stored.privateKey),
+      source: "file",
+    };
+  }
+
+  const generated = webPush.generateVAPIDKeys();
+  await writeJson(pushVapidKeysPath, {
+    ...generated,
+    createdAt: new Date().toISOString(),
+  });
+  return { ...generated, source: "generated" };
+}
+
+async function readPushSubscriptions() {
+  const store = await readJson(pushSubscriptionsPath, { subscriptions: [] });
+  const rawSubscriptions = Array.isArray(store) ? store : store.subscriptions;
+  return {
+    subscriptions: Array.isArray(rawSubscriptions)
+      ? rawSubscriptions.map(normalizeStoredPushSubscription).filter(Boolean)
+      : [],
+  };
+}
+
+async function updatePushSubscriptions(mutator) {
+  pushSubscriptionsWritePromise = pushSubscriptionsWritePromise.catch(() => {}).then(async () => {
+    const store = await readPushSubscriptions();
+    const result = await mutator(store);
+    store.subscriptions.sort((left, right) => {
+      const username = left.username.localeCompare(right.username);
+      if (username) return username;
+      return new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime();
+    });
+    await writeJson(pushSubscriptionsPath, { subscriptions: store.subscriptions });
+    return result;
+  });
+  return pushSubscriptionsWritePromise;
+}
+
+async function upsertPushSubscription(subscription, user, userAgent) {
+  const username = normalizeAuthUsername(user?.username);
+  if (!username) throw httpError(401, "Authentication required.");
+
+  const now = new Date().toISOString();
+  const publicUser = publicAuthUser(user);
+  return updatePushSubscriptions((store) => {
+    const existing = store.subscriptions.find((record) => record.endpoint === subscription.endpoint);
+    const record = {
+      endpoint: subscription.endpoint,
+      keys: subscription.keys,
+      expirationTime: subscription.expirationTime,
+      username,
+      displayName: publicUser.displayName || username,
+      userAgent: normalizeSpace(userAgent).slice(0, 240),
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+
+    if (existing) {
+      Object.assign(existing, record);
+      return existing;
+    }
+
+    store.subscriptions.push(record);
+    return record;
+  });
+}
+
+async function removePushSubscription(endpoint, user) {
+  const username = normalizeAuthUsername(user?.username);
+  let removed = false;
+  await updatePushSubscriptions((store) => {
+    const initialCount = store.subscriptions.length;
+    store.subscriptions = store.subscriptions.filter((record) => {
+      return !(record.endpoint === endpoint && record.username === username);
+    });
+    removed = store.subscriptions.length !== initialCount;
+  });
+  return removed;
+}
+
+async function removePushEndpoints(endpoints) {
+  const endpointSet = new Set(endpoints);
+  if (!endpointSet.size) return 0;
+  let removed = 0;
+  await updatePushSubscriptions((store) => {
+    const initialCount = store.subscriptions.length;
+    store.subscriptions = store.subscriptions.filter((record) => !endpointSet.has(record.endpoint));
+    removed = initialCount - store.subscriptions.length;
+  });
+  return removed;
+}
+
+async function sendPushNotifications({ payload, usernames = null, excludeUsername = "" }) {
+  const usernameSet = usernames
+    ? new Set(usernames.map(normalizeAuthUsername).filter(Boolean))
+    : null;
+  const excluded = normalizeAuthUsername(excludeUsername);
+  const notificationPayload = JSON.stringify(cleanPushPayload(payload));
+  const { subscriptions } = await readPushSubscriptions();
+  const targets = subscriptions.filter((record) => {
+    if (excluded && record.username === excluded) return false;
+    if (usernameSet && !usernameSet.has(record.username)) return false;
+    return true;
+  });
+
+  const staleEndpoints = new Set();
+  const results = await Promise.all(targets.map(async (record) => {
+    if (pushDeliveryDisabled) return { status: "skipped" };
+
+    try {
+      await webPush.sendNotification({
+        endpoint: record.endpoint,
+        keys: record.keys,
+      }, notificationPayload, {
+        TTL: pushTtlSeconds,
+      });
+      return { status: "delivered" };
+    } catch (error) {
+      const statusCode = Number(error?.statusCode || error?.status);
+      if (statusCode === 404 || statusCode === 410) {
+        staleEndpoints.add(record.endpoint);
+        return { status: "stale" };
+      }
+      console.warn(`Push notification failed for ${record.username}: ${error?.message || error}`);
+      return { status: "failed" };
+    }
+  }));
+
+  const staleRemoved = await removePushEndpoints(staleEndpoints);
+  return {
+    requested: targets.length,
+    delivered: results.filter((result) => result.status === "delivered").length,
+    failed: results.filter((result) => result.status === "failed").length,
+    skipped: results.filter((result) => result.status === "skipped").length,
+    staleRemoved,
+  };
+}
+
+function queuePushNotifications(options) {
+  return sendPushNotifications(options).catch((error) => {
+    console.warn(`Push notification queue failed: ${error?.message || error}`);
+    return {
+      requested: 0,
+      delivered: 0,
+      failed: 0,
+      skipped: 0,
+      staleRemoved: 0,
+      error: true,
+    };
+  });
+}
+
+function chatPushPayload(message) {
+  const messageId = normalizeSpace(message.id) || `${Date.now()}`;
+  return {
+    kind: "chat",
+    messageId,
+    author: message.author,
+    timestamp: message.createdAt,
+    title: `${message.author} in chat`,
+    body: message.text,
+    tag: `carpostclub-chat-${messageId}`,
+    url: "/?openChat=1",
+  };
+}
+
+function uploadPushPayload(car, mediaCount) {
+  const label = car?.stockNumber || car?.title || "a vehicle";
+  return {
+    title: "Media uploaded",
+    body: `${mediaCount} ${mediaCount === 1 ? "file" : "files"} added for ${label}.`,
+    tag: `carpostclub-upload-${carInventoryNotificationKey(car)}`,
+    url: "/",
+  };
+}
+
+function carInventoryNotificationKey(car) {
+  return normalizeSpace(car?.inventoryKey || car?.vin || car?.stockNumber || "vehicle")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "vehicle";
+}
+
+function publicPushSubscriptionRecord(record) {
+  return {
+    endpoint: record.endpoint,
+    username: record.username,
+    displayName: record.displayName,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function normalizeStoredPushSubscription(record) {
+  if (!record || typeof record !== "object") return null;
+  try {
+    const subscription = cleanPushSubscription(record);
+    const username = normalizeAuthUsername(record.username);
+    if (!username) return null;
+    const now = new Date().toISOString();
+    return {
+      endpoint: subscription.endpoint,
+      keys: subscription.keys,
+      expirationTime: subscription.expirationTime,
+      username,
+      displayName: normalizeDisplayName(record.displayName) || username,
+      userAgent: normalizeSpace(record.userAgent).slice(0, 240),
+      createdAt: normalizeIsoDate(record.createdAt) || now,
+      updatedAt: normalizeIsoDate(record.updatedAt) || normalizeIsoDate(record.createdAt) || now,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function cleanPushSubscription(value) {
+  if (!value || typeof value !== "object") {
+    throw httpError(400, "Invalid push subscription.");
+  }
+  return {
+    endpoint: cleanPushEndpoint(value.endpoint),
+    keys: {
+      p256dh: cleanPushKey(value.keys?.p256dh, "p256dh"),
+      auth: cleanPushKey(value.keys?.auth, "auth"),
+    },
+    expirationTime: cleanPushExpirationTime(value.expirationTime),
+  };
+}
+
+function cleanPushExpirationTime(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const expirationTime = Number(value);
+  return Number.isFinite(expirationTime) && expirationTime >= 0 ? expirationTime : null;
+}
+
+function cleanPushEndpoint(value) {
+  const endpoint = String(value || "").trim();
+  if (!endpoint || endpoint.length > 4096) throw httpError(400, "Invalid push endpoint.");
+  try {
+    const url = new URL(endpoint);
+    if (url.protocol !== "https:") throw new Error("Push endpoints must use HTTPS.");
+  } catch {
+    throw httpError(400, "Invalid push endpoint.");
+  }
+  return endpoint;
+}
+
+function cleanPushKey(value, label) {
+  const key = String(value || "").trim();
+  if (!/^[A-Za-z0-9+/_=-]{12,512}$/.test(key)) {
+    throw httpError(400, `Invalid push ${label} key.`);
+  }
+  return key;
+}
+
+function cleanPushPayload(payload = {}) {
+  const kind = normalizeSpace(payload.kind).slice(0, 32);
+  const timestamp = normalizeIsoDate(payload.timestamp);
+  return {
+    title: normalizeSpace(payload.title).slice(0, 80) || appName,
+    body: sanitizeChatMessageText(payload.body, { truncate: true }).slice(0, 180) || `Open ${appName}.`,
+    icon: cleanNotificationPath(payload.icon, "/icons/carpostclub-icon-192.png"),
+    badge: cleanNotificationPath(payload.badge, "/icons/carpostclub-apple-touch-icon.png"),
+    tag: normalizeSpace(payload.tag).slice(0, 80) || "carpostclub",
+    url: cleanNotificationPath(payload.url, "/"),
+    kind,
+    messageId: normalizeSpace(payload.messageId).slice(0, 80),
+    author: payload.author ? normalizeChatAuthor(payload.author) : "",
+    timestamp,
+  };
+}
+
+function cleanNotificationPath(value, fallback) {
+  const text = String(value || "").trim();
+  if (text.startsWith("/") && !text.startsWith("//")) return text.slice(0, 512);
+  return fallback;
 }
 
 async function readJson(filePath, fallback) {
@@ -2629,7 +3037,7 @@ async function requireAdmin(req, res, next) {
     res.status(403).send(renderAuthPage({
       title: "Admin access required",
       heading: "Admin access required",
-      body: '<p class="auth-note">Only Konner can approve account requests.</p><p class="auth-actions"><a href="/">Back to app</a></p>',
+      body: '<p class="auth-note">Only a CarPostClub admin can approve account requests.</p><p class="auth-actions"><a href="/">Back to app</a></p>',
     }));
   });
 }
@@ -2682,7 +3090,7 @@ async function authenticateCredentials(usernameValue, password) {
   }
 
   if (account.status === "pending") {
-    return { ok: false, message: "Your account is waiting for Konner to approve it." };
+    return { ok: false, message: "Your account is waiting for a CarPostClub admin to approve it." };
   }
 
   if (account.status === "rejected") {
@@ -2719,8 +3127,8 @@ function serializeSessionCookie(user) {
 
 function bootstrapAdminUser() {
   return {
-    username: normalizeAuthUsername(authUsername) || "konner",
-    displayName: normalizeDisplayName(authUsername) || "Konner",
+    username: normalizeAuthUsername(authUsername) || "admin",
+    displayName: normalizeDisplayName(authUsername) || "Admin",
     role: "admin",
     status: "approved",
     bootstrap: true,
@@ -2897,14 +3305,14 @@ function timingSafeEqual(left, right) {
 }
 
 function sessionSecret() {
-  const configured = process.env.KONNER_AUTH_SESSION_SECRET || process.env.AUTH_SESSION_SECRET;
+  const configured = process.env.CARPOSTCLUB_AUTH_SESSION_SECRET || process.env.KONNER_AUTH_SESSION_SECRET || process.env.AUTH_SESSION_SECRET;
   if (configured) return configured;
-  return crypto.createHash("sha256").update(authPasswordHash || authPassword || "konner-upload").digest("hex");
+  return crypto.createHash("sha256").update(authPasswordHash || authPassword || "carpostclub").digest("hex");
 }
 
 function sendLoginPage(res, error = "") {
   res.status(error ? 401 : 200).send(renderAuthPage({
-    title: "Konner Photos Login",
+    title: `${appName} Login`,
     heading: "Sign in",
     error,
     body: `<form method="post" action="/login" class="login-form">
@@ -2928,7 +3336,7 @@ function sendChangePasswordPage(res, { user, error = "", success = "" }) {
     ? '<p class="auth-note">The bootstrap admin password is managed through the server environment, not this page.</p>'
     : "";
   res.status(error ? 400 : 200).send(renderAuthPage({
-    title: "Change Konner Photos Password",
+    title: `Change ${appName} Password`,
     heading: "Change password",
     error,
     success,
@@ -2954,7 +3362,7 @@ function sendChangePasswordPage(res, { user, error = "", success = "" }) {
 
 function sendSignupPage(res, { error = "", success = "", values = {} } = {}) {
   res.status(error ? 400 : 200).send(renderAuthPage({
-    title: "Request Konner Photos Access",
+    title: `Request ${appName} Access`,
     heading: "Request access",
     error,
     success,
@@ -2977,7 +3385,7 @@ function sendSignupPage(res, { error = "", success = "", values = {} } = {}) {
       </label>
       <button type="submit">Send request</button>
     </form>
-    <p class="auth-note">Konner must approve new accounts before they can open the app.</p>
+    <p class="auth-note">A CarPostClub admin must approve new accounts before they can open the app.</p>
     <p class="auth-actions"><a href="/login">Back to sign in</a></p>`,
   }));
 }
@@ -2993,12 +3401,12 @@ function sendAdminUsersPage(res, { currentUser, users, error = "", success = "" 
     : '<p class="auth-note">No account requests yet.</p>';
 
   res.send(renderAuthPage({
-    title: "Manage Konner Photos Users",
+    title: `Manage ${appName} Users`,
     heading: "Users",
     wide: true,
     error,
     success,
-    body: `<p class="auth-note">Signed in as ${escapeHtml(currentUser.displayName)}. Konner is the bootstrap admin and approves new accounts here.</p>
+    body: `<p class="auth-note">Signed in as ${escapeHtml(currentUser.displayName)}. The bootstrap admin approves new accounts here.</p>
     <section class="admin-user-card is-bootstrap">
       <div>
         <strong>${escapeHtml(bootstrapAdminUser().displayName)}</strong>
@@ -3056,7 +3464,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">
-    <p class="eyebrow">Konner Photos</p>
+    <p class="eyebrow">${escapeHtml(appName)}</p>
     <h1>${escapeHtml(heading)}</h1>
     ${error ? `<p class="form-error">${escapeHtml(error)}</p>` : ""}
     ${success ? `<p class="form-success">${escapeHtml(success)}</p>` : ""}
@@ -3089,7 +3497,7 @@ function formatAuthDate(value) {
 
 async function readReleaseInfo() {
   const fallback = {
-    releaseId: process.env.KONNER_RELEASE_ID || "dev",
+    releaseId: process.env.CARPOSTCLUB_RELEASE_ID || process.env.KONNER_RELEASE_ID || "dev",
     createdAt: null,
     source: "runtime",
   };

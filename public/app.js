@@ -13,12 +13,17 @@ const state = {
   chatEventSource: null,
   chatReconnectTimer: null,
   currentUser: null,
-  selectedDealershipId: localStorage.getItem("konner.selectedDealershipId") || "15",
-  selectedInventoryTypeId: localStorage.getItem("konner.selectedInventoryTypeId") || "2",
-  selectedMake: localStorage.getItem("konner.selectedMake") || "",
-  selectedModel: localStorage.getItem("konner.selectedModel") || "",
-  selectedVin: localStorage.getItem("konner.selectedVin") || "",
-  carSearch: localStorage.getItem("konner.carSearch") || "",
+  deferredInstallPrompt: null,
+  serviceWorkerRegistration: null,
+  pushPublicKey: "",
+  pushSubscription: null,
+  pushBusy: false,
+  selectedDealershipId: localStorage.getItem("carpostclub.selectedDealershipId") || "15",
+  selectedInventoryTypeId: localStorage.getItem("carpostclub.selectedInventoryTypeId") || "2",
+  selectedMake: localStorage.getItem("carpostclub.selectedMake") || "",
+  selectedModel: localStorage.getItem("carpostclub.selectedModel") || "",
+  selectedVin: localStorage.getItem("carpostclub.selectedVin") || "",
+  carSearch: localStorage.getItem("carpostclub.carSearch") || "",
   galleryExpanded: false,
   failedUploadFiles: [],
   failedUploadMessage: "",
@@ -27,6 +32,41 @@ const state = {
   uploadCelebrationTimer: 0,
   chatSending: false,
 };
+
+const hapticPatterns = {
+  tap: 10,
+  select: 15,
+  start: 20,
+  success: [20, 40, 20],
+  warning: [30, 60, 30],
+  error: [40, 70, 40],
+};
+const hapticNativeStyles = {
+  tap: "LIGHT",
+  select: "LIGHT",
+  start: "MEDIUM",
+  success: "MEDIUM",
+  warning: "HEAVY",
+  error: "HEAVY",
+};
+const hapticNotificationTypes = {
+  success: "SUCCESS",
+  warning: "WARNING",
+  error: "ERROR",
+};
+const hapticSelector = [
+  "button:not(:disabled)",
+  "a[href]",
+  "select:not(:disabled)",
+  "input[type='file']:not(:disabled)",
+  ".source-mode-card:not(:disabled)",
+  ".drop-zone:not([aria-disabled='true'])",
+  ".gallery-summary:not([hidden])",
+].join(",");
+const hapticThrottleMs = 60;
+const hapticCssResetMs = 140;
+let lastHapticAt = 0;
+let hapticCssTimer = 0;
 
 const els = {
   activeCarLink: document.querySelector("#activeCarLink"),
@@ -57,6 +97,7 @@ const els = {
   gallery: document.querySelector("#gallery"),
   gallerySummary: document.querySelector("#gallerySummary"),
   galleryToggleButton: document.querySelector("#galleryToggleButton"),
+  installButton: document.querySelector("#installButton"),
   inventoryTypeSelect: document.querySelector("#inventoryTypeSelect"),
   logoutForm: document.querySelector("#logoutForm"),
   marketplaceCopyButton: document.querySelector("#marketplaceCopyButton"),
@@ -84,8 +125,12 @@ const els = {
   manualVin: document.querySelector("#manualVin"),
   manualYear: document.querySelector("#manualYear"),
   modelFilterSelect: document.querySelector("#modelFilterSelect"),
+  oregansSourceButton: document.querySelector("#oregansSourceButton"),
+  pickerPanel: document.querySelector(".picker-panel"),
   cancelManualCarButton: document.querySelector("#cancelManualCarButton"),
   photoCount: document.querySelector("#photoCount"),
+  pickerSubhead: document.querySelector("#pickerSubhead"),
+  notificationButton: document.querySelector("#notificationButton"),
   refreshButton: document.querySelector("#refreshButton"),
   sourceLink: document.querySelector("#sourceLink"),
   statusBar: document.querySelector("#statusBar"),
@@ -108,6 +153,11 @@ async function init() {
   bindEvents();
   loadCurrentUser().catch(() => {});
   initChat().catch((error) => showError(error));
+  initPwa().catch((error) => {
+    console.warn(error);
+    renderPwaControls();
+  });
+  openInitialPanel();
   await loadInventoryFilters();
   await loadCars({ keepSelectedCar: true });
 }
@@ -118,6 +168,7 @@ async function loadCurrentUser() {
   if (els.adminUsersLink) {
     els.adminUsersLink.hidden = state.currentUser?.role !== "admin";
   }
+  if (state.chatMessages.length) renderChatMessages();
 }
 
 function bindEvents() {
@@ -126,21 +177,25 @@ function bindEvents() {
     event.preventDefault();
     event.returnValue = "";
   });
+  bindHapticSurfaceFeedback();
 
   document.addEventListener("click", (event) => {
     const link = event.target.closest?.("a[href]");
     if (!link || !state.uploading) return;
     event.preventDefault();
+    haptic("warning");
     showError("Upload still in progress. Stay on this page until it finishes.");
   }, true);
 
   document.addEventListener("submit", (event) => {
     if (!state.uploading) return;
     event.preventDefault();
+    haptic("warning");
     showError("Upload still in progress. Stay on this page until it finishes.");
   }, true);
 
   els.inventoryTypeSelect.addEventListener("change", () => {
+    haptic("select");
     state.selectedInventoryTypeId = els.inventoryTypeSelect.value;
     state.selectedMake = "";
     state.selectedModel = "";
@@ -150,6 +205,7 @@ function bindEvents() {
   });
 
   els.dealershipSelect.addEventListener("change", () => {
+    haptic("select");
     state.selectedDealershipId = els.dealershipSelect.value;
     state.selectedMake = "";
     state.selectedModel = "";
@@ -159,6 +215,7 @@ function bindEvents() {
   });
 
   els.makeFilterSelect.addEventListener("change", () => {
+    haptic("select");
     state.selectedMake = els.makeFilterSelect.value;
     state.selectedModel = "";
     clearSelectedCarSelection();
@@ -169,6 +226,7 @@ function bindEvents() {
   });
 
   els.modelFilterSelect.addEventListener("change", () => {
+    haptic("select");
     state.selectedModel = els.modelFilterSelect.value;
     clearSelectedCarSelection();
     persistSelection();
@@ -178,6 +236,7 @@ function bindEvents() {
   });
 
   els.carSelect.addEventListener("change", () => {
+    haptic("select");
     const vin = els.carSelect.value;
     if (!vin) {
       clearSelectedCarSelection();
@@ -191,39 +250,49 @@ function bindEvents() {
 
   els.carSearchInput.addEventListener("input", () => {
     state.carSearch = els.carSearchInput.value;
-    localStorage.setItem("konner.carSearch", state.carSearch);
+    localStorage.setItem("carpostclub.carSearch", state.carSearch);
     renderCarOptions();
   });
 
   els.refreshButton.addEventListener("click", () => {
+    haptic("tap");
     loadCars({ keepSelectedCar: true, forceAlbumRefresh: true }).catch((error) => showError(error));
   });
 
   els.addManualCarButton.addEventListener("click", () => {
-    setManualCarFormOpen(true);
+    setManualCarFormOpen(true, { feedback: true });
+  });
+
+  els.oregansSourceButton.addEventListener("click", () => {
+    setManualCarFormOpen(false, { feedback: true });
   });
 
   els.cancelManualCarButton.addEventListener("click", () => {
-    setManualCarFormOpen(false);
+    setManualCarFormOpen(false, { feedback: true });
   });
 
   els.manualCarForm.addEventListener("submit", (event) => {
+    haptic("start");
     createManualCar(event).catch((error) => showError(error));
   });
 
   els.downloadAllButton.addEventListener("click", (event) => {
     if (!state.activeAlbum?.id || !state.photos.length) event.preventDefault();
+    else haptic("tap");
   });
 
   els.deleteAllButton.addEventListener("click", () => {
+    haptic("warning");
     deleteAllPhotos().catch((error) => showError(error));
   });
 
   els.galleryToggleButton.addEventListener("click", () => {
+    haptic("tap");
     setGalleryExpanded(!state.galleryExpanded);
   });
 
   els.gallerySummary.addEventListener("click", () => {
+    haptic("tap");
     setGalleryExpanded(true);
   });
 
@@ -232,6 +301,7 @@ function bindEvents() {
   });
 
   els.clearUploadButton.addEventListener("click", () => {
+    haptic("tap");
     clearFailedUpload();
     clearFileInput(els.fileInput);
     clearFileInput(els.cameraInput);
@@ -242,10 +312,12 @@ function bindEvents() {
   });
 
   els.marketplaceCopyButton.addEventListener("click", () => {
+    haptic("tap");
     copyMarketplaceDraft().catch((error) => showError(error));
   });
 
   els.marketplaceRegenerateButton.addEventListener("click", () => {
+    haptic("tap");
     loadMarketplaceDraft().catch((error) => showError(error));
   });
 
@@ -254,20 +326,44 @@ function bindEvents() {
     if (!confirmed) event.preventDefault();
   });
 
+  els.installButton?.addEventListener("click", installPwa);
+  els.notificationButton?.addEventListener("click", togglePushNotifications);
+
+  window.addEventListener("popstate", () => {
+    const shouldOpenChat = new URLSearchParams(window.location.search).get("openChat") === "1";
+    if (shouldOpenChat !== state.chatOpen) setChatOpen(shouldOpenChat, { syncUrl: false });
+  });
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    state.deferredInstallPrompt = event;
+    renderPwaControls();
+  });
+
+  window.addEventListener("appinstalled", () => {
+    state.deferredInstallPrompt = null;
+    renderPwaControls();
+    haptic("success");
+    showStatus("CarPostClub installed.");
+  });
+
   els.dropZone.addEventListener("click", () => {
     if (!selectedCar()) return;
+    haptic("tap");
     clearFileInput(els.fileInput);
     els.fileInput.click();
   });
 
   els.cameraButton.addEventListener("click", () => {
     if (!selectedCar()) return;
+    haptic("tap");
     clearFileInput(els.cameraInput);
     els.cameraInput.click();
   });
 
   els.videoButton.addEventListener("click", () => {
     if (!selectedCar()) return;
+    haptic("tap");
     clearFileInput(els.videoInput);
     els.videoInput.click();
   });
@@ -306,8 +402,8 @@ function bindEvents() {
     uploadFiles(snapshotFiles(event.dataTransfer?.files));
   });
 
-  els.chatToggle.addEventListener("click", () => setChatOpen(!state.chatOpen));
-  els.chatClose.addEventListener("click", () => setChatOpen(false));
+  els.chatToggle.addEventListener("click", () => setChatOpen(!state.chatOpen, { feedback: true }));
+  els.chatClose.addEventListener("click", () => setChatOpen(false, { feedback: true }));
   els.chatForm.addEventListener("submit", sendChatMessage);
   els.chatInput.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey) return;
@@ -319,6 +415,152 @@ function bindEvents() {
     state.chatEventSource?.close();
     window.clearTimeout(state.chatReconnectTimer);
   });
+}
+
+async function initPwa() {
+  renderPwaControls();
+  if (!("serviceWorker" in navigator)) return;
+
+  state.serviceWorkerRegistration = await navigator.serviceWorker.register("/sw.js");
+  state.serviceWorkerRegistration = await navigator.serviceWorker.ready;
+
+  if (pushNotificationsSupported()) {
+    const config = await apiJson("/api/push/config");
+    state.pushPublicKey = config.publicKey || "";
+    state.pushSubscription = await state.serviceWorkerRegistration.pushManager.getSubscription();
+    if (state.pushSubscription && state.pushPublicKey) {
+      savePushSubscription(state.pushSubscription).catch(() => {});
+    }
+  }
+
+  renderPwaControls();
+}
+
+async function installPwa() {
+  if (!state.deferredInstallPrompt) return;
+  haptic("tap");
+  const promptEvent = state.deferredInstallPrompt;
+  state.deferredInstallPrompt = null;
+  renderPwaControls();
+  await promptEvent.prompt();
+  const choice = await promptEvent.userChoice.catch(() => null);
+  if (choice?.outcome === "accepted") showStatus("CarPostClub install started.");
+}
+
+async function togglePushNotifications() {
+  if (state.pushBusy) return;
+  haptic("tap");
+  state.pushBusy = true;
+  renderPwaControls();
+
+  try {
+    if (!pushNotificationsSupported()) {
+      throw new Error("Push notifications are not supported in this browser.");
+    }
+
+    if (!state.serviceWorkerRegistration) {
+      state.serviceWorkerRegistration = await navigator.serviceWorker.ready;
+    }
+
+    let subscription = await state.serviceWorkerRegistration.pushManager.getSubscription();
+    if (subscription) {
+      await deletePushSubscription(subscription);
+      await subscription.unsubscribe();
+      state.pushSubscription = null;
+      haptic("success");
+      showStatus("Push notifications turned off.");
+      return;
+    }
+
+    if (!state.pushPublicKey) {
+      const config = await apiJson("/api/push/config");
+      state.pushPublicKey = config.publicKey || "";
+    }
+    if (!state.pushPublicKey) throw new Error("Push notifications are not configured.");
+
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      throw new Error(permission === "denied"
+        ? "Notifications are blocked. Allow them in this browser's site settings."
+        : "Notification permission was not granted.");
+    }
+
+    subscription = await state.serviceWorkerRegistration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(state.pushPublicKey),
+    });
+    await savePushSubscription(subscription);
+    state.pushSubscription = subscription;
+    haptic("success");
+    showStatus("Push notifications turned on.");
+    apiJson("/api/push/test", { method: "POST" }).catch(() => {});
+  } catch (error) {
+    showError(error);
+  } finally {
+    state.pushBusy = false;
+    renderPwaControls();
+  }
+}
+
+function pushNotificationsSupported() {
+  return "serviceWorker" in navigator
+    && "PushManager" in window
+    && "Notification" in window;
+}
+
+async function savePushSubscription(subscription) {
+  const serialized = typeof subscription.toJSON === "function" ? subscription.toJSON() : subscription;
+  const response = await apiJson("/api/push/subscriptions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subscription: serialized }),
+  });
+  return response.subscription;
+}
+
+async function deletePushSubscription(subscription) {
+  await apiJson("/api/push/subscriptions", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint: subscription.endpoint }),
+  });
+}
+
+function renderPwaControls() {
+  if (els.installButton) {
+    const canInstall = Boolean(state.deferredInstallPrompt);
+    els.installButton.hidden = !canInstall;
+    els.installButton.disabled = !canInstall;
+  }
+
+  if (!els.notificationButton) return;
+  const supported = pushNotificationsSupported();
+  const permission = supported ? Notification.permission : "unsupported";
+  const subscribed = Boolean(state.pushSubscription);
+  els.notificationButton.hidden = !supported;
+  els.notificationButton.disabled = state.pushBusy || permission === "denied" || !state.serviceWorkerRegistration;
+  els.notificationButton.classList.toggle("is-on", subscribed);
+  const label = state.pushBusy
+    ? "Updating notifications"
+    : subscribed
+      ? "Turn off notifications"
+      : permission === "denied"
+        ? "Notifications blocked"
+        : "Turn on notifications";
+  els.notificationButton.setAttribute("aria-label", label);
+  els.notificationButton.title = label;
+}
+
+function openInitialPanel() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("openChat") === "1") setChatOpen(true, { syncUrl: false });
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = `${value}${padding}`.replace(/-/g, "+").replace(/_/g, "/");
+  const raw = window.atob(base64);
+  return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
 }
 
 async function initChat() {
@@ -365,13 +607,16 @@ function connectChatStream() {
   });
 }
 
-function setChatOpen(isOpen) {
+function setChatOpen(isOpen, { syncUrl = true, feedback = false } = {}) {
+  if (feedback && Boolean(isOpen) !== state.chatOpen) haptic("select");
   state.chatOpen = Boolean(isOpen);
   els.chatPanel.hidden = !state.chatOpen;
   els.chatPanel.classList.toggle("is-open", state.chatOpen);
+  document.body.classList.toggle("chat-view-active", state.chatOpen);
   els.chatPanel.setAttribute("aria-hidden", String(!state.chatOpen));
   els.chatToggle.setAttribute("aria-expanded", String(state.chatOpen));
   els.chatToggle.setAttribute("aria-label", state.chatOpen ? "Close chat" : "Open chat");
+  if (syncUrl) syncChatUrl(state.chatOpen);
   if (state.chatOpen) {
     state.chatUnread = 0;
     window.setTimeout(() => {
@@ -382,11 +627,26 @@ function setChatOpen(isOpen) {
   updateChatChrome();
 }
 
+function syncChatUrl(isOpen) {
+  const url = new URL(window.location.href);
+  const hasOpenChat = url.searchParams.get("openChat") === "1";
+  if (isOpen) {
+    if (hasOpenChat) return;
+    url.searchParams.set("openChat", "1");
+    window.history.pushState({ chatOpen: true }, "", url);
+    return;
+  }
+  if (!hasOpenChat) return;
+  url.searchParams.delete("openChat");
+  window.history.replaceState({ chatOpen: false }, "", url);
+}
+
 async function sendChatMessage(event) {
   event.preventDefault();
   const text = els.chatInput.value.trim();
   if (!text || state.chatSending) return;
 
+  haptic("tap");
   state.chatSending = true;
   els.chatSend.disabled = true;
   try {
@@ -397,6 +657,7 @@ async function sendChatMessage(event) {
     });
     els.chatInput.value = "";
     if (response.message) mergeChatMessage(response.message);
+    haptic("success");
   } catch (error) {
     showError(error);
   } finally {
@@ -432,7 +693,7 @@ function normalizeChatMessage(message) {
     : new Date().toISOString();
   return {
     id: String(message.id || `${Date.now()}`),
-    author: String(message.author || "Konner").trim() || "Konner",
+    author: String(message.author || "CarPostClub").trim() || "CarPostClub",
     text,
     createdAt,
   };
@@ -443,6 +704,8 @@ function renderChatMessages({ scrollToEnd = false } = {}) {
   els.chatMessages.replaceChildren(...state.chatMessages.map((message) => {
     const item = document.createElement("article");
     item.className = "chat-message";
+    item.classList.toggle("is-own", isOwnChatMessage(message));
+    item.style.setProperty("--chat-user-color", chatColorForAuthor(message.author));
 
     const meta = document.createElement("div");
     meta.className = "chat-message-meta";
@@ -480,6 +743,39 @@ function isChatScrolledToBottom() {
 
 function scrollChatToEnd() {
   els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
+}
+
+function isOwnChatMessage(message) {
+  const author = normalizeChatIdentity(message?.author);
+  if (!author || !state.currentUser) return false;
+  return [
+    state.currentUser.displayName,
+    state.currentUser.username,
+  ].some((value) => normalizeChatIdentity(value) === author);
+}
+
+function normalizeChatIdentity(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function chatColorForAuthor(author) {
+  const palette = [
+    "#0b6ec5",
+    "#f35815",
+    "#22a652",
+    "#8f3ffc",
+    "#b77900",
+    "#d61f69",
+    "#007c73",
+    "#5d6b00",
+  ];
+  let hash = 0;
+  for (const char of String(author || "CarPostClub").toLowerCase()) {
+    hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  }
+  return palette[hash % palette.length];
 }
 
 async function loadInventoryFilters() {
@@ -521,9 +817,18 @@ function renderFilterOptions() {
   els.manualDealershipSelect.value = state.selectedDealershipId;
 }
 
-function setManualCarFormOpen(isOpen) {
+function setManualCarFormOpen(isOpen, { feedback = false } = {}) {
+  if (feedback && Boolean(isOpen) !== state.manualFormOpen) haptic("select");
   state.manualFormOpen = Boolean(isOpen);
   els.manualCarForm.hidden = !state.manualFormOpen;
+  els.pickerPanel.classList.toggle("is-manual-mode", state.manualFormOpen);
+  els.addManualCarButton.classList.toggle("is-active", state.manualFormOpen);
+  els.oregansSourceButton.classList.toggle("is-active", !state.manualFormOpen);
+  els.addManualCarButton.setAttribute("aria-pressed", String(state.manualFormOpen));
+  els.oregansSourceButton.setAttribute("aria-pressed", String(!state.manualFormOpen));
+  els.pickerSubhead.textContent = state.manualFormOpen
+    ? "Enter the vehicle details before uploading media."
+    : "Choose from O'Regan's inventory.";
   if (!state.manualFormOpen) {
     els.manualCarForm.reset();
     return;
@@ -553,6 +858,7 @@ async function createManualCar(event) {
     setManualCarFormOpen(false);
     renderFilterOptions();
     await loadCars({ keepSelectedCar: true, forceAlbumRefresh: true });
+    haptic("success");
     showStatus(`Added ${car.stockNumber || car.title}.`);
   } finally {
     submitButton.disabled = false;
@@ -775,6 +1081,7 @@ async function copyMarketplaceDraft() {
   const draft = state.marketplaceDraft;
   if (!draft?.copyText) return;
   await navigator.clipboard.writeText(draft.copyText);
+  haptic("success");
   showStatus("Marketplace draft copied.");
 }
 
@@ -794,7 +1101,8 @@ function renderGallery() {
     const card = fragment.querySelector(".photo-card");
     const frame = fragment.querySelector(".media-frame");
     const title = fragment.querySelector("strong");
-    const meta = fragment.querySelector("span");
+    const details = fragment.querySelector(".media-details");
+    const uploader = fragment.querySelector(".media-uploader");
     const downloadButton = fragment.querySelector("[data-action='download']");
     const deleteButton = fragment.querySelector("[data-action='delete']");
     const isVideo = isVideoMedia(photo);
@@ -829,8 +1137,13 @@ function renderGallery() {
     badge.className = "media-kind";
     badge.textContent = isVideo ? "Video" : "Photo";
     frame.append(badge);
+    const uploaderBadge = document.createElement("span");
+    uploaderBadge.className = "media-uploader-badge";
+    uploaderBadge.textContent = `By ${photoUploaderLabel(photo)}`;
+    frame.append(uploaderBadge);
     title.textContent = photo.originalName;
-    meta.textContent = `${isVideo ? "Video" : "Photo"} · ${formatBytes(photo.bytes)} · ${formatDate(photo.uploadedAt)}`;
+    details.textContent = `${isVideo ? "Video" : "Photo"} · ${formatBytes(photo.bytes)} · ${formatDate(photo.uploadedAt)}`;
+    uploader.textContent = `Uploaded by ${photoUploaderLabel(photo)}`;
     downloadButton.href = photo.downloadUrl || `${photo.url}?download=1`;
     downloadButton.download = photo.originalName || photo.filename;
     downloadButton.setAttribute("aria-label", `Download ${isVideo ? "video" : "photo"} ${photo.originalName}`);
@@ -863,6 +1176,11 @@ function renderGallerySummary() {
   const count = state.photos.length;
   els.gallerySummary.querySelector("strong").textContent = `${count} saved ${plural(count, "asset")}`;
   els.gallerySummary.querySelector("span").textContent = "Expand this media folder to load thumbnails and previews.";
+}
+
+function photoUploaderLabel(photo) {
+  const uploader = photo?.uploadedBy;
+  return uploader?.displayName || uploader?.username || "unknown user";
 }
 
 function setGalleryExpanded(isExpanded) {
@@ -898,6 +1216,7 @@ async function uploadFiles(files) {
   const mediaFiles = files.filter((file) => isMediaLike(file));
   if (!car || !mediaFiles.length || state.uploading) return;
 
+  haptic("start");
   const form = new FormData();
   for (const [key, value] of Object.entries(carRequestPayload(car))) {
     form.append(key, value);
@@ -922,10 +1241,12 @@ async function uploadFiles(files) {
     renderGallery();
     uploadSucceeded = true;
     triggerUploadConfetti();
+    haptic("success");
     showStatus(`Uploaded ${response.count} ${plural(response.count, "file")} to ${car.stockNumber || carInventoryKey(car)}.`);
   } catch (error) {
     state.failedUploadFiles = mediaFiles;
     state.failedUploadMessage = error instanceof Error ? error.message : String(error);
+    haptic("error");
     showError(error);
   } finally {
     state.uploading = false;
@@ -971,6 +1292,7 @@ function uploadForm(form) {
 }
 
 async function deletePhoto(photo, card) {
+  haptic("warning");
   const confirmed = window.confirm(`Are you sure you want to delete ${photo.originalName}? This cannot be undone.`);
   if (!confirmed) return;
 
@@ -981,6 +1303,7 @@ async function deletePhoto(photo, card) {
     });
     await loadSelectedCarAlbum({ force: true });
     renderGallery();
+    haptic("success");
   } catch (error) {
     card.classList.remove("is-removing");
     showError(error);
@@ -1005,6 +1328,7 @@ async function deleteAllPhotos() {
     state.photos = [];
     await loadSelectedCarAlbum({ force: true });
     renderGallery();
+    haptic("success");
     showStatus(`Deleted ${response.deleted ?? count} media ${plural(response.deleted ?? count, "asset")}.`);
   } catch (error) {
     renderGalleryActions();
@@ -1132,14 +1456,14 @@ function carRequestPayload(car = selectedCar()) {
 }
 
 function persistSelection() {
-  localStorage.setItem("konner.selectedDealershipId", state.selectedDealershipId);
-  localStorage.setItem("konner.selectedInventoryTypeId", state.selectedInventoryTypeId);
-  if (state.selectedMake) localStorage.setItem("konner.selectedMake", state.selectedMake);
-  else localStorage.removeItem("konner.selectedMake");
-  if (state.selectedModel) localStorage.setItem("konner.selectedModel", state.selectedModel);
-  else localStorage.removeItem("konner.selectedModel");
-  if (state.selectedVin) localStorage.setItem("konner.selectedVin", state.selectedVin);
-  else localStorage.removeItem("konner.selectedVin");
+  localStorage.setItem("carpostclub.selectedDealershipId", state.selectedDealershipId);
+  localStorage.setItem("carpostclub.selectedInventoryTypeId", state.selectedInventoryTypeId);
+  if (state.selectedMake) localStorage.setItem("carpostclub.selectedMake", state.selectedMake);
+  else localStorage.removeItem("carpostclub.selectedMake");
+  if (state.selectedModel) localStorage.setItem("carpostclub.selectedModel", state.selectedModel);
+  else localStorage.removeItem("carpostclub.selectedModel");
+  if (state.selectedVin) localStorage.setItem("carpostclub.selectedVin", state.selectedVin);
+  else localStorage.removeItem("carpostclub.selectedVin");
 }
 
 function snapshotFiles(fileList) {
@@ -1203,6 +1527,111 @@ function resetUploadCelebration() {
   els.uploadProgressShell.classList.remove("is-celebrating");
 }
 
+function bindHapticSurfaceFeedback() {
+  document.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "mouse") return;
+    const target = event.target.closest?.(hapticSelector);
+    if (!target) return;
+    pulseHapticSurface(target);
+  }, { passive: true });
+
+  for (const eventName of ["pointerup", "pointercancel", "pointerleave", "blur"]) {
+    document.addEventListener(eventName, clearHapticSurfaceFeedback, true);
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) clearHapticSurfaceFeedback();
+  });
+}
+
+function pulseHapticSurface(target = null) {
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return;
+
+  document.body.classList.add("is-haptic-pulse");
+  if (target?.classList) target.classList.add("is-haptic-pressing");
+
+  window.clearTimeout(hapticCssTimer);
+  hapticCssTimer = window.setTimeout(clearHapticSurfaceFeedback, hapticCssResetMs);
+}
+
+function clearHapticSurfaceFeedback() {
+  window.clearTimeout(hapticCssTimer);
+  hapticCssTimer = 0;
+  document.body.classList.remove("is-haptic-pulse");
+  document.querySelectorAll(".is-haptic-pressing").forEach((target) => {
+    target.classList.remove("is-haptic-pressing");
+  });
+}
+
+function isStandalonePwa() {
+  return Boolean(
+    window.matchMedia?.("(display-mode: standalone)")?.matches
+    || window.navigator.standalone === true
+  );
+}
+
+function nativeHaptic(kind) {
+  const haptics = window.Capacitor?.Plugins?.Haptics;
+  const notificationType = hapticNotificationTypes[kind];
+
+  try {
+    if (haptics) {
+      if (notificationType && typeof haptics.notification === "function") {
+        settleHaptic(haptics.notification({ type: notificationType }));
+        return true;
+      }
+
+      if (kind === "select" && typeof haptics.selectionChanged === "function") {
+        settleHaptic(haptics.selectionChanged());
+        return true;
+      }
+
+      if (typeof haptics.impact === "function") {
+        settleHaptic(haptics.impact({ style: hapticNativeStyles[kind] || hapticNativeStyles.tap }));
+        return true;
+      }
+    }
+
+    const webkitHaptics = window.webkit?.messageHandlers?.carpostclubHaptics
+      || window.webkit?.messageHandlers?.haptics;
+    if (webkitHaptics?.postMessage) {
+      webkitHaptics.postMessage({
+        kind,
+        standalone: isStandalonePwa(),
+        style: hapticNativeStyles[kind] || hapticNativeStyles.tap,
+      });
+      return true;
+    }
+  } catch {
+    // Native haptic bridges vary by wrapper and should never break the PWA.
+  }
+
+  return false;
+}
+
+function settleHaptic(request) {
+  if (request && typeof request.catch === "function") void request.catch(() => {});
+}
+
+function haptic(kind = "tap", options = {}) {
+  const pattern = hapticPatterns[kind] || hapticPatterns.tap;
+
+  const now = Date.now();
+  if (now - lastHapticAt < hapticThrottleMs) return;
+  lastHapticAt = now;
+
+  pulseHapticSurface(options.target || null);
+  nativeHaptic(kind);
+
+  if (!("vibrate" in navigator)) return;
+
+  try {
+    navigator.vibrate(pattern);
+  } catch {
+    // Haptics are a best-effort mobile PWA enhancement.
+  }
+}
+
 function showStatus(message) {
   els.statusBar.hidden = false;
   els.statusBar.className = "status-bar";
@@ -1214,6 +1643,7 @@ function showStatus(message) {
 }
 
 function showError(error) {
+  haptic("error");
   els.statusBar.hidden = false;
   els.statusBar.className = "status-bar is-error";
   els.statusBar.textContent = error instanceof Error ? error.message : String(error);

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="CarPostClub car media logo">
+  <rect width="1024" height="1024" fill="#fafafa"/>
+  <path d="M0 128h1024M0 256h1024M0 384h1024M0 512h1024M0 640h1024M0 768h1024M0 896h1024M128 0v1024M256 0v1024M384 0v1024M512 0v1024M640 0v1024M768 0v1024M896 0v1024" stroke="#d8d8d8" stroke-width="10"/>
+  <rect x="116" y="116" width="792" height="792" rx="96" fill="#111111"/>
+  <path d="M196 490h468l-72-142H336l-96 116c-20 6-36 16-44 26Z" fill="#fafafa"/>
+  <path d="M224 548h428v76H214c-26 0-46-20-46-46v-60l56 30Z" fill="#fafafa"/>
+  <path d="M314 442h276" stroke="#111111" stroke-width="34"/>
+  <path d="M212 548l96 18-28 46h-80l-20-44c6-10 16-18 32-20Z" fill="#111111"/>
+  <rect x="450" y="444" width="376" height="294" rx="44" fill="#fafafa"/>
+  <rect x="496" y="488" width="284" height="150" rx="24" fill="#f35815"/>
+  <path d="M496 638 590 546l78 72 50-48 62 68" fill="#fafafa"/>
+  <circle cx="784" cy="724" r="92" fill="#f35815" stroke="#fafafa" stroke-width="32"/>
+  <path d="M784 786V650M720 714l64-64 64 64" stroke="#fafafa" stroke-width="44" stroke-linecap="square" stroke-linejoin="miter"/>
+</svg>

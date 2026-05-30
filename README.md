@@ -1,6 +1,6 @@
 # CarPostClub
 
-Password-gated vehicle media intake and Facebook Marketplace draft tool for KonnerCars.
+Password-gated vehicle media intake, team chat, upload history, and listing copy tool.
 
 ## What This App Does
 
@@ -11,6 +11,7 @@ Password-gated vehicle media intake and Facebook Marketplace draft tool for Konn
 - Privately assigns one Marketplace description to each approved user.
 - Supports account requests, admin approvals, user password changes, and admin password resets.
 - Includes a small team chat panel.
+- Installs as a PWA with offline fallback and opt-in push notifications for chat and upload activity.
 
 ## Local Setup
 
@@ -28,6 +29,9 @@ Use `.env.example` as the starting point. Do not commit real secrets.
 
 `OPENAI_API_KEY` is optional for local testing. Without it, Marketplace copy falls back to local template variants.
 
+Push notifications work on HTTPS deployments and localhost. If `CARPOSTCLUB_PUSH_VAPID_PUBLIC_KEY` and
+`CARPOSTCLUB_PUSH_VAPID_PRIVATE_KEY` are not set, the server generates stable keys in the app data directory.
+
 ## Useful Commands
 
 ```bash
@@ -38,4 +42,4 @@ docker compose up --build
 
 ## Repository Scope
 
-This repository contains only the active frontend/backend app code, tests, Docker files, and build/smoke scripts needed for the deployed KonnerCars app.
+This repository contains only the active frontend/backend app code, tests, Docker files, and build/smoke scripts needed for CarPostClub.

@@ -11,7 +11,7 @@ const checks = [];
 
 await checkJson("/healthz", {}, (body) => {
   assert(body.ok === true, "healthz ok flag is false");
-  assert(body.service === "konner-upload", "healthz service mismatch");
+  assert(body.service === "carpostclub", "healthz service mismatch");
   assert(body.mode === "photo-albums", "healthz mode mismatch");
   if (args.requireReleaseId) {
     assert(body.release?.releaseId === args.requireReleaseId, `healthz release ${body.release?.releaseId || "missing"} did not match ${args.requireReleaseId}`);
@@ -27,7 +27,7 @@ await checkJson("/api/version", {}, (body) => {
 });
 
 await checkText("/", authHeaders, (body) => {
-  assert(body.includes("Konner Photos"), "home page did not contain expected title");
+  assert(body.includes("CarPostClub"), "home page did not contain expected title");
   assert(body.includes("/app.js"), "home page did not reference app.js");
   assert(body.includes("dealershipSelect"), "home page did not include dealership selection");
   assert(body.includes("carSelect"), "home page did not include car selection");
@@ -89,13 +89,13 @@ async function request(pathname, headers) {
 }
 
 function buildAuthHeaders() {
-  const authEnabled = Boolean(process.env.KONNER_AUTH_PASSWORD_HASH || process.env.KONNER_AUTH_PASSWORD);
+  const authEnabled = Boolean(process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH || process.env.CARPOSTCLUB_AUTH_PASSWORD || process.env.KONNER_AUTH_PASSWORD_HASH || process.env.KONNER_AUTH_PASSWORD);
   if (!authEnabled) return {};
 
-  const secret = process.env.KONNER_AUTH_SESSION_SECRET || process.env.AUTH_SESSION_SECRET || fallbackSessionSecret();
-  const username = process.env.KONNER_AUTH_USERNAME || "konner";
-  const cookieName = process.env.KONNER_AUTH_COOKIE_NAME || "konner_upload_session";
-  const maxAgeDays = positiveInteger(process.env.KONNER_AUTH_SESSION_DAYS, 365);
+  const secret = process.env.CARPOSTCLUB_AUTH_SESSION_SECRET || process.env.KONNER_AUTH_SESSION_SECRET || process.env.AUTH_SESSION_SECRET || fallbackSessionSecret();
+  const username = process.env.CARPOSTCLUB_AUTH_USERNAME || process.env.KONNER_AUTH_USERNAME || "admin";
+  const cookieName = process.env.CARPOSTCLUB_AUTH_COOKIE_NAME || process.env.KONNER_AUTH_COOKIE_NAME || "carpostclub_session";
+  const maxAgeDays = positiveInteger(process.env.CARPOSTCLUB_AUTH_SESSION_DAYS || process.env.KONNER_AUTH_SESSION_DAYS, 365);
   const payload = {
     v: 1,
     u: username,
@@ -111,7 +111,7 @@ function buildAuthHeaders() {
 
 function fallbackSessionSecret() {
   return crypto.createHash("sha256")
-    .update(process.env.KONNER_AUTH_PASSWORD_HASH || process.env.KONNER_AUTH_PASSWORD || "konner-upload")
+    .update(process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH || process.env.CARPOSTCLUB_AUTH_PASSWORD || process.env.KONNER_AUTH_PASSWORD_HASH || process.env.KONNER_AUTH_PASSWORD || "carpostclub")
     .digest("hex");
 }
 

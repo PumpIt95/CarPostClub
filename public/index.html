@@ -4,27 +4,55 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#fafafa">
+  <meta name="application-name" content="CarPostClub">
+  <meta name="description" content="Vehicle media intake, team chat, upload history, and listing copy for fast-moving inventory teams.">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="Konner Photos">
-  <title>Konner Photos</title>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="CarPostClub">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="CarPostClub">
+  <meta property="og:description" content="Vehicle media intake, team chat, upload history, and listing copy for inventory teams.">
+  <meta property="og:image" content="/share-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="CarPostClub">
+  <meta name="twitter:description" content="Vehicle media intake, team chat, upload history, and listing copy for inventory teams.">
+  <meta name="twitter:image" content="/share-card.png">
+  <title>CarPostClub</title>
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/styles.css?v=20260530-confetti">
+  <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
+  <link rel="stylesheet" href="/styles.css?v=20260530-haptics">
 </head>
 <body>
   <main class="app-shell">
     <header class="app-header">
       <div class="brand-block">
-        <span class="brand-mark" aria-hidden="true">K</span>
+        <span class="brand-mark" aria-hidden="true">
+          <img src="/icons/carpostclub-icon-192.png" alt="">
+        </span>
         <div>
-          <p class="eyebrow">Konner / Media</p>
+          <p class="eyebrow">CarPostClub / Media</p>
           <h1>Vehicle media intake</h1>
         </div>
       </div>
       <div class="header-actions">
+        <button id="installButton" class="icon-button subtle" type="button" aria-label="Install app" title="Install app" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v12"/>
+            <path d="m7 10 5 5 5-5"/>
+            <path d="M5 21h14"/>
+          </svg>
+        </button>
+        <button id="notificationButton" class="icon-button subtle notification-toggle" type="button" aria-label="Turn on notifications" title="Turn on notifications" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/>
+            <path d="M13.7 21a2 2 0 0 1-3.4 0"/>
+          </svg>
+        </button>
         <a class="icon-button subtle" href="/account/password" aria-label="Change password" title="Change password">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="8" cy="15" r="4"/>
@@ -67,15 +95,21 @@
           <p id="pickerSubhead">Choose from O'Regan's inventory.</p>
         </div>
         <div class="inventory-actions">
-          <button id="addManualCarButton" class="icon-text-button subtle" type="button">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 5v14"/>
-              <path d="M5 12h14"/>
-            </svg>
-            <span>Add car</span>
-          </button>
-          <a id="sourceLink" class="source-link" href="https://www.oregans.com/inventory/" target="_blank" rel="noreferrer">Open inventory</a>
+          <a id="sourceLink" class="source-link" href="https://www.oregans.com/inventory/" target="_blank" rel="noreferrer">Open Inventory on oregans.com</a>
         </div>
+      </div>
+
+      <div class="source-mode-switch" role="group" aria-label="Inventory source path">
+        <button id="oregansSourceButton" class="source-mode-card is-active" type="button" aria-pressed="true">
+          <span class="source-mode-kicker">Already listed</span>
+          <strong>O'Regan's inventory</strong>
+          <span>Pick lot, make, model, then inventory.</span>
+        </button>
+        <button id="addManualCarButton" class="source-mode-card" type="button" aria-pressed="false">
+          <span class="source-mode-kicker">Not listed yet</span>
+          <strong>Enter full details</strong>
+          <span>Type year, price, km, colors, and specs.</span>
+        </button>
       </div>
 
       <div class="picker-grid">
@@ -114,7 +148,7 @@
 
       <form id="manualCarForm" class="manual-car-form" hidden>
         <div class="manual-form-heading">
-          <h3>Add car not on inventory</h3>
+          <h3>Enter full vehicle details</h3>
           <button id="cancelManualCarButton" class="icon-button subtle" type="button" aria-label="Cancel manual car" title="Cancel">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M18 6 6 18"/>
@@ -394,11 +428,12 @@
   <section id="chatPanel" class="chat-panel" aria-label="Team chat" aria-hidden="true" hidden>
     <header class="chat-header">
       <h2>Chat</h2>
-      <button id="chatClose" class="icon-button subtle" type="button" aria-label="Close chat" title="Close chat">
+      <button id="chatClose" class="chat-back-button icon-text-button subtle" type="button" aria-label="Back to dashboard" title="Back to dashboard">
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M18 6 6 18"/>
-          <path d="m6 6 12 12"/>
+          <path d="M19 12H5"/>
+          <path d="m12 19-7-7 7-7"/>
         </svg>
+        <span>Dashboard</span>
       </button>
     </header>
     <div id="chatMessages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions"></div>
@@ -420,7 +455,8 @@
       <div class="media-frame"></div>
       <div class="photo-meta">
         <strong></strong>
-        <span></span>
+        <span class="media-details"></span>
+        <span class="media-uploader"></span>
       </div>
       <div class="photo-actions">
         <a class="icon-button subtle" data-action="download" href="#" aria-label="Download photo" title="Download photo">
@@ -443,6 +479,6 @@
     </article>
   </template>
 
-  <script src="/app.js?v=20260530-confetti" type="module"></script>
+  <script src="/app.js?v=20260530-haptics" type="module"></script>
 </body>
 </html>
