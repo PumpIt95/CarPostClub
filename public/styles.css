@@ -81,10 +81,12 @@ button {
 }
 
 button:disabled,
+input:disabled,
 select:disabled {
   cursor: not-allowed;
 }
 
+input:disabled,
 select:disabled {
   opacity: 0.48;
 }
@@ -1407,6 +1409,17 @@ textarea:focus {
   background: var(--color-flame-orange);
 }
 
+.login-form input:disabled,
+.login-form button:disabled {
+  border-color: var(--color-stone-gray);
+  color: var(--color-smoke-gray);
+  background: #f2f2f2;
+}
+
+.login-form button:disabled {
+  opacity: 0.62;
+}
+
 .auth-note,
 .auth-actions {
   margin-top: var(--spacing-16);
@@ -1517,11 +1530,15 @@ textarea:focus {
 
 @media (min-width: 920px) {
   .picker-grid {
-    grid-template-columns: minmax(180px, 0.55fr) minmax(260px, 0.95fr) minmax(420px, 1.5fr);
+    grid-template-columns:
+      minmax(160px, 0.65fr)
+      minmax(260px, 1fr)
+      minmax(220px, 0.85fr)
+      minmax(220px, 0.85fr);
   }
 
   .field-wide {
-    grid-column: auto;
+    grid-column: 1 / -1;
   }
 }
 

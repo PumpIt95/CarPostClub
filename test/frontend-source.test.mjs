@@ -68,6 +68,7 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /data-action="delete"/);
   assert.match(html, /class="media-uploader"/);
   assert.match(html, /accept="image\/\*,video\/\*/);
+  assert.match(html, /id="cameraInput"[^>]*accept="image\/\*,\.heic,\.heif"/);
   assert.match(html, /accept="video\/\*/);
   assert.match(html, /id="uploadProgressShell"/);
   assert.match(html, /id="uploadRecovery"/);
@@ -77,8 +78,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /class="progress-confetti"/);
   assert.match(html, /id="galleryToggleButton"/);
   assert.match(html, /id="gallerySummary"/);
-  assert.match(html, /\/app\.js\?v=20260530-haptics/);
-  assert.match(html, /\/styles\.css\?v=20260530-haptics/);
+  assert.match(html, /\/app\.js\?v=20260530-heic-polish/);
+  assert.match(html, /\/styles\.css\?v=20260530-heic-polish/);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
 });
@@ -109,6 +110,7 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /renderVehicleFilterOptions/);
   assert.match(source, /Choose a make first/);
   assert.match(source, /els\.videoButton\.addEventListener\("click"/);
+  assert.match(source, /heic\|heif/);
   assert.match(source, /isVideoMedia/);
   assert.match(source, /video\.preload = "metadata"/);
   assert.match(source, /els\.dropZone\.disabled = !unlocked/);
@@ -177,7 +179,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v7/);
+  assert.match(serviceWorker, /carpostclub-pwa-v8/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.doesNotMatch(serviceWorker, /Konner Photos/);
@@ -277,6 +279,8 @@ test("inventory source paths visually separate O'Regan's cars from manual detail
 
   assert.match(styles, /\.source-mode-switch/);
   assert.match(styles, /\.source-mode-card\.is-active/);
+  assert.match(styles, /@media \(min-width: 920px\)[\s\S]*\.picker-grid\s*\{[\s\S]*grid-template-columns:[\s\S]*minmax\(160px, 0\.65fr\)[\s\S]*minmax\(220px, 0\.85fr\)/);
+  assert.match(styles, /@media \(min-width: 920px\)[\s\S]*\.field-wide\s*\{[^}]*grid-column: 1 \/ -1;/);
   assert.match(styles, /background: #eef6ff/);
   assert.match(styles, /background: #fff4ef/);
   assert.match(styles, /border: 1px solid var\(--color-flame-orange\)/);
@@ -289,4 +293,13 @@ test("gallery media cards show the uploading user", async () => {
   assert.match(styles, /\.photo-meta \.media-uploader/);
   assert.match(styles, /\.media-uploader-badge/);
   assert.match(styles, /font-weight: var\(--font-weight-semibold\)/);
+});
+
+test("disabled auth controls are visibly unavailable", async () => {
+  const styles = await fs.readFile(fileURLToPath(new URL("../public/styles.css", import.meta.url)), "utf8");
+
+  assert.match(styles, /input:disabled/);
+  assert.match(styles, /\.login-form input:disabled/);
+  assert.match(styles, /\.login-form button:disabled/);
+  assert.match(styles, /cursor: not-allowed/);
 });

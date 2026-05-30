@@ -16,6 +16,10 @@ const NEW_DISPLAY_NAME = "Photo Tech";
 const NEW_PASSWORD = "new-password-123";
 const CHANGED_PASSWORD = "changed-password-456";
 const RESET_PASSWORD = "reset-password-789";
+const TINY_HEIC_BASE64 = [
+  "AAAAJGZ0eXBoZWljAAAAAG1pZjFNaVBybWlhZk1pSEJoZWljAAABw21ldGEAAAAAAAAAIWhkbHIA",
+  "AAAAAAAAAHBpY3QAAAAAAAAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAAADnBpdG0AAAAAAAEAAAA4aWluZgAAAAAAAgAAABVpbmZlAgAAAAABAABodmMxAAAAABVpbmZlAgAAAQACAABFeGlmAAAAABppcmVmAAAAAAAAAA5jZHNjAAIAAQABAAAA5mlwcnAAAADFaXBjbwAAABNjb2xybmNseAACAAIABoAAAAAMY2xsaQDLAEAAAAAUaXNwZQAAAAAAAAAIAAAACAAAAAlpcm90AAAAABBwaXhpAAAAAAMICAgAAABxaHZjQwEDcAAAALAAAAAAAB7wAPz9+PgAAAsDoAABABdAAQwB//8DcAAAAwCwAAADAAADAB5wJKEAAQAjQgEBA3AAAAMAsAAAAwAAAwAeoBQgQcCbDuIe5FlU3AgIGAKiAAEACUQBwGFyyEBTJAAAABlpcG1hAAAAAAAAAAEAAQaBAgMFhoQAAAAsaWxvYwAAAABEAAACAAEAAAABAAACQwAAADsAAgAAAAEAAAH3AAAATAAAAAFtZGF0AAAAAAAAAJcAAAAGRXhpZgAATU0AKgAAAAgAAwEaAAUAAAABAAAAMgEbAAUAAAABAAAAOgEoAAMAAAABAAIAAAAAAAAAAAAZAAAAAQAAABkAAAABAAAANygBr6LyRoF8/8X//+Rr7L7dzfVf3nyPtAIv94VPdMsmf6Ag+cI1PkOyhr/JHgi9hX4RbWMmyK4=",
+].join("");
 const TEST_CAR = {
   dealershipId: "15",
   inventoryTypeId: "2",
@@ -142,7 +146,9 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       headers: { Cookie: approvedCookie },
     });
     assert.equal(passwordPage.status, 200);
-    assert.match(await passwordPage.text(), /Change password/);
+    const passwordPageText = await passwordPage.text();
+    assert.match(passwordPageText, /Change password/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260530-heic-polish/);
 
     const wrongPasswordChange = await fetch(`${harness.baseUrl}/account/password`, {
       method: "POST",
@@ -317,13 +323,14 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       photos: [
         { filename: "front.jpg", type: "image/jpeg", body: jpegBytes("front") },
         { filename: "interior.png", type: "image/png", body: pngBytes("interior") },
+        { filename: "lot-tag.jpg", type: "image/heic", body: heicBytes() },
         { filename: "walkaround.mp4", type: "video/mp4", body: mp4Bytes("walkaround") },
       ],
     });
     assert.equal(uploaded.status, 201);
     assert.equal(uploaded.body.ok, true);
     assert.equal(uploaded.body.album.vehicle.vin, TEST_CAR.vin);
-    assert.equal(uploaded.body.count, 3);
+    assert.equal(uploaded.body.count, 4);
     assert.ok(uploaded.body.photos.every((photo) => photo.uploadedBy?.username === TEST_USERNAME));
     assert.ok(uploaded.body.photos.every((photo) => photo.uploadedBy?.displayName === TEST_USERNAME));
     assert.equal(uploaded.body.marketplaceGeneration.source, "template-upload");
@@ -358,7 +365,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       harness,
       `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
     );
-    assert.equal(afterUpload.photos.length, 3);
+    assert.equal(afterUpload.photos.length, 4);
 
     const firstPhoto = afterUpload.photos.find((photo) => photo.originalName === "front.jpg");
     assert.ok(firstPhoto);
@@ -384,6 +391,24 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(imageDownload.status, 200);
     assert.match(imageDownload.headers.get("content-disposition") || "", /attachment/);
     assert.match(imageDownload.headers.get("content-disposition") || "", /front\.jpg/);
+
+    const heicPhoto = afterUpload.photos.find((photo) => photo.originalName === "lot-tag.jpg");
+    assert.ok(heicPhoto);
+    assert.equal(heicPhoto.kind, "image");
+    assert.match(heicPhoto.filename, /\.heic$/);
+    assert.equal(heicPhoto.contentType, "image/heic");
+    const heicThumbnail = await fetch(`${harness.baseUrl}${heicPhoto.thumbnailUrl}`, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(heicThumbnail.status, 200);
+    assert.equal(heicThumbnail.headers.get("content-type"), "image/webp");
+    const heicDownload = await fetch(`${harness.baseUrl}${heicPhoto.downloadUrl}`, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(heicDownload.status, 200);
+    assert.equal(heicDownload.headers.get("content-type"), "image/heic");
+    assert.match(heicDownload.headers.get("content-disposition") || "", /lot-tag\.jpg/);
+    assert.deepEqual(Buffer.from(await heicDownload.arrayBuffer()), heicBytes());
 
     const firstVideo = afterUpload.photos.find((photo) => photo.originalName === "walkaround.mp4");
     assert.ok(firstVideo);
@@ -424,9 +449,9 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     const savedManualAlbum = albums.albums.find((album) => album.vehicle.inventoryKey === manualCreated.body.car.inventoryKey);
     assert.ok(testAlbum);
     assert.ok(savedManualAlbum);
-    assert.equal(testAlbum.photoCount, 2);
+    assert.equal(testAlbum.photoCount, 3);
     assert.equal(testAlbum.videoCount, 1);
-    assert.equal(testAlbum.mediaCount, 3);
+    assert.equal(testAlbum.mediaCount, 4);
 
     const albumDownload = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/download`, {
       headers: { Cookie: harness.cookie },
@@ -445,15 +470,15 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       harness,
       `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
     );
-    assert.equal(afterDelete.photos.length, 2);
-    assert.deepEqual(afterDelete.photos.map((photo) => photo.originalName).sort(), ["interior.png", "walkaround.mp4"]);
+    assert.equal(afterDelete.photos.length, 3);
+    assert.deepEqual(afterDelete.photos.map((photo) => photo.originalName).sort(), ["interior.png", "lot-tag.jpg", "walkaround.mp4"]);
 
     const deletedAll = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/media`, {
       method: "DELETE",
       headers: { Cookie: harness.cookie, Accept: "application/json" },
     });
     assert.equal(deletedAll.status, 200);
-    assert.equal((await deletedAll.json()).deleted, 2);
+    assert.equal((await deletedAll.json()).deleted, 3);
 
     const afterDeleteAll = await getJson(
       harness,
@@ -878,6 +903,10 @@ function pngBytes(label) {
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     Buffer.from(label),
   ]);
+}
+
+function heicBytes() {
+  return Buffer.from(TINY_HEIC_BASE64, "base64");
 }
 
 function mp4Bytes(label) {

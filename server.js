@@ -8,6 +8,7 @@ import { ZipArchive } from "archiver";
 import bcrypt from "bcryptjs";
 import dotenv from "dotenv";
 import express from "express";
+import heicConvert from "heic-convert";
 import multer from "multer";
 import OpenAI from "openai";
 import sharp from "sharp";
@@ -2111,8 +2112,11 @@ async function ensureImageThumbnail(albumId, filename, sourcePath, sourceStats) 
 
   await fs.mkdir(thumbnailsDirectory, { recursive: true });
   const tmpPath = path.join(thumbnailsDirectory, `${crypto.randomUUID()}.tmp.webp`);
+  let intermediatePath = "";
   try {
-    await sharp(sourcePath, { failOn: "none" })
+    const thumbnailSource = await readableImageSourceForThumbnail(sourcePath, filename, thumbnailsDirectory);
+    if (thumbnailSource !== sourcePath) intermediatePath = thumbnailSource;
+    await sharp(thumbnailSource, { failOn: "none" })
       .rotate()
       .resize({
         width: thumbnailMaxWidth,
@@ -2126,8 +2130,23 @@ async function ensureImageThumbnail(albumId, filename, sourcePath, sourceStats) 
   } catch (error) {
     await fs.unlink(tmpPath).catch(() => {});
     throw error;
+  } finally {
+    if (intermediatePath) await fs.unlink(intermediatePath).catch(() => {});
   }
   return destination;
+}
+
+async function readableImageSourceForThumbnail(sourcePath, filename, thumbnailsDirectory) {
+  if (!isHeicFilename(filename)) return sourcePath;
+
+  const jpegBuffer = await heicConvert({
+    buffer: await fs.readFile(sourcePath),
+    format: "JPEG",
+    quality: 0.86,
+  });
+  const tmpJpegPath = path.join(thumbnailsDirectory, `${crypto.randomUUID()}.tmp.jpg`);
+  await fs.writeFile(tmpJpegPath, jpegBuffer);
+  return tmpJpegPath;
 }
 
 function photoResponse(albumId, filename, details) {
@@ -2163,6 +2182,7 @@ function sendMediaFile(req, res, filePath, filename, stats, { downloadName = "" 
   const range = parseByteRange(req.headers.range, stats.size);
   if (downloadName) {
     res.attachment(downloadName);
+    res.setHeader("Content-Type", contentTypeFor(filename));
   } else {
     res.setHeader("Content-Type", contentTypeFor(filename));
   }
@@ -2854,6 +2874,11 @@ function isPhotoFilename(filename) {
   return imageExtensions.has(path.extname(String(filename || "")).toLowerCase());
 }
 
+function isHeicFilename(filename) {
+  const extension = path.extname(String(filename || "")).toLowerCase();
+  return extension === ".heic" || extension === ".heif";
+}
+
 function isVideoFilename(filename) {
   return videoExtensions.has(path.extname(String(filename || "")).toLowerCase());
 }
@@ -2871,6 +2896,9 @@ function mediaKindFor(filename, contentType = "") {
 function extensionFor(filename, mimetype) {
   const extension = path.extname(String(filename || "")).toLowerCase();
   const mime = String(mimetype || "").toLowerCase();
+  if (mime === "image/heic" || mime === "image/heic-sequence") return ".heic";
+  if (mime === "image/heif" || mime === "image/heif-sequence") return ".heif";
+  if (mime === "image/avif") return ".avif";
   const mimeKind = mime.startsWith("video/") ? "video" : mime.startsWith("image/") ? "image" : "";
   const extensionKind = isVideoFilename(filename) ? "video" : isPhotoFilename(filename) ? "image" : "";
   if (extensionKind && (!mimeKind || extensionKind === mimeKind)) return extension;
@@ -2879,9 +2907,6 @@ function extensionFor(filename, mimetype) {
   if (mime === "image/png") return ".png";
   if (mime === "image/webp") return ".webp";
   if (mime === "image/gif") return ".gif";
-  if (mime === "image/avif") return ".avif";
-  if (mime === "image/heic") return ".heic";
-  if (mime === "image/heif") return ".heif";
   if (mime === "video/mp4") return ".mp4";
   if (mime === "video/quicktime") return ".mov";
   if (mime === "video/webm") return ".webm";
@@ -3460,7 +3485,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)}</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20260530-heic-polish">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">
