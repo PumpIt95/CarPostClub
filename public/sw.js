@@ -1,6 +1,6 @@
 const APP_ICON = "/icons/carpostclub-icon-192.png";
 const APP_BADGE = "/icons/carpostclub-apple-touch-icon.png";
-const CACHE_VERSION = "carpostclub-pwa-v9";
+const CACHE_VERSION = "carpostclub-pwa-v10";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/offline.html",
@@ -131,12 +131,34 @@ async function networkFirstNavigation(request) {
 
 async function staleWhileRevalidate(request) {
   const cache = await caches.open(STATIC_CACHE);
+  const url = new URL(request.url);
+  if (url.search && isStaticAsset(url.pathname)) {
+    return await networkFirstVersionedStaticAsset(cache, request, url.pathname);
+  }
+
   const cached = await cachedStaticResponse(cache, request);
   const refresh = fetch(request).then((response) => {
     if (response.ok) cache.put(request, response.clone());
     return response;
   }).catch(() => null);
   return cached || await refresh || Response.error();
+}
+
+async function networkFirstVersionedStaticAsset(cache, request, pathname) {
+  const response = await fetch(request).then(async (networkResponse) => {
+    if (networkResponse.ok) {
+      await Promise.all([
+        cache.put(request, networkResponse.clone()),
+        cache.put(pathname, networkResponse.clone()),
+      ]).catch(() => {});
+    }
+    return networkResponse;
+  }).catch(() => null);
+
+  return response
+    || await cache.match(request)
+    || await cache.match(pathname)
+    || Response.error();
 }
 
 async function cachedStaticResponse(cache, request) {

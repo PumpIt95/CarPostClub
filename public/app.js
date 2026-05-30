@@ -1080,9 +1080,35 @@ function marketplaceSourceLabel(source) {
 async function copyMarketplaceDraft() {
   const draft = state.marketplaceDraft;
   if (!draft?.copyText) return;
-  await navigator.clipboard.writeText(draft.copyText);
+  await copyTextToClipboard(draft.copyText);
   haptic("success");
   showStatus("Marketplace draft copied.");
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through to the selection-based copy path for older PWA shells.
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.inset = "0 auto auto 0";
+  textarea.style.width = "1px";
+  textarea.style.height = "1px";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.focus();
+  textarea.select();
+  const copied = document.execCommand?.("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Copy failed. Select the Marketplace draft and copy it manually.");
 }
 
 function renderGallery() {
