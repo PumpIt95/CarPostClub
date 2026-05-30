@@ -148,7 +148,10 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(passwordPage.status, 200);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260530-upload-feedback/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260530-auth-pwa/);
+    assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
+    assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
+    assert.match(passwordPageText, /class="auth-brand"/);
 
     const wrongPasswordChange = await fetch(`${harness.baseUrl}/account/password`, {
       method: "POST",

@@ -9,6 +9,7 @@ const iconsRoot = fileURLToPath(new URL("../public/icons/", import.meta.url));
 const indexHtmlPath = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const manifestPath = fileURLToPath(new URL("../public/manifest.webmanifest", import.meta.url));
 const offlineHtmlPath = fileURLToPath(new URL("../public/offline.html", import.meta.url));
+const serverPath = fileURLToPath(new URL("../server.js", import.meta.url));
 const serviceWorkerPath = fileURLToPath(new URL("../public/sw.js", import.meta.url));
 const shareCardPath = fileURLToPath(new URL("../public/share-card.png", import.meta.url));
 const faviconPath = fileURLToPath(new URL("../public/favicon.png", import.meta.url));
@@ -78,8 +79,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /class="progress-confetti"/);
   assert.match(html, /id="galleryToggleButton"/);
   assert.match(html, /id="gallerySummary"/);
-  assert.match(html, /\/app\.js\?v=20260530-upload-feedback/);
-  assert.match(html, /\/styles\.css\?v=20260530-upload-feedback/);
+  assert.match(html, /\/app\.js\?v=20260530-auth-pwa/);
+  assert.match(html, /\/styles\.css\?v=20260530-auth-pwa/);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
 });
@@ -195,7 +196,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v11/);
+  assert.match(serviceWorker, /carpostclub-pwa-v12/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.doesNotMatch(serviceWorker, /Konner Photos/);
@@ -323,4 +324,21 @@ test("disabled auth controls are visibly unavailable", async () => {
   assert.match(styles, /\.login-form input:disabled/);
   assert.match(styles, /\.login-form button:disabled/);
   assert.match(styles, /cursor: not-allowed/);
+});
+
+test("auth pages expose PWA metadata and brand assets", async () => {
+  const source = await fs.readFile(serverPath, "utf8");
+  const styles = await fs.readFile(fileURLToPath(new URL("../public/styles.css", import.meta.url)), "utf8");
+
+  assert.match(source, /meta name="theme-color" content="#fafafa"/);
+  assert.match(source, /meta name="mobile-web-app-capable" content="yes"/);
+  assert.match(source, /meta name="apple-mobile-web-app-capable" content="yes"/);
+  assert.match(source, /link rel="manifest" href="\/manifest\.webmanifest"/);
+  assert.match(source, /link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png"/);
+  assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
+  assert.match(source, /<div class="auth-brand">/);
+  assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
+  assert.match(source, /\/styles\.css\?v=20260530-auth-pwa/);
+  assert.match(styles, /\.auth-brand/);
+  assert.match(styles, /\.auth-brand \.brand-mark/);
 });

@@ -3483,14 +3483,31 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fafafa">
+  <meta name="application-name" content="${escapeHtml(appName)}">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="${escapeHtml(appName)}">
   <title>${escapeHtml(title)}</title>
-  <link rel="stylesheet" href="/styles.css?v=20260530-upload-feedback">
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
+  <link rel="stylesheet" href="/styles.css?v=20260530-auth-pwa">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">
-    <p class="eyebrow">${escapeHtml(appName)}</p>
-    <h1>${escapeHtml(heading)}</h1>
+    <div class="auth-brand">
+      <span class="brand-mark" aria-hidden="true">
+        <img src="/icons/carpostclub-icon-192.png" alt="">
+      </span>
+      <div>
+        <p class="eyebrow">${escapeHtml(appName)}</p>
+        <h1>${escapeHtml(heading)}</h1>
+      </div>
+    </div>
     ${error ? `<p class="form-error">${escapeHtml(error)}</p>` : ""}
     ${success ? `<p class="form-success">${escapeHtml(success)}</p>` : ""}
     ${body}

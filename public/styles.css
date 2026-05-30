@@ -1347,6 +1347,26 @@ textarea:focus {
   width: min(720px, 100%);
 }
 
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-16);
+}
+
+.auth-brand .brand-mark {
+  flex: 0 0 56px;
+  width: 56px;
+  height: 56px;
+}
+
+.auth-brand > div {
+  min-width: 0;
+}
+
+.auth-brand .eyebrow {
+  margin-bottom: 2px;
+}
+
 .offline-body {
   display: grid;
   min-height: 100vh;
