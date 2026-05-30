@@ -2505,6 +2505,7 @@ async function upsertPushSubscription(subscription, user, userAgent) {
       expirationTime: subscription.expirationTime,
       username,
       displayName: publicUser.displayName || username,
+      passwordVersion: normalizeSpace(user?.passwordVersion).slice(0, 120),
       userAgent: normalizeSpace(userAgent).slice(0, 240),
       createdAt: existing?.createdAt || now,
       updatedAt: now,
@@ -2562,11 +2563,17 @@ async function sendPushNotifications({ payload, usernames = null, excludeUsernam
     ? new Set(usernames.map(normalizeAuthUsername).filter(Boolean))
     : null;
   const excluded = normalizeAuthUsername(excludeUsername);
-  const eligibleUsernames = await pushEligibleUsernames();
+  const eligibleUserVersions = await pushEligibleUserVersions();
   const notificationPayload = JSON.stringify(cleanPushPayload(payload));
   const { subscriptions } = await readPushSubscriptions();
+  const retiredEndpoints = new Set();
   const targets = subscriptions.filter((record) => {
-    if (!eligibleUsernames.has(record.username)) return false;
+    const expectedPasswordVersion = eligibleUserVersions.get(record.username);
+    if (expectedPasswordVersion === undefined) return false;
+    if (record.passwordVersion !== expectedPasswordVersion) {
+      retiredEndpoints.add(record.endpoint);
+      return false;
+    }
     if (excluded && record.username === excluded) return false;
     if (usernameSet && !usernameSet.has(record.username)) return false;
     return true;
@@ -2596,23 +2603,27 @@ async function sendPushNotifications({ payload, usernames = null, excludeUsernam
   }));
 
   const staleRemoved = await removePushEndpoints(staleEndpoints);
+  const retiredRemoved = await removePushEndpoints(retiredEndpoints);
   return {
     requested: targets.length,
     delivered: results.filter((result) => result.status === "delivered").length,
     failed: results.filter((result) => result.status === "failed").length,
     skipped: results.filter((result) => result.status === "skipped").length,
     staleRemoved,
+    retiredRemoved,
   };
 }
 
-async function pushEligibleUsernames() {
-  const usernames = new Set([normalizeAuthUsername(authUsername) || "admin"]);
-  if (!authEnabled) return usernames;
+async function pushEligibleUserVersions() {
+  const eligible = new Map();
+  const bootstrap = bootstrapAdminUser();
+  eligible.set(bootstrap.username, bootstrap.passwordVersion || "");
+  if (!authEnabled) return eligible;
   const { users } = await readAuthUsers();
   for (const user of users) {
-    if (user.status === "approved") usernames.add(user.username);
+    if (user.status === "approved") eligible.set(user.username, user.passwordVersion || "");
   }
-  return usernames;
+  return eligible;
 }
 
 function queuePushNotifications(options) {
@@ -2624,6 +2635,7 @@ function queuePushNotifications(options) {
       failed: 0,
       skipped: 0,
       staleRemoved: 0,
+      retiredRemoved: 0,
       error: true,
     };
   });
@@ -2684,6 +2696,7 @@ function normalizeStoredPushSubscription(record) {
       expirationTime: subscription.expirationTime,
       username,
       displayName: normalizeDisplayName(record.displayName) || username,
+      passwordVersion: normalizeSpace(record.passwordVersion).slice(0, 120),
       userAgent: normalizeSpace(record.userAgent).slice(0, 240),
       createdAt: normalizeIsoDate(record.createdAt) || now,
       updatedAt: normalizeIsoDate(record.updatedAt) || normalizeIsoDate(record.createdAt) || now,

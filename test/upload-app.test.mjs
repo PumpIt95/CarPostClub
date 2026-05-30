@@ -130,6 +130,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(savedPush.body.ok, true);
     assert.equal(savedPush.body.subscription.endpoint, pushSubscription.endpoint);
     assert.equal(savedPush.body.subscription.username, TEST_USERNAME);
+    const storedAdminPush = await readPushSubscription(harness, pushSubscription.endpoint);
+    assert.equal(storedAdminPush.passwordVersion, adminSession.pv);
 
     const testPush = await postJson(harness, "/api/push/test", {});
     assert.equal(testPush.status, 200);
@@ -141,6 +143,21 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     });
     assert.equal(deletedPush.status, 200);
     assert.equal(deletedPush.body.removed, true);
+
+    const staleAdminSubscription = pushSubscriptionFor("stale-bootstrap-admin");
+    await writePushSubscriptions(harness, [{
+      ...staleAdminSubscription,
+      username: TEST_USERNAME,
+      displayName: TEST_USERNAME,
+      passwordVersion: "stale-bootstrap-password-version",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }]);
+    const staleAdminPush = await postJson(harness, "/api/push/test", {});
+    assert.equal(staleAdminPush.status, 200);
+    assert.equal(staleAdminPush.body.delivery.requested, 0);
+    assert.equal(staleAdminPush.body.delivery.retiredRemoved, 1);
+    assert.equal((await readPushSubscriptionCount(harness, staleAdminSubscription.endpoint)), 0);
 
     const adminPage = await fetch(`${harness.baseUrl}/admin/users`, {
       headers: { Cookie: harness.cookie },
@@ -1050,13 +1067,27 @@ function pushSubscriptionFor(id) {
 }
 
 async function readPushSubscriptionCount(harness, endpoint) {
+  const subscriptions = await readPushSubscriptions(harness);
+  return subscriptions.filter((subscription) => subscription.endpoint === endpoint).length;
+}
+
+async function readPushSubscription(harness, endpoint) {
+  return (await readPushSubscriptions(harness)).find((subscription) => subscription.endpoint === endpoint) || null;
+}
+
+async function readPushSubscriptions(harness) {
   const storePath = path.join(harness.tempRoot, "push-subscriptions.json");
   const raw = await fs.readFile(storePath, "utf8").catch(() => "{\"subscriptions\":[]}");
   const store = JSON.parse(raw);
   const subscriptions = Array.isArray(store) ? store : store.subscriptions;
   return Array.isArray(subscriptions)
-    ? subscriptions.filter((subscription) => subscription.endpoint === endpoint).length
-    : 0;
+    ? subscriptions
+    : [];
+}
+
+async function writePushSubscriptions(harness, subscriptions) {
+  const storePath = path.join(harness.tempRoot, "push-subscriptions.json");
+  await fs.writeFile(storePath, `${JSON.stringify({ subscriptions }, null, 2)}\n`);
 }
 
 function assertNoStoreHeaders(response) {
