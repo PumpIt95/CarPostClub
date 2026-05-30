@@ -3300,6 +3300,7 @@ async function setAuthUserStatus(usernameValue, status, actorUsername) {
     } else {
       user.rejectedAt = now;
       user.rejectedBy = actorUsername;
+      user.passwordVersion = newPasswordVersion();
       delete user.approvedAt;
       delete user.approvedBy;
     }

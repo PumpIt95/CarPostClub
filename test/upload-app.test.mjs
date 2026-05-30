@@ -269,6 +269,36 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(rejectedAccess.status, 401);
     assert.equal((await readPushSubscriptionCount(harness, rejectableSubscription.endpoint)), 0);
 
+    const reapproved = await fetch(`${harness.baseUrl}/admin/users/${encodeURIComponent(rejectable.username)}/approve`, {
+      method: "POST",
+      headers: { Cookie: harness.cookie },
+      redirect: "manual",
+    });
+    assert.equal(reapproved.status, 303);
+    const oldCookieAfterReapproval = await fetchJson(`${harness.baseUrl}/api/me`, {
+      headers: { Cookie: rejectable.cookie },
+    });
+    assert.equal(oldCookieAfterReapproval.status, 401);
+    const reapprovedCookie = await login(harness.baseUrl, rejectable.username, rejectable.password);
+    const freshCookieAfterReapproval = await fetchJson(`${harness.baseUrl}/api/me`, {
+      headers: { Cookie: reapprovedCookie },
+    });
+    assert.equal(freshCookieAfterReapproval.status, 200);
+    assert.equal(freshCookieAfterReapproval.body.user.username, rejectable.username);
+    const pushAfterReapproval = await postJsonWithCookie(harness, reapprovedCookie, "/api/push/test", {});
+    assert.equal(pushAfterReapproval.status, 200);
+    assert.equal(pushAfterReapproval.body.delivery.requested, 0);
+    const rejectedAgain = await fetch(`${harness.baseUrl}/admin/users/${encodeURIComponent(rejectable.username)}/reject`, {
+      method: "POST",
+      headers: { Cookie: harness.cookie },
+      redirect: "manual",
+    });
+    assert.equal(rejectedAgain.status, 303);
+    const reapprovedCookieAfterSecondRejection = await fetchJson(`${harness.baseUrl}/api/me`, {
+      headers: { Cookie: reapprovedCookie },
+    });
+    assert.equal(reapprovedCookieAfterSecondRejection.status, 401);
+
     const home = await fetch(`${harness.baseUrl}/`, {
       headers: { Cookie: harness.cookie },
     });
