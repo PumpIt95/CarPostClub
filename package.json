@@ -1,0 +1,24 @@
+{
+  "name": "konner-upload-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Password-gated photo album upload app for KonnerCars.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "build:manifest": "node scripts/build_release_manifest.mjs",
+    "smoke": "node scripts/smoke_test.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.4.2",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "openai": "^6.39.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

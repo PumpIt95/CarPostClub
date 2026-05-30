@@ -1,0 +1,41 @@
+services:
+  upload-primary:
+    build:
+      context: .
+    image: konner-upload-app:local
+    env_file:
+      - ${KONNER_UPLOAD_ENV_FILE:-/etc/konner-upload.env}
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3911
+      INVENTORY_SYNC_PRIMARY_PORT: 3911
+      UPLOAD_ROOT: /var/lib/konner-upload/uploads
+      TMP_ROOT: /var/lib/konner-upload/tmp
+    volumes:
+      - konner-upload-state:/var/lib/konner-upload
+    ports:
+      - "127.0.0.1:3911:3911"
+    restart: unless-stopped
+
+  upload-secondary:
+    image: konner-upload-app:local
+    depends_on:
+      - upload-primary
+    env_file:
+      - ${KONNER_UPLOAD_ENV_FILE:-/etc/konner-upload.env}
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3912
+      INVENTORY_SYNC_PRIMARY_PORT: 3911
+      UPLOAD_ROOT: /var/lib/konner-upload/uploads
+      TMP_ROOT: /var/lib/konner-upload/tmp
+    volumes:
+      - konner-upload-state:/var/lib/konner-upload
+    ports:
+      - "127.0.0.1:3912:3912"
+    restart: unless-stopped
+
+volumes:
+  konner-upload-state:

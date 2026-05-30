@@ -1,0 +1,79 @@
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+
+const appJsPath = fileURLToPath(new URL("../public/app.js", import.meta.url));
+const indexHtmlPath = fileURLToPath(new URL("../public/index.html", import.meta.url));
+
+test("home page gates uploads behind inventory car selection", async () => {
+  const html = await fs.readFile(indexHtmlPath, "utf8");
+
+  assert.match(html, /<title>Konner Photos<\/title>/);
+  assert.match(html, /id="inventoryTypeSelect"/);
+  assert.match(html, /id="dealershipSelect"/);
+  assert.match(html, /id="carSelect"/);
+  assert.match(html, /id="dropZone"[^>]*disabled/);
+  assert.match(html, /id="chatToggle"/);
+  assert.match(html, /id="chatPanel"/);
+  assert.match(html, /id="chatPanel"[^>]*aria-hidden="true"[^>]*hidden/);
+  assert.match(html, /id="chatForm"/);
+  assert.match(html, /O'Regan's inventory/);
+  assert.match(html, /id="videoButton"/);
+  assert.match(html, /id="downloadAllButton"/);
+  assert.match(html, /id="deleteAllButton"/);
+  assert.match(html, /id="logoutForm"/);
+  assert.match(html, /href="\/account\/password"/);
+  assert.match(html, /Change password/);
+  assert.match(html, /id="marketplacePanel"/);
+  assert.match(html, /id="marketplaceDescription"/);
+  assert.match(html, /id="marketplaceRegenerateButton"/);
+  assert.match(html, /Refresh Marketplace draft/);
+  assert.match(html, /id="marketplaceCopyButton"/);
+  assert.match(html, /data-action="download"/);
+  assert.match(html, /data-action="delete"/);
+  assert.match(html, /accept="image\/\*,video\/\*/);
+  assert.match(html, /accept="video\/\*/);
+  assert.match(html, /id="uploadProgressShell"/);
+  assert.match(html, /class="upload-monkey"/);
+  assert.match(html, /class="progress-confetti"/);
+  assert.match(html, /\/app\.js\?v=20260530-confetti/);
+  assert.match(html, /\/styles\.css\?v=20260530-confetti/);
+  assert.doesNotMatch(html, /id="albumName"/);
+});
+
+test("frontend sends dealership, inventory filter, and vin with uploads", async () => {
+  const source = await fs.readFile(appJsPath, "utf8");
+
+  assert.match(source, /\/api\/inventory\/dealerships/);
+  assert.match(source, /\/api\/inventory\/cars/);
+  assert.match(source, /\/api\/vehicle-album/);
+  assert.match(source, /\/api\/marketplace-draft/);
+  assert.doesNotMatch(source, /\/api\/marketplace-draft\/regenerate/);
+  assert.match(source, /els\.carSelect\.addEventListener\("change"/);
+  assert.match(source, /form\.append\("dealershipId", state\.selectedDealershipId\)/);
+  assert.match(source, /form\.append\("inventoryTypeId", state\.selectedInventoryTypeId\)/);
+  assert.match(source, /form\.append\("vin", car\.vin\)/);
+  assert.match(source, /els\.videoButton\.addEventListener\("click"/);
+  assert.match(source, /isVideoMedia/);
+  assert.match(source, /video\.preload = "metadata"/);
+  assert.match(source, /els\.dropZone\.disabled = !unlocked/);
+  assert.match(source, /\/api\/chat\/messages/);
+  assert.match(source, /\/api\/chat\/stream/);
+  assert.match(source, /new EventSource/);
+  assert.match(source, /classList\.toggle\("is-open", state\.chatOpen\)/);
+  assert.match(source, /setAttribute\("aria-hidden", String\(!state\.chatOpen\)\)/);
+  assert.match(source, /uploadProgressShell/);
+  assert.match(source, /classList\.toggle\("is-uploading", state\.uploading\)/);
+  assert.match(source, /triggerUploadConfetti/);
+  assert.match(source, /is-celebrating/);
+  assert.match(source, /downloadAllButton/);
+  assert.match(source, /deleteAllPhotos/);
+  assert.match(source, /renderMarketplaceDraft/);
+  assert.match(source, /copyMarketplaceDraft/);
+  assert.match(source, /Saving media and generating Marketplace copy/);
+  assert.match(source, /\/api\/albums\/\$\{encodeURIComponent\(state\.activeAlbum\.id\)\}\/download/);
+  assert.match(source, /Are you sure you want to delete/);
+  assert.match(source, /Are you sure you want to sign out/);
+  assert.doesNotMatch(source, /form\.append\("albumId"/);
+});
