@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import vm from "node:vm";
 import sharp from "sharp";
 
 const appJsPath = fileURLToPath(new URL("../public/app.js", import.meta.url));
@@ -205,7 +206,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v12/);
+  assert.match(serviceWorker, /carpostclub-pwa-v13/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.doesNotMatch(serviceWorker, /Konner Photos/);
@@ -222,6 +223,65 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(serviceWorker, /notificationActions/);
   assert.match(serviceWorker, /messageId/);
   assert.match(serviceWorker, /Open chat/);
+});
+
+test("service worker offline fallback handles page navigations but not API requests", async () => {
+  const serviceWorker = await fs.readFile(serviceWorkerPath, "utf8");
+  const handlers = new Map();
+  const offlineResponse = { status: 200, marker: "offline-fallback" };
+  const context = {
+    URL,
+    console,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+    caches: {
+      keys: async () => [],
+      delete: async () => true,
+      match: async (key) => key === "/offline.html" ? offlineResponse : null,
+      open: async () => ({
+        addAll: async () => {},
+        match: async () => null,
+        put: async () => {},
+      }),
+    },
+    Response: {
+      error: () => ({ status: 0, marker: "response-error" }),
+    },
+    self: {
+      location: { origin: "https://carpostclub.test" },
+      addEventListener: (type, handler) => {
+        handlers.set(type, handler);
+      },
+      clients: {
+        claim: async () => {},
+        matchAll: async () => [],
+        openWindow: async () => null,
+      },
+      registration: {
+        showNotification: async () => {},
+      },
+      skipWaiting: async () => {},
+    },
+  };
+  vm.runInNewContext(serviceWorker, context);
+
+  const fetchHandler = handlers.get("fetch");
+  assert.equal(typeof fetchHandler, "function");
+
+  const loginNavigation = fetchEventFor("https://carpostclub.test/login", "navigate");
+  fetchHandler(loginNavigation);
+  assert.equal(loginNavigation.responded, true);
+  assert.equal(await loginNavigation.response, offlineResponse);
+
+  const accountNavigation = fetchEventFor("https://carpostclub.test/account/password", "navigate");
+  fetchHandler(accountNavigation);
+  assert.equal(accountNavigation.responded, true);
+  assert.equal(await accountNavigation.response, offlineResponse);
+
+  const apiRequest = fetchEventFor("https://carpostclub.test/api/me", "same-origin");
+  fetchHandler(apiRequest);
+  assert.equal(apiRequest.responded, false);
 });
 
 test("brand assets include favicon, PWA icons, and social share image", async () => {
@@ -351,3 +411,19 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });
+
+function fetchEventFor(url, mode) {
+  return {
+    request: {
+      method: "GET",
+      mode,
+      url,
+    },
+    responded: false,
+    response: null,
+    respondWith(response) {
+      this.responded = true;
+      this.response = Promise.resolve(response);
+    },
+  };
+}
