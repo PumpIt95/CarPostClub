@@ -77,8 +77,9 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="uploadRecovery"/);
   assert.match(html, /id="retryUploadButton"/);
   assert.match(html, /id="clearUploadButton"/);
-  assert.match(html, /class="upload-monkey"/);
+  assert.match(html, /class="upload-progress-marker"/);
   assert.match(html, /class="progress-confetti"/);
+  assert.doesNotMatch(html, /&#128018;/);
   assert.match(html, /id="galleryToggleButton"/);
   assert.match(html, /id="gallerySummary"/);
   assert.match(html, /\/app\.js\?v=20260530-auth-pwa/);
@@ -392,6 +393,10 @@ test("pwa haptics provide tactile feedback on mobile interaction paths", async (
   assert.match(styles, /-webkit-tap-highlight-color: transparent/);
   assert.match(styles, /body\.is-haptic-pulse/);
   assert.match(styles, /\.is-haptic-pressing/);
+  assert.match(styles, /\.upload-progress-marker/);
+  assert.match(styles, /@keyframes uploadMarkerPulse/);
+  assert.doesNotMatch(styles, /Apple Color Emoji/);
+  assert.doesNotMatch(styles, /monkeyDance/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.is-haptic-pressing/);
 });
 

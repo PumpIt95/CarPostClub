@@ -680,7 +680,7 @@ textarea:focus {
 
 .progress-shell {
   --upload-progress: 0%;
-  --upload-monkey-size: 34px;
+  --upload-marker-size: 34px;
   position: relative;
   height: 10px;
   margin-top: 24px;
@@ -698,22 +698,22 @@ textarea:focus {
   transition: width 160ms ease;
 }
 
-.upload-monkey {
+.upload-progress-marker {
   position: absolute;
   top: 50%;
   left: clamp(
-    calc(var(--upload-monkey-size) / 2),
+    calc(var(--upload-marker-size) / 2),
     var(--upload-progress),
-    calc(100% - (var(--upload-monkey-size) / 2))
+    calc(100% - (var(--upload-marker-size) / 2))
   );
   z-index: 1;
   display: grid;
-  width: var(--upload-monkey-size);
-  height: var(--upload-monkey-size);
+  width: var(--upload-marker-size);
+  height: var(--upload-marker-size);
   place-items: center;
-  color: var(--color-ash-black);
-  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
-  font-size: 24px;
+  border: 1px solid var(--color-midnight-graphite);
+  color: var(--color-cloud-white);
+  background: var(--color-electric-blue);
   line-height: 1;
   opacity: 0;
   pointer-events: none;
@@ -721,12 +721,22 @@ textarea:focus {
   transition: left 160ms ease, opacity 120ms ease;
 }
 
-.progress-shell.is-uploading .upload-monkey {
-  opacity: 1;
-  animation: monkeyDance 520ms ease-in-out infinite;
+.upload-progress-marker svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
-.progress-shell.is-celebrating .upload-monkey {
+.progress-shell.is-uploading .upload-progress-marker {
+  opacity: 1;
+  animation: uploadMarkerPulse 520ms ease-in-out infinite;
+}
+
+.progress-shell.is-celebrating .upload-progress-marker {
   opacity: 1;
 }
 
@@ -743,7 +753,7 @@ textarea:focus {
   --confetti-rotate: 0deg;
   position: absolute;
   top: 50%;
-  left: calc(100% - (var(--upload-monkey-size) / 2));
+  left: calc(100% - (var(--upload-marker-size) / 2));
   width: 6px;
   height: 10px;
   background: var(--color-marigold-yellow);
@@ -847,7 +857,7 @@ textarea:focus {
   animation-delay: 70ms;
 }
 
-@keyframes monkeyDance {
+@keyframes uploadMarkerPulse {
   0%,
   100% {
     transform: translate(-50%, -98%) rotate(-8deg);
@@ -1729,7 +1739,7 @@ textarea:focus {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .progress-shell.is-uploading .upload-monkey {
+  .progress-shell.is-uploading .upload-progress-marker {
     animation: none;
   }
 
