@@ -145,6 +145,11 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /addEventListener\("pageshow", handlePageShow\)/);
   assert.match(source, /function disconnectChatStream\(\)/);
   assert.match(source, /function resumeChatStream\(\)/);
+  assert.match(source, /loadChatMessages\(\{ countUnread: true \}\)/);
+  assert.match(source, /window\.setTimeout\(resumeChatStream, 3000\)/);
+  assert.match(source, /const previousChatIds = new Set/);
+  assert.match(source, /countUnread && !state\.chatOpen/);
+  assert.match(source, /state\.chatUnread \+= missedUnread/);
   assert.match(source, /function handlePageShow\(event\)/);
   assert.match(source, /event\.persisted/);
   assert.match(source, /function validateActiveSession/);

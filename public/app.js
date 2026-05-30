@@ -647,11 +647,19 @@ async function initChat() {
   connectChatStream();
 }
 
-async function loadChatMessages() {
+async function loadChatMessages({ countUnread = false } = {}) {
+  const previousChatIds = new Set(state.chatMessages.map((message) => message.id));
   const response = await apiJson("/api/chat/messages");
-  state.chatMessages = Array.isArray(response.messages)
+  const messages = Array.isArray(response.messages)
     ? response.messages.map(normalizeChatMessage).filter(Boolean)
     : [];
+  if (countUnread && !state.chatOpen) {
+    const missedUnread = messages.filter((message) => {
+      return !previousChatIds.has(message.id) && !isOwnChatMessage(message);
+    }).length;
+    state.chatUnread += missedUnread;
+  }
+  state.chatMessages = messages;
   renderChatMessages({ scrollToEnd: true });
   updateChatChrome();
 }
@@ -660,7 +668,7 @@ function connectChatStream() {
   if (!("EventSource" in window)) {
     window.clearTimeout(state.chatReconnectTimer);
     state.chatReconnectTimer = window.setTimeout(() => {
-      loadChatMessages().catch(() => {});
+      loadChatMessages({ countUnread: true }).catch(() => {});
       connectChatStream();
     }, 5000);
     return;
@@ -682,7 +690,7 @@ function connectChatStream() {
     source.close();
     if (state.chatEventSource === source) state.chatEventSource = null;
     window.clearTimeout(state.chatReconnectTimer);
-    state.chatReconnectTimer = window.setTimeout(connectChatStream, 3000);
+    state.chatReconnectTimer = window.setTimeout(resumeChatStream, 3000);
   });
 }
 
@@ -697,7 +705,7 @@ function resumeChatStream() {
   window.clearTimeout(state.chatReconnectTimer);
   state.chatReconnectTimer = null;
   if (state.chatEventSource) return;
-  loadChatMessages().catch(() => {});
+  loadChatMessages({ countUnread: true }).catch(() => {});
   connectChatStream();
 }
 
