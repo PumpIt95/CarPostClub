@@ -165,6 +165,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(wrongPasswordChange.status, 400);
     assert.match(await wrongPasswordChange.text(), /Current password is incorrect/);
 
+    const cookieBeforePasswordChange = approvedCookie;
     const passwordChange = await fetch(`${harness.baseUrl}/account/password`, {
       method: "POST",
       headers: { Cookie: approvedCookie, "Content-Type": "application/x-www-form-urlencoded" },
@@ -176,9 +177,16 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     });
     assert.equal(passwordChange.status, 200);
     assert.match(await passwordChange.text(), /Password updated/);
+    const refreshedCookie = passwordChange.headers.get("set-cookie")?.split(";")[0] || "";
+    assert.match(refreshedCookie, /^carpostclub_session=/);
+    const staleAfterPasswordChange = await fetchJson(`${harness.baseUrl}/api/me`, {
+      headers: { Cookie: cookieBeforePasswordChange },
+    });
+    assert.equal(staleAfterPasswordChange.status, 401);
     assert.equal((await loginAttempt(harness.baseUrl, NEW_USERNAME, NEW_PASSWORD)).status, 401);
-    approvedCookie = await login(harness.baseUrl, NEW_USERNAME, CHANGED_PASSWORD);
+    approvedCookie = refreshedCookie;
 
+    const cookieBeforeAdminReset = approvedCookie;
     const adminResetPassword = await fetch(`${harness.baseUrl}/admin/users/${encodeURIComponent(NEW_USERNAME)}/password`, {
       method: "POST",
       headers: { Cookie: harness.cookie, "Content-Type": "application/x-www-form-urlencoded" },
@@ -191,6 +199,10 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(adminResetPassword.status, 303);
     assert.match(adminResetPassword.headers.get("location") || "", /Password\+reset/);
     assert.equal((await loginAttempt(harness.baseUrl, NEW_USERNAME, CHANGED_PASSWORD)).status, 401);
+    const staleAfterAdminReset = await fetchJson(`${harness.baseUrl}/api/me`, {
+      headers: { Cookie: cookieBeforeAdminReset },
+    });
+    assert.equal(staleAfterAdminReset.status, 401);
     approvedCookie = await login(harness.baseUrl, NEW_USERNAME, RESET_PASSWORD);
 
     const home = await fetch(`${harness.baseUrl}/`, {

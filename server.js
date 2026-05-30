@@ -269,10 +269,13 @@ app.post("/signup", async (req, res, next) => {
         username,
         displayName,
         passwordHash,
+        passwordVersion: newPasswordVersion(),
         role: "user",
         status: "pending",
         createdAt: now,
         updatedAt: now,
+        passwordUpdatedAt: now,
+        passwordUpdatedBy: username,
       };
       store.users.push(user);
       return user;
@@ -325,6 +328,7 @@ app.post("/account/password", requireAuth, async (req, res, next) => {
       return;
     }
 
+    res.setHeader("Set-Cookie", serializeSessionCookie(authUserFromAccount(changed)));
     sendChangePasswordPage(res, { user: req.authUser, success: "Password updated." });
   } catch (error) {
     next(error);
@@ -3077,6 +3081,7 @@ async function identifyRequestUser(req) {
 
   const account = (await readAuthUsers()).users.find((user) => user.username === username);
   if (!account || account.status !== "approved") return null;
+  if (isSessionInvalidatedByPasswordChange(session, account)) return null;
   return authUserFromAccount(account);
 }
 
@@ -3136,6 +3141,7 @@ function serializeSessionCookie(user) {
     v: 1,
     u: user.username,
     role: user.role,
+    pv: user.passwordVersion || "",
     iat: now,
     exp: now + authSessionMs,
   }), "utf8").toString("base64url");
@@ -3166,6 +3172,7 @@ function authUserFromAccount(account) {
     displayName: account.displayName || account.username,
     role: account.role === "admin" ? "admin" : "user",
     status: account.status,
+    passwordVersion: account.passwordVersion || "",
     bootstrap: false,
   };
 }
@@ -3241,12 +3248,28 @@ async function setStoredUserPassword(usernameValue, password, actorUsername) {
     const user = store.users.find((candidate) => candidate.username === username);
     if (!user) return null;
     user.passwordHash = passwordHash;
+    user.passwordVersion = newPasswordVersion();
     user.updatedAt = now;
     user.passwordUpdatedAt = now;
     user.passwordUpdatedBy = normalizeAuthUsername(actorUsername);
     return user;
   });
   return updated;
+}
+
+function isSessionInvalidatedByPasswordChange(session, account) {
+  if (account.passwordVersion) {
+    return session.pv !== account.passwordVersion;
+  }
+
+  const passwordUpdatedAt = Date.parse(account.passwordUpdatedAt || "");
+  if (!Number.isFinite(passwordUpdatedAt)) return false;
+  const issuedAt = Number(session.iat || 0);
+  return !Number.isFinite(issuedAt) || issuedAt < passwordUpdatedAt;
+}
+
+function newPasswordVersion() {
+  return crypto.randomBytes(16).toString("base64url");
 }
 
 function normalizeStoredAuthUser(value) {
@@ -3259,6 +3282,7 @@ function normalizeStoredAuthUser(value) {
     username,
     displayName: normalizeDisplayName(value.displayName) || username,
     passwordHash,
+    passwordVersion: normalizeSpace(value.passwordVersion).slice(0, 80),
     role: value.role === "admin" ? "admin" : "user",
     status,
     createdAt: normalizeIsoDate(value.createdAt),
