@@ -15,6 +15,8 @@ const state = {
   currentUser: null,
   selectedDealershipId: localStorage.getItem("konner.selectedDealershipId") || "15",
   selectedInventoryTypeId: localStorage.getItem("konner.selectedInventoryTypeId") || "2",
+  selectedMake: localStorage.getItem("konner.selectedMake") || "",
+  selectedModel: localStorage.getItem("konner.selectedModel") || "",
   selectedVin: localStorage.getItem("konner.selectedVin") || "",
   carSearch: localStorage.getItem("konner.carSearch") || "",
   manualFormOpen: false,
@@ -58,6 +60,7 @@ const els = {
   marketplacePanel: document.querySelector("#marketplacePanel"),
   marketplaceRegenerateButton: document.querySelector("#marketplaceRegenerateButton"),
   marketplaceStatus: document.querySelector("#marketplaceStatus"),
+  makeFilterSelect: document.querySelector("#makeFilterSelect"),
   manualBodyStyle: document.querySelector("#manualBodyStyle"),
   manualCarForm: document.querySelector("#manualCarForm"),
   manualDealershipSelect: document.querySelector("#manualDealershipSelect"),
@@ -75,6 +78,7 @@ const els = {
   manualTrim: document.querySelector("#manualTrim"),
   manualVin: document.querySelector("#manualVin"),
   manualYear: document.querySelector("#manualYear"),
+  modelFilterSelect: document.querySelector("#modelFilterSelect"),
   cancelManualCarButton: document.querySelector("#cancelManualCarButton"),
   photoCount: document.querySelector("#photoCount"),
   refreshButton: document.querySelector("#refreshButton"),
@@ -110,25 +114,45 @@ async function loadCurrentUser() {
 function bindEvents() {
   els.inventoryTypeSelect.addEventListener("change", () => {
     state.selectedInventoryTypeId = els.inventoryTypeSelect.value;
-    state.selectedVin = "";
+    state.selectedMake = "";
+    state.selectedModel = "";
+    clearSelectedCarSelection();
     persistSelection();
     loadCars().catch((error) => showError(error));
   });
 
   els.dealershipSelect.addEventListener("change", () => {
     state.selectedDealershipId = els.dealershipSelect.value;
-    state.selectedVin = "";
+    state.selectedMake = "";
+    state.selectedModel = "";
+    clearSelectedCarSelection();
     persistSelection();
     loadCars().catch((error) => showError(error));
+  });
+
+  els.makeFilterSelect.addEventListener("change", () => {
+    state.selectedMake = els.makeFilterSelect.value;
+    state.selectedModel = "";
+    clearSelectedCarSelection();
+    persistSelection();
+    renderCarOptions();
+    renderActiveCar();
+    renderGallery();
+  });
+
+  els.modelFilterSelect.addEventListener("change", () => {
+    state.selectedModel = els.modelFilterSelect.value;
+    clearSelectedCarSelection();
+    persistSelection();
+    renderCarOptions();
+    renderActiveCar();
+    renderGallery();
   });
 
   els.carSelect.addEventListener("change", () => {
     const vin = els.carSelect.value;
     if (!vin) {
-      state.selectedVin = "";
-      state.activeAlbum = null;
-      state.photos = [];
-      resetMarketplaceDraft();
+      clearSelectedCarSelection();
       persistSelection();
       renderActiveCar();
       renderGallery();
@@ -494,13 +518,11 @@ async function loadCars({ keepSelectedCar = false, forceAlbumRefresh = false } =
     });
     const response = await apiJson(`/api/inventory/cars?${params}`);
     state.cars = response.cars;
-    if (!keepSelectedCar || !state.cars.some((car) => carInventoryKey(car) === state.selectedVin)) {
-      state.selectedVin = "";
-      state.activeAlbum = null;
-      state.photos = [];
-      resetMarketplaceDraft();
-    }
+    syncVehicleFiltersWithInventory({ keepSelectedCar });
+    const selected = selectedCar();
+    if (!keepSelectedCar || !selected || !carMatchesVehicleFilters(selected)) clearSelectedCarSelection();
     renderCarOptions();
+    persistSelection();
     await loadSelectedCarAlbum({ force: forceAlbumRefresh });
     renderActiveCar();
     renderGallery();
@@ -510,21 +532,56 @@ async function loadCars({ keepSelectedCar = false, forceAlbumRefresh = false } =
 }
 
 function renderCarOptions() {
+  renderVehicleFilterOptions();
   els.carSearchInput.value = state.carSearch;
+  const narrowedCars = vehicleFilteredCars();
   const matchingCars = filteredCars();
-  els.carCount.textContent = state.carSearch.trim()
-    ? `${matchingCars.length}/${state.cars.length}`
-    : String(state.cars.length);
+  els.carCount.textContent = carCountLabel(narrowedCars.length, matchingCars.length);
   const options = [
     new Option(carSelectPlaceholder(matchingCars.length), ""),
     ...matchingCars.map((car) => new Option(carOptionLabel(car), carInventoryKey(car))),
   ];
   els.carSelect.replaceChildren(...options);
   els.carSelect.value = matchingCars.some((car) => carInventoryKey(car) === state.selectedVin) ? state.selectedVin : "";
-  els.carSelect.disabled = state.uploading || !matchingCars.length;
+  els.carSelect.disabled = state.uploading || !state.selectedMake || !matchingCars.length;
+}
+
+function renderVehicleFilterOptions() {
+  const makeValues = uniqueFilterValues(state.cars, "make");
+  if (state.selectedMake && !hasFilterValue(makeValues, state.selectedMake)) {
+    state.selectedMake = "";
+    state.selectedModel = "";
+    clearSelectedCarSelection();
+  }
+
+  const makeOptions = [
+    new Option(makeValues.length ? "Choose a make" : "No makes found", ""),
+    ...makeValues.map((make) => new Option(make, make)),
+  ];
+  els.makeFilterSelect.replaceChildren(...makeOptions);
+  els.makeFilterSelect.value = state.selectedMake;
+  els.makeFilterSelect.disabled = state.uploading || !makeValues.length;
+
+  const modelValues = state.selectedMake ? uniqueFilterValues(carsForMake(state.selectedMake), "model") : [];
+  if (state.selectedModel && !hasFilterValue(modelValues, state.selectedModel)) {
+    state.selectedModel = "";
+  }
+
+  const modelOptions = [
+    new Option(state.selectedMake ? "All models" : "Choose a make first", ""),
+    ...modelValues.map((model) => new Option(model, model)),
+  ];
+  els.modelFilterSelect.replaceChildren(...modelOptions);
+  els.modelFilterSelect.value = state.selectedModel;
+  els.modelFilterSelect.disabled = state.uploading || !state.selectedMake || !modelValues.length;
 }
 
 async function selectCar(inventoryKey) {
+  const car = state.cars.find((candidate) => carInventoryKey(candidate) === inventoryKey);
+  if (car) {
+    state.selectedMake = car.make || state.selectedMake;
+    state.selectedModel = car.model || state.selectedModel;
+  }
   state.selectedVin = inventoryKey;
   persistSelection();
   renderCarOptions();
@@ -888,20 +945,67 @@ function selectedCar() {
   return state.cars.find((car) => carInventoryKey(car) === state.selectedVin) || null;
 }
 
+function syncVehicleFiltersWithInventory({ keepSelectedCar = false } = {}) {
+  const selected = selectedCar();
+  if (keepSelectedCar && selected) {
+    state.selectedMake = selected.make || state.selectedMake;
+    state.selectedModel = selected.model || state.selectedModel;
+  }
+
+  const makeValues = uniqueFilterValues(state.cars, "make");
+  if (state.selectedMake && !hasFilterValue(makeValues, state.selectedMake)) {
+    state.selectedMake = "";
+    state.selectedModel = "";
+  }
+
+  const modelValues = state.selectedMake ? uniqueFilterValues(carsForMake(state.selectedMake), "model") : [];
+  if (state.selectedModel && !hasFilterValue(modelValues, state.selectedModel)) {
+    state.selectedModel = "";
+  }
+}
+
+function clearSelectedCarSelection() {
+  state.selectedVin = "";
+  state.activeAlbum = null;
+  state.photos = [];
+  resetMarketplaceDraft();
+}
+
+function vehicleFilteredCars() {
+  if (!state.selectedMake) return [];
+  let cars = carsForMake(state.selectedMake);
+  if (state.selectedModel) {
+    cars = cars.filter((car) => sameFilterValue(car.model, state.selectedModel));
+  }
+  return cars;
+}
+
 function filteredCars() {
+  const cars = vehicleFilteredCars();
   const query = normalizeSearchText(state.carSearch);
-  if (!query) return state.cars;
+  if (!query) return cars;
   const terms = query.split(" ").filter(Boolean);
-  return state.cars.filter((car) => {
+  return cars.filter((car) => {
     const haystack = normalizeSearchText(carSearchText(car));
     return terms.every((term) => haystack.includes(term));
   });
 }
 
+function carMatchesVehicleFilters(car) {
+  return Boolean(car && state.selectedMake && sameFilterValue(car.make, state.selectedMake))
+    && (!state.selectedModel || sameFilterValue(car.model, state.selectedModel));
+}
+
+function carCountLabel(narrowedCount, matchingCount) {
+  if (!state.selectedMake) return String(state.cars.length);
+  return state.carSearch.trim() ? `${matchingCount}/${narrowedCount}` : String(matchingCount);
+}
+
 function carSelectPlaceholder(count) {
   if (!state.cars.length) return "No cars found";
+  if (!state.selectedMake) return "Choose a make first";
   if (!count) return "No matches";
-  return "Choose a car";
+  return "Choose inventory";
 }
 
 function carInventoryKey(car) {
@@ -922,6 +1026,10 @@ function carRequestPayload(car = selectedCar()) {
 function persistSelection() {
   localStorage.setItem("konner.selectedDealershipId", state.selectedDealershipId);
   localStorage.setItem("konner.selectedInventoryTypeId", state.selectedInventoryTypeId);
+  if (state.selectedMake) localStorage.setItem("konner.selectedMake", state.selectedMake);
+  else localStorage.removeItem("konner.selectedMake");
+  if (state.selectedModel) localStorage.setItem("konner.selectedModel", state.selectedModel);
+  else localStorage.removeItem("konner.selectedModel");
   if (state.selectedVin) localStorage.setItem("konner.selectedVin", state.selectedVin);
   else localStorage.removeItem("konner.selectedVin");
 }
@@ -950,11 +1058,17 @@ function isVideoMedia(media) {
 function setSelectorBusy(isBusy) {
   els.inventoryTypeSelect.disabled = isBusy;
   els.dealershipSelect.disabled = isBusy;
-  els.carSelect.disabled = isBusy || !state.cars.length;
-  if (isBusy) {
-    els.carCount.textContent = "...";
-    els.carSelect.replaceChildren(new Option("Loading cars...", ""));
+  if (!isBusy) {
+    renderCarOptions();
+    return;
   }
+  els.makeFilterSelect.disabled = isBusy || !state.cars.length;
+  els.modelFilterSelect.disabled = isBusy || !state.selectedMake;
+  els.carSelect.disabled = isBusy || !state.selectedMake || !state.cars.length;
+  els.carCount.textContent = "...";
+  els.makeFilterSelect.replaceChildren(new Option("Loading makes...", ""));
+  els.modelFilterSelect.replaceChildren(new Option("Loading models...", ""));
+  els.carSelect.replaceChildren(new Option("Loading cars...", ""));
 }
 
 function setProgress(percent) {
@@ -1050,6 +1164,32 @@ function carSearchText(car) {
     car.dealership?.name,
     car.inventoryType,
   ].filter(Boolean).join(" ");
+}
+
+function carsForMake(make) {
+  return state.cars.filter((car) => sameFilterValue(car.make, make));
+}
+
+function uniqueFilterValues(cars, key) {
+  const values = new Map();
+  for (const car of cars) {
+    const value = String(car?.[key] || "").trim();
+    const filterKey = normalizeSearchText(value);
+    if (filterKey && !values.has(filterKey)) values.set(filterKey, value);
+  }
+  return [...values.values()].sort((a, b) => a.localeCompare(b, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  }));
+}
+
+function hasFilterValue(values, value) {
+  return values.some((candidate) => sameFilterValue(candidate, value));
+}
+
+function sameFilterValue(left, right) {
+  return Boolean(normalizeSearchText(left))
+    && normalizeSearchText(left) === normalizeSearchText(right);
 }
 
 function normalizeSearchText(value) {

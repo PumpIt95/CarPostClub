@@ -80,17 +80,31 @@
 
       <div class="picker-grid">
         <label class="field" for="inventoryTypeSelect">
-          <span><strong>1</strong> Filter</span>
+          <span><strong>1</strong> New/Used</span>
           <select id="inventoryTypeSelect"></select>
         </label>
 
         <label class="field" for="dealershipSelect">
-          <span><strong>2</strong> Dealership</span>
+          <span><strong>2</strong> Lot</span>
           <select id="dealershipSelect"></select>
         </label>
 
+        <label class="field" for="makeFilterSelect">
+          <span><strong>3</strong> Make</span>
+          <select id="makeFilterSelect" disabled>
+            <option value="">Choose a make</option>
+          </select>
+        </label>
+
+        <label class="field" for="modelFilterSelect">
+          <span><strong>4</strong> Model</span>
+          <select id="modelFilterSelect" disabled>
+            <option value="">All models</option>
+          </select>
+        </label>
+
         <label class="field field-wide" for="carSelect">
-          <span><strong>3</strong> Car <em id="carCount">0</em></span>
+          <span><strong>5</strong> Inventory <em id="carCount">0</em></span>
           <input id="carSearchInput" type="search" autocomplete="off" placeholder="Search stock, make, model, year, color, VIN, price, km">
           <select id="carSelect" disabled>
             <option value="">Choose a car</option>

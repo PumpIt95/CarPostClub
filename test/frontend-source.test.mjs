@@ -12,6 +12,10 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /<title>Konner Photos<\/title>/);
   assert.match(html, /id="inventoryTypeSelect"/);
   assert.match(html, /id="dealershipSelect"/);
+  assert.match(html, /id="makeFilterSelect"/);
+  assert.match(html, /id="modelFilterSelect"/);
+  assert.match(html, /Choose a make/);
+  assert.match(html, /All models/);
   assert.match(html, /id="carSearchInput"/);
   assert.match(html, /Search stock, make, model/);
   assert.match(html, /id="carSelect"/);
@@ -65,6 +69,10 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /filteredCars/);
   assert.match(source, /carSearchText/);
   assert.match(source, /konner\.carSearch/);
+  assert.match(source, /selectedMake/);
+  assert.match(source, /selectedModel/);
+  assert.match(source, /renderVehicleFilterOptions/);
+  assert.match(source, /Choose a make first/);
   assert.match(source, /els\.videoButton\.addEventListener\("click"/);
   assert.match(source, /isVideoMedia/);
   assert.match(source, /video\.preload = "metadata"/);

@@ -263,7 +263,7 @@ h2 {
 
 .picker-grid {
   display: grid;
-  grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: var(--spacing-16);
 }
 
