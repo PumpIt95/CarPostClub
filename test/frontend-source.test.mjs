@@ -165,6 +165,7 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /galleryExpanded/);
   assert.match(source, /galleryToggleButton/);
   assert.match(source, /downloadAllButton/);
+  assert.match(source, /downloadName/);
   assert.match(source, /deleteAllPhotos/);
   assert.match(source, /renderMarketplaceDraft/);
   assert.match(source, /copyMarketplaceDraft/);

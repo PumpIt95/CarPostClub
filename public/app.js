@@ -1171,7 +1171,7 @@ function renderGallery() {
     details.textContent = `${isVideo ? "Video" : "Photo"} · ${formatBytes(photo.bytes)} · ${formatDate(photo.uploadedAt)}`;
     uploader.textContent = `Uploaded by ${photoUploaderLabel(photo)}`;
     downloadButton.href = photo.downloadUrl || `${photo.url}?download=1`;
-    downloadButton.download = photo.originalName || photo.filename;
+    downloadButton.download = photo.downloadName || photo.originalName || photo.filename;
     downloadButton.setAttribute("aria-label", `Download ${isVideo ? "video" : "photo"} ${photo.originalName}`);
     downloadButton.title = "Download";
     deleteButton.setAttribute("aria-label", `Delete ${isVideo ? "video" : "photo"} ${photo.originalName}`);

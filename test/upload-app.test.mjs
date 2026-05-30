@@ -412,6 +412,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(heicPhoto.kind, "image");
     assert.match(heicPhoto.filename, /\.heic$/);
     assert.equal(heicPhoto.contentType, "image/heic");
+    assert.equal(heicPhoto.downloadName, "lot-tag.heic");
     const heicThumbnail = await fetch(`${harness.baseUrl}${heicPhoto.thumbnailUrl}`, {
       headers: { Cookie: harness.cookie },
     });
@@ -422,7 +423,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     });
     assert.equal(heicDownload.status, 200);
     assert.equal(heicDownload.headers.get("content-type"), "image/heic");
-    assert.match(heicDownload.headers.get("content-disposition") || "", /lot-tag\.jpg/);
+    assert.match(heicDownload.headers.get("content-disposition") || "", /lot-tag\.heic/);
     assert.deepEqual(Buffer.from(await heicDownload.arrayBuffer()), heicBytes());
 
     const firstVideo = afterUpload.photos.find((photo) => photo.originalName === "walkaround.mp4");
@@ -474,6 +475,9 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(albumDownload.status, 200);
     assert.match(albumDownload.headers.get("content-type") || "", /zip/);
     assert.match(albumDownload.headers.get("content-disposition") || "", /attachment/);
+    const albumDownloadBytes = Buffer.from(await albumDownload.arrayBuffer());
+    assert.ok(albumDownloadBytes.includes(Buffer.from("lot-tag.heic")));
+    assert.ok(!albumDownloadBytes.includes(Buffer.from("lot-tag.jpg")));
 
     const deleted = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/photos/${encodeURIComponent(firstPhoto.filename)}`, {
       method: "DELETE",

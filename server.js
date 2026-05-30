@@ -626,7 +626,7 @@ async function serveAlbumMedia(req, res, next) {
     const metadata = await readPhotoMetadata(albumId);
     const originalName = metadata[filename]?.originalName || filename;
     sendMediaFile(req, res, filePath, filename, stats, {
-      downloadName: isDownloadRequest(req) ? originalName : "",
+      downloadName: isDownloadRequest(req) ? mediaDownloadName(originalName, filename) : "",
     });
   } catch (error) {
     next(error);
@@ -685,7 +685,7 @@ async function downloadAlbumMedia(req, res, next) {
     const archiveNames = new Set();
     for (const photo of photos) {
       archive.file(photoPath(albumId, photo.filename), {
-        name: uniqueArchiveName(photo.originalName || photo.filename, archiveNames),
+        name: uniqueArchiveName(mediaDownloadName(photo.originalName, photo.filename), archiveNames),
       });
     }
     await archive.finalize();
@@ -2165,6 +2165,7 @@ function photoResponse(albumId, filename, details) {
     bytes: details.bytes,
     uploadedAt: details.uploadedAt,
     uploadedBy: publicUploader(details.uploadedBy),
+    downloadName: mediaDownloadName(details.originalName, filename),
     url: `/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}`,
     thumbnailUrl: kind === "image" ? `/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}/thumbnail` : "",
     downloadUrl: `/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}?download=1`,
@@ -2180,6 +2181,19 @@ function publicUploader(user) {
     username,
     displayName: displayName || username,
   };
+}
+
+function mediaDownloadName(originalName, filename) {
+  const storedName = path.basename(String(filename || "media"));
+  const storedExtension = path.extname(storedName).toLowerCase();
+  const originalBaseName = path.basename(String(originalName || storedName || "media"));
+  const originalExtension = path.extname(originalBaseName).toLowerCase();
+  if (!storedExtension || originalExtension === storedExtension) return originalBaseName || storedName;
+
+  const base = path.basename(originalBaseName, originalExtension)
+    || path.basename(storedName, storedExtension)
+    || "media";
+  return `${base}${storedExtension}`;
 }
 
 function sendMediaFile(req, res, filePath, filename, stats, { downloadName = "" } = {}) {
