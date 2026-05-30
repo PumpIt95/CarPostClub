@@ -19,6 +19,9 @@ const state = {
   selectedModel: localStorage.getItem("konner.selectedModel") || "",
   selectedVin: localStorage.getItem("konner.selectedVin") || "",
   carSearch: localStorage.getItem("konner.carSearch") || "",
+  galleryExpanded: false,
+  failedUploadFiles: [],
+  failedUploadMessage: "",
   manualFormOpen: false,
   uploading: false,
   uploadCelebrationTimer: 0,
@@ -52,6 +55,8 @@ const els = {
   emptyGallery: document.querySelector("#emptyGallery"),
   fileInput: document.querySelector("#fileInput"),
   gallery: document.querySelector("#gallery"),
+  gallerySummary: document.querySelector("#gallerySummary"),
+  galleryToggleButton: document.querySelector("#galleryToggleButton"),
   inventoryTypeSelect: document.querySelector("#inventoryTypeSelect"),
   logoutForm: document.querySelector("#logoutForm"),
   marketplaceCopyButton: document.querySelector("#marketplaceCopyButton"),
@@ -87,7 +92,11 @@ const els = {
   uploadHint: document.querySelector("#uploadHint"),
   uploadProgress: document.querySelector("#uploadProgress"),
   uploadProgressShell: document.querySelector("#uploadProgressShell"),
+  uploadRecovery: document.querySelector("#uploadRecovery"),
+  uploadRecoveryMessage: document.querySelector("#uploadRecoveryMessage"),
   uploadState: document.querySelector("#uploadState"),
+  retryUploadButton: document.querySelector("#retryUploadButton"),
+  clearUploadButton: document.querySelector("#clearUploadButton"),
   videoButton: document.querySelector("#videoButton"),
   videoInput: document.querySelector("#videoInput"),
   photoTemplate: document.querySelector("#photoTemplate"),
@@ -112,6 +121,25 @@ async function loadCurrentUser() {
 }
 
 function bindEvents() {
+  window.addEventListener("beforeunload", (event) => {
+    if (!state.uploading) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest?.("a[href]");
+    if (!link || !state.uploading) return;
+    event.preventDefault();
+    showError("Upload still in progress. Stay on this page until it finishes.");
+  }, true);
+
+  document.addEventListener("submit", (event) => {
+    if (!state.uploading) return;
+    event.preventDefault();
+    showError("Upload still in progress. Stay on this page until it finishes.");
+  }, true);
+
   els.inventoryTypeSelect.addEventListener("change", () => {
     state.selectedInventoryTypeId = els.inventoryTypeSelect.value;
     state.selectedMake = "";
@@ -189,6 +217,28 @@ function bindEvents() {
 
   els.deleteAllButton.addEventListener("click", () => {
     deleteAllPhotos().catch((error) => showError(error));
+  });
+
+  els.galleryToggleButton.addEventListener("click", () => {
+    setGalleryExpanded(!state.galleryExpanded);
+  });
+
+  els.gallerySummary.addEventListener("click", () => {
+    setGalleryExpanded(true);
+  });
+
+  els.retryUploadButton.addEventListener("click", () => {
+    uploadFiles(state.failedUploadFiles).catch((error) => showError(error));
+  });
+
+  els.clearUploadButton.addEventListener("click", () => {
+    clearFailedUpload();
+    clearFileInput(els.fileInput);
+    clearFileInput(els.cameraInput);
+    clearFileInput(els.videoInput);
+    resetUploadCelebration();
+    setProgress(0);
+    renderActiveCar();
   });
 
   els.marketplaceCopyButton.addEventListener("click", () => {
@@ -609,6 +659,7 @@ async function loadSelectedCarAlbum({ force = false } = {}) {
   const response = await apiJson(`/api/vehicle-album?${params}`);
   state.activeAlbum = response.album;
   state.photos = response.photos;
+  state.galleryExpanded = false;
   resetMarketplaceDraft({ keepRequest: true });
   loadMarketplaceDraft().catch((error) => showError(error));
 }
@@ -621,13 +672,14 @@ function renderActiveCar() {
     : "Select dealership and car";
   els.activeCarName.textContent = car?.title || "Upload is locked";
   els.uploadHint.textContent = car ? `Media will save to ${car.stockNumber || carInventoryKey(car)}` : "Choose a dealership and car first";
-  els.uploadState.textContent = car ? "Ready" : "Locked";
+  els.uploadState.textContent = uploadStateLabel(car);
   els.dropZone.disabled = !unlocked;
   els.cameraButton.disabled = !unlocked;
   els.videoButton.disabled = !unlocked;
-  els.carSelect.disabled = state.uploading || !state.cars.length;
+  els.carSelect.disabled = state.uploading || !state.selectedMake || !filteredCars().length;
   els.activeCarLink.hidden = !car?.detailUrl;
   if (car?.detailUrl) els.activeCarLink.href = car.detailUrl;
+  renderUploadRecovery();
   renderMarketplaceDraft();
 }
 
@@ -728,10 +780,14 @@ async function copyMarketplaceDraft() {
 
 function renderGallery() {
   els.gallery.replaceChildren();
+  const hasCar = Boolean(selectedCar());
+  const hasMedia = hasCar && state.photos.length > 0;
   els.photoCount.textContent = String(state.photos.length);
   renderGalleryActions();
-  els.emptyGallery.hidden = state.photos.length > 0 || !selectedCar();
-  if (!selectedCar()) return;
+  renderGallerySummary();
+  els.emptyGallery.hidden = hasMedia || !hasCar;
+  els.gallery.classList.toggle("is-collapsed", hasMedia && !state.galleryExpanded);
+  if (!hasCar || !hasMedia || !state.galleryExpanded) return;
 
   for (const photo of state.photos) {
     const fragment = els.photoTemplate.content.cloneNode(true);
@@ -758,8 +814,13 @@ function renderGallery() {
       link.target = "_blank";
       link.rel = "noreferrer";
       const image = document.createElement("img");
-      image.src = photo.url;
+      image.src = photo.thumbnailUrl || photo.url;
       image.alt = photo.originalName;
+      image.loading = "lazy";
+      image.decoding = "async";
+      image.addEventListener("error", () => {
+        if (image.src !== photo.url) image.src = photo.url;
+      }, { once: true });
       link.append(image);
       frame.append(link);
     }
@@ -783,6 +844,9 @@ function renderGallery() {
 
 function renderGalleryActions() {
   const hasMedia = Boolean(state.activeAlbum?.id && state.photos.length);
+  els.galleryToggleButton.disabled = !hasMedia;
+  els.galleryToggleButton.querySelector("span").textContent = state.galleryExpanded ? "Collapse" : "Expand";
+  els.galleryToggleButton.setAttribute("aria-expanded", String(state.galleryExpanded && hasMedia));
   els.downloadAllButton.href = hasMedia
     ? `/api/albums/${encodeURIComponent(state.activeAlbum.id)}/download`
     : "#";
@@ -790,6 +854,43 @@ function renderGalleryActions() {
   els.downloadAllButton.setAttribute("aria-disabled", String(!hasMedia));
   els.downloadAllButton.tabIndex = hasMedia ? 0 : -1;
   els.deleteAllButton.disabled = !hasMedia;
+}
+
+function renderGallerySummary() {
+  const hasMedia = Boolean(selectedCar() && state.photos.length);
+  els.gallerySummary.hidden = !hasMedia || state.galleryExpanded;
+  if (!hasMedia) return;
+  const count = state.photos.length;
+  els.gallerySummary.querySelector("strong").textContent = `${count} saved ${plural(count, "asset")}`;
+  els.gallerySummary.querySelector("span").textContent = "Expand this media folder to load thumbnails and previews.";
+}
+
+function setGalleryExpanded(isExpanded) {
+  state.galleryExpanded = Boolean(isExpanded);
+  renderGallery();
+}
+
+function uploadStateLabel(car) {
+  if (state.uploading) return "Uploading";
+  if (state.failedUploadFiles.length) return "Upload failed";
+  return car ? "Ready" : "Locked";
+}
+
+function renderUploadRecovery() {
+  const hasFailure = state.failedUploadFiles.length > 0 && !state.uploading;
+  els.uploadRecovery.hidden = !hasFailure;
+  els.retryUploadButton.disabled = !hasFailure;
+  els.clearUploadButton.disabled = !hasFailure;
+  if (!hasFailure) return;
+
+  const count = state.failedUploadFiles.length;
+  els.uploadRecoveryMessage.textContent = `${count} ${plural(count, "file")} did not upload. ${state.failedUploadMessage || "Try again or clear the selection."}`;
+}
+
+function clearFailedUpload() {
+  state.failedUploadFiles = [];
+  state.failedUploadMessage = "";
+  els.uploadRecovery.hidden = true;
 }
 
 async function uploadFiles(files) {
@@ -804,6 +905,7 @@ async function uploadFiles(files) {
   for (const file of mediaFiles) form.append("photos", file, file.name);
 
   state.uploading = true;
+  clearFailedUpload();
   resetUploadCelebration();
   setProgress(0);
   renderActiveCar();
@@ -816,11 +918,14 @@ async function uploadFiles(files) {
     state.activeAlbum = response.album;
     state.photos = [...response.photos, ...state.photos];
     await loadSelectedCarAlbum({ force: true });
+    state.galleryExpanded = false;
     renderGallery();
     uploadSucceeded = true;
     triggerUploadConfetti();
     showStatus(`Uploaded ${response.count} ${plural(response.count, "file")} to ${car.stockNumber || carInventoryKey(car)}.`);
   } catch (error) {
+    state.failedUploadFiles = mediaFiles;
+    state.failedUploadMessage = error instanceof Error ? error.message : String(error);
     showError(error);
   } finally {
     state.uploading = false;
@@ -860,6 +965,7 @@ function uploadForm(form) {
     });
 
     request.addEventListener("error", () => reject(new Error("Upload failed.")));
+    request.addEventListener("abort", () => reject(new Error("Upload was cancelled.")));
     request.send(form);
   });
 }
@@ -968,6 +1074,8 @@ function clearSelectedCarSelection() {
   state.selectedVin = "";
   state.activeAlbum = null;
   state.photos = [];
+  state.galleryExpanded = false;
+  clearFailedUpload();
   resetMarketplaceDraft();
 }
 

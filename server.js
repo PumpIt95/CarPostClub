@@ -10,6 +10,7 @@ import dotenv from "dotenv";
 import express from "express";
 import multer from "multer";
 import OpenAI from "openai";
+import sharp from "sharp";
 
 const appRoot = fileURLToPath(new URL("./", import.meta.url));
 const publicRoot = fileURLToPath(new URL("./public/", import.meta.url));
@@ -50,6 +51,9 @@ const authSessionDays = positiveInteger(process.env.KONNER_AUTH_SESSION_DAYS, 36
 const authSessionMs = authSessionDays * 24 * 60 * 60 * 1000;
 const authSessionSecret = sessionSecret();
 const releaseInfo = await readReleaseInfo();
+const thumbnailDirectoryName = ".thumbnails";
+const thumbnailMaxWidth = positiveInteger(process.env.THUMBNAIL_MAX_WIDTH, 640);
+const thumbnailMaxHeight = positiveInteger(process.env.THUMBNAIL_MAX_HEIGHT, 480);
 
 const imageExtensions = new Set([
   ".avif",
@@ -527,6 +531,7 @@ app.post("/api/upload", requireAuth, upload.array("photos", maxUploadFiles), asy
 
 app.get("/api/albums/:albumId/media/:filename", requireAuth, serveAlbumMedia);
 app.get("/api/albums/:albumId/photos/:filename", requireAuth, serveAlbumMedia);
+app.get("/api/albums/:albumId/media/:filename/thumbnail", requireAuth, serveAlbumThumbnail);
 
 app.delete("/api/albums/:albumId/media", requireAuth, deleteAlbumMediaCollection);
 app.delete("/api/albums/:albumId/photos", requireAuth, deleteAlbumMediaCollection);
@@ -549,6 +554,34 @@ async function serveAlbumMedia(req, res, next) {
     sendMediaFile(req, res, filePath, filename, stats, {
       downloadName: isDownloadRequest(req) ? originalName : "",
     });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function serveAlbumThumbnail(req, res, next) {
+  try {
+    const albumId = cleanAlbumId(req.params.albumId);
+    const filename = cleanFilename(req.params.filename);
+    const filePath = photoPath(albumId, filename);
+    const stats = await fs.stat(filePath).catch((error) => {
+      if (error?.code === "ENOENT") throw httpError(404, "Media not found.");
+      throw error;
+    });
+
+    if (!isPhotoFilename(filename)) throw httpError(404, "Thumbnail not available.");
+
+    const thumbnail = await ensureImageThumbnail(albumId, filename, filePath, stats).catch(() => null);
+    if (!thumbnail) {
+      sendMediaFile(req, res, filePath, filename, stats);
+      return;
+    }
+
+    const thumbnailStats = await fs.stat(thumbnail);
+    res.setHeader("Content-Type", "image/webp");
+    res.setHeader("Cache-Control", "private, max-age=86400");
+    res.setHeader("Content-Length", String(thumbnailStats.size));
+    createReadStream(thumbnail).pipe(res);
   } catch (error) {
     next(error);
   }
@@ -594,6 +627,9 @@ async function deleteAlbumMedia(req, res, next) {
     await fs.unlink(photoPath(albumId, filename)).catch((error) => {
       if (error?.code !== "ENOENT") throw error;
     });
+    await fs.unlink(thumbnailPath(albumId, filename)).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
     const metadata = await readPhotoMetadata(albumId);
     delete metadata[filename];
     await writePhotoMetadata(albumId, metadata);
@@ -612,6 +648,7 @@ async function deleteAlbumMediaCollection(req, res, next) {
     await Promise.all(photos.map((photo) => fs.unlink(photoPath(albumId, photo.filename)).catch((error) => {
       if (error?.code !== "ENOENT") throw error;
     })));
+    await fs.rm(thumbnailDirectoryPath(albumId), { recursive: true, force: true });
     await writePhotoMetadata(albumId, {});
     res.json({ ok: true, deleted: photos.length });
   } catch (error) {
@@ -1979,6 +2016,36 @@ async function saveUploadedPhoto(albumId, file) {
   });
 }
 
+async function ensureImageThumbnail(albumId, filename, sourcePath, sourceStats) {
+  const thumbnailsDirectory = thumbnailDirectoryPath(albumId);
+  const destination = thumbnailPath(albumId, filename);
+  const existingStats = await fs.stat(destination).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (existingStats?.size > 0 && existingStats.mtimeMs >= sourceStats.mtimeMs) return destination;
+
+  await fs.mkdir(thumbnailsDirectory, { recursive: true });
+  const tmpPath = path.join(thumbnailsDirectory, `${crypto.randomUUID()}.tmp.webp`);
+  try {
+    await sharp(sourcePath, { failOn: "none" })
+      .rotate()
+      .resize({
+        width: thumbnailMaxWidth,
+        height: thumbnailMaxHeight,
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .webp({ quality: 76, effort: 4 })
+      .toFile(tmpPath);
+    await fs.rename(tmpPath, destination);
+  } catch (error) {
+    await fs.unlink(tmpPath).catch(() => {});
+    throw error;
+  }
+  return destination;
+}
+
 function photoResponse(albumId, filename, details) {
   const kind = mediaKindFor(filename, details.contentType);
   return {
@@ -1991,6 +2058,7 @@ function photoResponse(albumId, filename, details) {
     bytes: details.bytes,
     uploadedAt: details.uploadedAt,
     url: `/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}`,
+    thumbnailUrl: kind === "image" ? `/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}/thumbnail` : "",
     downloadUrl: `/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}?download=1`,
     legacyUrl: `/api/albums/${encodeURIComponent(albumId)}/photos/${encodeURIComponent(filename)}`,
   };
@@ -2217,6 +2285,21 @@ function photoPath(albumId, filename) {
   const resolved = path.resolve(root, filename);
   if (resolved.startsWith(`${root}${path.sep}`)) return resolved;
   throw httpError(400, "Invalid photo.");
+}
+
+function thumbnailDirectoryPath(albumId) {
+  const root = albumPath(albumId);
+  const resolved = path.resolve(root, thumbnailDirectoryName);
+  if (resolved.startsWith(`${root}${path.sep}`)) return resolved;
+  throw httpError(400, "Invalid thumbnail directory.");
+}
+
+function thumbnailPath(albumId, filename) {
+  filename = cleanFilename(filename);
+  const root = thumbnailDirectoryPath(albumId);
+  const resolved = path.resolve(root, `${filename}.webp`);
+  if (resolved.startsWith(`${root}${path.sep}`)) return resolved;
+  throw httpError(400, "Invalid thumbnail.");
 }
 
 function cleanAlbumId(value) {

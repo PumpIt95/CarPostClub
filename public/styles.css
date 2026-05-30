@@ -227,6 +227,8 @@ h2 {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--spacing-8);
 }
 
@@ -537,6 +539,48 @@ textarea:focus {
   gap: var(--spacing-16);
 }
 
+.upload-recovery {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-12);
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  padding: var(--spacing-12);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.upload-recovery[hidden] {
+  display: none;
+}
+
+.upload-recovery > span {
+  min-width: 0;
+  color: var(--color-cloud-white);
+  font-size: 13px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.35;
+}
+
+.upload-recovery > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--spacing-8);
+}
+
+.upload-recovery .icon-text-button {
+  min-height: 40px;
+  border-color: var(--color-cloud-white);
+  padding: 0 var(--spacing-12);
+  color: var(--color-midnight-graphite);
+  background: var(--color-cloud-white);
+}
+
+.upload-recovery .icon-text-button.subtle {
+  color: var(--color-cloud-white);
+  background: transparent;
+}
+
 .progress-shell {
   --upload-progress: 0%;
   --upload-monkey-size: 34px;
@@ -751,6 +795,38 @@ textarea:focus {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
   gap: var(--spacing-16);
+}
+
+.gallery-grid.is-collapsed {
+  display: none;
+}
+
+.gallery-summary {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  border: 1px dashed var(--color-midnight-graphite);
+  padding: var(--spacing-16);
+  color: var(--color-midnight-graphite);
+  background: var(--color-cloud-white);
+  text-align: left;
+}
+
+.gallery-summary[hidden] {
+  display: none;
+}
+
+.gallery-summary:hover {
+  background: #f6f6f6;
+}
+
+.gallery-summary strong {
+  font-size: 15px;
+}
+
+.gallery-summary span {
+  color: var(--color-smoke-gray);
+  font-size: 13px;
 }
 
 .photo-card {
@@ -1276,6 +1352,27 @@ textarea:focus {
     gap: var(--spacing-16);
   }
 
+  .gallery-section .section-heading {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .gallery-section .gallery-actions {
+    display: grid;
+    width: 100%;
+    grid-template-columns: auto minmax(0, 1fr) 56px 56px;
+  }
+
+  .gallery-section .gallery-actions .icon-text-button,
+  .gallery-section .gallery-actions .icon-button {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .gallery-section .gallery-actions .icon-text-button {
+    padding: 0 var(--spacing-8);
+  }
+
   .source-link {
     max-width: 96px;
     text-align: right;
@@ -1307,6 +1404,15 @@ textarea:focus {
 
   .upload-primary small {
     font-size: 12px;
+  }
+
+  .upload-recovery {
+    display: grid;
+  }
+
+  .upload-recovery > div {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
 
   .gallery-grid {

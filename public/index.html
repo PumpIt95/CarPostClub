@@ -326,6 +326,28 @@
         </div>
         <span id="uploadState" class="upload-state">Locked</span>
       </div>
+
+      <div id="uploadRecovery" class="upload-recovery" hidden>
+        <span id="uploadRecoveryMessage">Upload failed</span>
+        <div>
+          <button id="retryUploadButton" class="icon-text-button" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 7v5h-5"/>
+              <path d="M4 17v-5h5"/>
+              <path d="M18 12a6 6 0 0 0-10.4-4.1L4 11"/>
+              <path d="M6 12a6 6 0 0 0 10.4 4.1L20 13"/>
+            </svg>
+            <span>Retry</span>
+          </button>
+          <button id="clearUploadButton" class="icon-text-button subtle" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18 6 6 18"/>
+              <path d="m6 6 12 12"/>
+            </svg>
+            <span>Clear</span>
+          </button>
+        </div>
+      </div>
     </section>
 
     <section class="gallery-section" aria-label="Car media">
@@ -336,6 +358,12 @@
         </div>
         <div class="gallery-actions">
           <span id="photoCount" class="count-pill">0</span>
+          <button id="galleryToggleButton" class="icon-text-button subtle" type="button" disabled>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+            </svg>
+            <span>Expand</span>
+          </button>
           <a id="downloadAllButton" class="icon-button subtle" href="#" aria-label="Download all media" title="Download all media" aria-disabled="true">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 3v12"/>
@@ -354,6 +382,10 @@
           </button>
         </div>
       </div>
+      <button id="gallerySummary" class="gallery-summary" type="button" hidden>
+        <strong>Media folder</strong>
+        <span>Expand to preview saved media.</span>
+      </button>
       <div id="gallery" class="gallery-grid"></div>
       <div id="emptyGallery" class="empty-state" hidden>No media for this car</div>
     </section>

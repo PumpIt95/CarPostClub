@@ -321,12 +321,19 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
 
     const firstPhoto = afterUpload.photos.find((photo) => photo.originalName === "front.jpg");
     assert.ok(firstPhoto);
+    assert.match(firstPhoto.thumbnailUrl, /\/thumbnail$/);
     assert.match(firstPhoto.downloadUrl, /download=1/);
     const imageResponse = await fetch(`${harness.baseUrl}${firstPhoto.url}`, {
       headers: { Cookie: harness.cookie },
     });
     assert.equal(imageResponse.status, 200);
     assert.match(imageResponse.headers.get("content-type") || "", /^image\/jpeg/);
+
+    const thumbnailResponse = await fetch(`${harness.baseUrl}${firstPhoto.thumbnailUrl}`, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(thumbnailResponse.status, 200);
+    assert.match(thumbnailResponse.headers.get("content-type") || "", /^image\//);
 
     const imageDownload = await fetch(`${harness.baseUrl}${firstPhoto.downloadUrl}`, {
       headers: { Cookie: harness.cookie },

@@ -47,8 +47,13 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /accept="image\/\*,video\/\*/);
   assert.match(html, /accept="video\/\*/);
   assert.match(html, /id="uploadProgressShell"/);
+  assert.match(html, /id="uploadRecovery"/);
+  assert.match(html, /id="retryUploadButton"/);
+  assert.match(html, /id="clearUploadButton"/);
   assert.match(html, /class="upload-monkey"/);
   assert.match(html, /class="progress-confetti"/);
+  assert.match(html, /id="galleryToggleButton"/);
+  assert.match(html, /id="gallerySummary"/);
   assert.match(html, /\/app\.js\?v=20260530-confetti/);
   assert.match(html, /\/styles\.css\?v=20260530-confetti/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -86,6 +91,14 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /classList\.toggle\("is-uploading", state\.uploading\)/);
   assert.match(source, /triggerUploadConfetti/);
   assert.match(source, /is-celebrating/);
+  assert.match(source, /beforeunload/);
+  assert.match(source, /failedUploadFiles/);
+  assert.match(source, /retryUploadButton/);
+  assert.match(source, /clearUploadButton/);
+  assert.match(source, /thumbnailUrl/);
+  assert.match(source, /loading = "lazy"/);
+  assert.match(source, /galleryExpanded/);
+  assert.match(source, /galleryToggleButton/);
   assert.match(source, /downloadAllButton/);
   assert.match(source, /deleteAllPhotos/);
   assert.match(source, /renderMarketplaceDraft/);
