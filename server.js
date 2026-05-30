@@ -3485,7 +3485,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)}</title>
-  <link rel="stylesheet" href="/styles.css?v=20260530-workflow-resilience">
+  <link rel="stylesheet" href="/styles.css?v=20260530-upload-feedback">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">

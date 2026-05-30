@@ -148,7 +148,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(passwordPage.status, 200);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260530-workflow-resilience/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260530-upload-feedback/);
 
     const wrongPasswordChange = await fetch(`${harness.baseUrl}/account/password`, {
       method: "POST",

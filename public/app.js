@@ -1238,9 +1238,26 @@ function clearFailedUpload() {
 }
 
 async function uploadFiles(files) {
+  const selectedFiles = Array.from(files || []);
+  if (!selectedFiles.length) return;
+
+  if (state.uploading) {
+    showError("Upload already in progress. Wait for it to finish, then try again.");
+    return;
+  }
+
   const car = selectedCar();
-  const mediaFiles = files.filter((file) => isMediaLike(file));
-  if (!car || !mediaFiles.length || state.uploading) return;
+  if (!car) {
+    showError("Select a car before uploading media.");
+    return;
+  }
+
+  const mediaFiles = selectedFiles.filter((file) => isMediaLike(file));
+  if (!mediaFiles.length) {
+    showError("Only photos and videos can be uploaded.");
+    return;
+  }
+  const skippedCount = selectedFiles.length - mediaFiles.length;
 
   haptic("start");
   const form = new FormData();
@@ -1268,7 +1285,10 @@ async function uploadFiles(files) {
     uploadSucceeded = true;
     triggerUploadConfetti();
     haptic("success");
-    showStatus(`Uploaded ${response.count} ${plural(response.count, "file")} to ${car.stockNumber || carInventoryKey(car)}.`);
+    showStatus([
+      `Uploaded ${response.count} ${plural(response.count, "file")} to ${car.stockNumber || carInventoryKey(car)}.`,
+      skippedCount ? `Skipped ${skippedCount} unsupported ${plural(skippedCount, "file")}.` : "",
+    ].filter(Boolean).join(" "));
   } catch (error) {
     state.failedUploadFiles = mediaFiles;
     state.failedUploadMessage = error instanceof Error ? error.message : String(error);
