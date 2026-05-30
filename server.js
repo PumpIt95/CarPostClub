@@ -298,6 +298,7 @@ app.post("/logout", requireAuth, async (req, res, next) => {
   try {
     const pushEndpoint = cleanOptionalPushEndpoint(req.body?.pushEndpoint);
     if (pushEndpoint) await removePushSubscription(pushEndpoint, req.authUser);
+    setPrivateNoStore(res);
     res.setHeader("Set-Cookie", `${authCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${authCookieSecure ? "; Secure" : ""}`);
     res.redirect(303, "/login");
   } catch (error) {
@@ -395,6 +396,7 @@ app.post("/admin/users/:username/password", requireAdmin, async (req, res, next)
 });
 
 app.get("/", requireAuth, (_req, res) => {
+  setPrivateNoStore(res);
   res.sendFile(path.join(publicRoot, "index.html"));
 });
 
@@ -3482,6 +3484,7 @@ function sessionSecret() {
 }
 
 function sendLoginPage(res, error = "") {
+  setPrivateNoStore(res);
   res.status(error ? 401 : 200).send(renderAuthPage({
     title: `${appName} Login`,
     heading: "Sign in",
@@ -3506,6 +3509,7 @@ function sendChangePasswordPage(res, { user, error = "", success = "" }) {
   const bootstrapNote = user?.bootstrap
     ? '<p class="auth-note">The bootstrap admin password is managed through the server environment, not this page.</p>'
     : "";
+  setPrivateNoStore(res);
   res.status(error ? 400 : 200).send(renderAuthPage({
     title: `Change ${appName} Password`,
     heading: "Change password",
@@ -3532,6 +3536,7 @@ function sendChangePasswordPage(res, { user, error = "", success = "" }) {
 }
 
 function sendSignupPage(res, { error = "", success = "", values = {} } = {}) {
+  setPrivateNoStore(res);
   res.status(error ? 400 : 200).send(renderAuthPage({
     title: `Request ${appName} Access`,
     heading: "Request access",
@@ -3571,6 +3576,7 @@ function sendAdminUsersPage(res, { currentUser, users, error = "", success = "" 
     ? sortedUsers.map(renderAdminUserCard).join("")
     : '<p class="auth-note">No account requests yet.</p>';
 
+  setPrivateNoStore(res);
   res.send(renderAuthPage({
     title: `Manage ${appName} Users`,
     heading: "Users",
@@ -3718,6 +3724,12 @@ function httpError(status, message) {
   const error = new Error(message);
   error.status = status;
   return error;
+}
+
+function setPrivateNoStore(res) {
+  res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
 }
 
 function escapeHtml(value) {

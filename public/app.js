@@ -31,6 +31,8 @@ const state = {
   uploading: false,
   uploadCelebrationTimer: 0,
   chatSending: false,
+  lastSessionCheckAt: 0,
+  sessionCheckPromise: null,
 };
 
 const hapticPatterns = {
@@ -409,10 +411,35 @@ function bindEvents() {
   });
 
   window.addEventListener("pagehide", disconnectChatStream);
-  window.addEventListener("pageshow", resumeChatStream);
+  window.addEventListener("pageshow", handlePageShow);
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) resumeChatStream();
+    if (!document.hidden) handlePageVisible();
   });
+}
+
+function handlePageShow(event) {
+  resumeChatStream();
+  if (event.persisted) validateActiveSession({ force: true }).catch(() => {});
+}
+
+function handlePageVisible() {
+  resumeChatStream();
+  validateActiveSession().catch(() => {});
+}
+
+async function validateActiveSession({ force = false } = {}) {
+  if (!state.currentUser) return;
+  if (state.sessionCheckPromise) return state.sessionCheckPromise;
+
+  const now = Date.now();
+  if (!force && now - state.lastSessionCheckAt < 30_000) return;
+  state.lastSessionCheckAt = now;
+
+  state.sessionCheckPromise = loadCurrentUser()
+    .finally(() => {
+      state.sessionCheckPromise = null;
+    });
+  return state.sessionCheckPromise;
 }
 
 async function initPwa() {

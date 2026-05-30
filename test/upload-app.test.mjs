@@ -73,6 +73,10 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(unauthenticated.status, 401);
     assert.match(unauthenticated.body.error, /Authentication required/i);
 
+    const loginPage = await fetch(`${harness.baseUrl}/login`, { redirect: "manual" });
+    assert.equal(loginPage.status, 200);
+    assertNoStoreHeaders(loginPage);
+
     const signup = await requestSignup(harness.baseUrl, {
       displayName: NEW_DISPLAY_NAME,
       username: NEW_USERNAME,
@@ -80,6 +84,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       confirmPassword: NEW_PASSWORD,
     });
     assert.equal(signup.status, 200);
+    assertNoStoreHeaders(signup);
     assert.match(signup.body, /CarPostClub admin needs to approve/i);
 
     const pendingLogin = await loginAttempt(harness.baseUrl, NEW_USERNAME, NEW_PASSWORD);
@@ -124,6 +129,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       headers: { Cookie: harness.cookie },
     });
     assert.equal(adminPage.status, 200);
+    assertNoStoreHeaders(adminPage);
     const adminPageText = await adminPage.text();
     assert.match(adminPageText, new RegExp(NEW_USERNAME.replace(".", "\\.")));
     assert.match(adminPageText, /Reset password/);
@@ -156,6 +162,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       headers: { Cookie: approvedCookie },
     });
     assert.equal(passwordPage.status, 200);
+    assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
     assert.match(passwordPageText, /\/styles\.css\?v=20260530-auth-pwa/);
@@ -242,6 +249,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     });
     assert.equal(logout.status, 303);
     assert.equal(logout.headers.get("location"), "/login");
+    assertNoStoreHeaders(logout);
     assert.match(logout.headers.get("set-cookie") || "", /Max-Age=0/);
     assert.equal((await readPushSubscriptionCount(harness, logoutSubscription.endpoint)), 0);
     approvedCookie = await login(harness.baseUrl, NEW_USERNAME, RESET_PASSWORD);
@@ -303,6 +311,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       headers: { Cookie: harness.cookie },
     });
     assert.equal(home.status, 200);
+    assertNoStoreHeaders(home);
     const homeText = await home.text();
     assert.match(homeText, /Vehicle media intake/);
     assert.match(homeText, /id="carSelect"/);
@@ -875,6 +884,7 @@ async function requestSignup(baseUrl, body) {
   });
   return {
     status: response.status,
+    headers: response.headers,
     body: await response.text(),
   };
 }
@@ -1030,6 +1040,12 @@ async function readPushSubscriptionCount(harness, endpoint) {
   return Array.isArray(subscriptions)
     ? subscriptions.filter((subscription) => subscription.endpoint === endpoint).length
     : 0;
+}
+
+function assertNoStoreHeaders(response) {
+  assert.equal(response.headers.get("cache-control"), "private, no-store");
+  assert.equal(response.headers.get("pragma"), "no-cache");
+  assert.equal(response.headers.get("expires"), "0");
 }
 
 async function fetchJson(url, options = {}) {
