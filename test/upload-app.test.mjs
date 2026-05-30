@@ -589,6 +589,19 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
     );
     assert.deepEqual(afterDeleteAll.photos, []);
+
+    await assert.rejects(
+      fs.access(path.join(harness.uploadRoot, TEST_ALBUM_ID, ".marketplace-copy.json")),
+      { code: "ENOENT" },
+    );
+    const marketplaceDraftAfterDeleteAll = await getJson(
+      harness,
+      `/api/marketplace-draft?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
+    );
+    assert.equal(marketplaceDraftAfterDeleteAll.draft.descriptionSource, "not_generated");
+    assert.equal(marketplaceDraftAfterDeleteAll.draft.description, "");
+    assert.equal(marketplaceDraftAfterDeleteAll.draft.copyText, "");
+    assert.ok(marketplaceDraftAfterDeleteAll.draft.missingFields.includes("Description"));
   } finally {
     await stopTestServer(harness);
   }

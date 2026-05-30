@@ -713,6 +713,7 @@ async function deleteAlbumMedia(req, res, next) {
     await updatePhotoMetadata(albumId, (metadata) => {
       delete metadata[filename];
     });
+    await removeMarketplaceCopyIfAlbumEmpty(albumId);
     res.json({ ok: true });
   } catch (error) {
     next(error);
@@ -732,6 +733,7 @@ async function deleteAlbumMediaCollection(req, res, next) {
     await updatePhotoMetadata(albumId, (metadata) => {
       for (const filename of Object.keys(metadata)) delete metadata[filename];
     });
+    await removeMarketplaceCopyStore(albumId);
     res.json({ ok: true, deleted: photos.length });
   } catch (error) {
     next(error);
@@ -1375,6 +1377,7 @@ async function getMarketplaceDescriptionForUser({ car, fields, user, album, forc
   };
 
   if (!shouldGenerateMarketplaceDescription(fields)) return fallback;
+  if (!await albumHasMedia(album.id)) return fallback;
 
   const inputHash = marketplaceDescriptionInputHash(car, fields);
   const copyPath = marketplaceCopyPath(album.id);
@@ -1658,6 +1661,21 @@ async function marketplaceAssignmentUsers(primaryUser) {
 
 function marketplaceCopyPath(albumId) {
   return path.join(albumPath(albumId), ".marketplace-copy.json");
+}
+
+async function albumHasMedia(albumId) {
+  return (await listAlbumPhotos(albumId)).length > 0;
+}
+
+async function removeMarketplaceCopyIfAlbumEmpty(albumId) {
+  if (await albumHasMedia(albumId)) return;
+  await removeMarketplaceCopyStore(albumId);
+}
+
+async function removeMarketplaceCopyStore(albumId) {
+  await fs.unlink(marketplaceCopyPath(albumId)).catch((error) => {
+    if (error?.code !== "ENOENT") throw error;
+  });
 }
 
 function marketplaceUserKey(user) {
