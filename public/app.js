@@ -1114,19 +1114,24 @@ async function requestMarketplaceDraft({ regenerate = false } = {}) {
   state.marketplaceLoading = true;
   renderMarketplaceDraft();
 
-  const payload = carRequestPayload(car);
-  const response = regenerate
-    ? await apiJson("/api/marketplace-draft/regenerate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    })
-    : await apiJson(`/api/marketplace-draft?${new URLSearchParams(payload)}`);
+  try {
+    const payload = carRequestPayload(car);
+    const response = regenerate
+      ? await apiJson("/api/marketplace-draft/regenerate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      : await apiJson(`/api/marketplace-draft?${new URLSearchParams(payload)}`);
 
-  if (state.marketplaceRequestId !== requestId) return;
-  state.marketplaceDraft = response.draft;
-  state.marketplaceLoading = false;
-  renderMarketplaceDraft();
+    if (state.marketplaceRequestId !== requestId) return;
+    state.marketplaceDraft = response.draft;
+  } finally {
+    if (state.marketplaceRequestId === requestId) {
+      state.marketplaceLoading = false;
+      renderMarketplaceDraft();
+    }
+  }
 }
 
 function resetMarketplaceDraft({ keepRequest = false } = {}) {

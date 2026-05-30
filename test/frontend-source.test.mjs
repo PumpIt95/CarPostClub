@@ -107,6 +107,8 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /els\.carSelect\.addEventListener\("change"/);
   assert.match(source, /inventoryKey/);
   assert.match(source, /carRequestPayload/);
+  assert.match(source, /finally \{\n    if \(state\.marketplaceRequestId === requestId\) \{/);
+  assert.match(source, /state\.marketplaceLoading = false;\n      renderMarketplaceDraft\(\);/);
   assert.match(source, /filteredCars/);
   assert.match(source, /carSearchText/);
   assert.match(source, /carpostclub\.carSearch/);
