@@ -18,12 +18,12 @@ const state = {
   pushPublicKey: "",
   pushSubscription: null,
   pushBusy: false,
-  selectedDealershipId: localStorage.getItem("carpostclub.selectedDealershipId") || "15",
-  selectedInventoryTypeId: localStorage.getItem("carpostclub.selectedInventoryTypeId") || "2",
-  selectedMake: localStorage.getItem("carpostclub.selectedMake") || "",
-  selectedModel: localStorage.getItem("carpostclub.selectedModel") || "",
-  selectedVin: localStorage.getItem("carpostclub.selectedVin") || "",
-  carSearch: localStorage.getItem("carpostclub.carSearch") || "",
+  selectedDealershipId: safeStorageGet("carpostclub.selectedDealershipId", "15"),
+  selectedInventoryTypeId: safeStorageGet("carpostclub.selectedInventoryTypeId", "2"),
+  selectedMake: safeStorageGet("carpostclub.selectedMake"),
+  selectedModel: safeStorageGet("carpostclub.selectedModel"),
+  selectedVin: safeStorageGet("carpostclub.selectedVin"),
+  carSearch: safeStorageGet("carpostclub.carSearch"),
   galleryExpanded: false,
   failedUploadFiles: [],
   failedUploadMessage: "",
@@ -250,7 +250,7 @@ function bindEvents() {
 
   els.carSearchInput.addEventListener("input", () => {
     state.carSearch = els.carSearchInput.value;
-    localStorage.setItem("carpostclub.carSearch", state.carSearch);
+    safeStorageSet("carpostclub.carSearch", state.carSearch);
     renderCarOptions();
   });
 
@@ -1456,14 +1456,38 @@ function carRequestPayload(car = selectedCar()) {
 }
 
 function persistSelection() {
-  localStorage.setItem("carpostclub.selectedDealershipId", state.selectedDealershipId);
-  localStorage.setItem("carpostclub.selectedInventoryTypeId", state.selectedInventoryTypeId);
-  if (state.selectedMake) localStorage.setItem("carpostclub.selectedMake", state.selectedMake);
-  else localStorage.removeItem("carpostclub.selectedMake");
-  if (state.selectedModel) localStorage.setItem("carpostclub.selectedModel", state.selectedModel);
-  else localStorage.removeItem("carpostclub.selectedModel");
-  if (state.selectedVin) localStorage.setItem("carpostclub.selectedVin", state.selectedVin);
-  else localStorage.removeItem("carpostclub.selectedVin");
+  safeStorageSet("carpostclub.selectedDealershipId", state.selectedDealershipId);
+  safeStorageSet("carpostclub.selectedInventoryTypeId", state.selectedInventoryTypeId);
+  if (state.selectedMake) safeStorageSet("carpostclub.selectedMake", state.selectedMake);
+  else safeStorageRemove("carpostclub.selectedMake");
+  if (state.selectedModel) safeStorageSet("carpostclub.selectedModel", state.selectedModel);
+  else safeStorageRemove("carpostclub.selectedModel");
+  if (state.selectedVin) safeStorageSet("carpostclub.selectedVin", state.selectedVin);
+  else safeStorageRemove("carpostclub.selectedVin");
+}
+
+function safeStorageGet(key, fallback = "") {
+  try {
+    return window.localStorage?.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    window.localStorage?.setItem(key, value);
+  } catch {
+    // Storage can be unavailable in restricted/private browser modes.
+  }
+}
+
+function safeStorageRemove(key) {
+  try {
+    window.localStorage?.removeItem(key);
+  } catch {
+    // Storage can be unavailable in restricted/private browser modes.
+  }
 }
 
 function snapshotFiles(fileList) {
