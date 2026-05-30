@@ -170,6 +170,9 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /chat-view-active/);
   assert.match(source, /setAttribute\("aria-hidden", String\(!state\.chatOpen\)\)/);
   assert.match(source, /chatColorForAuthor/);
+  assert.match(source, /chatIdentityKey/);
+  assert.match(source, /authorUsername/);
+  assert.match(source, /authorDisplayName/);
   assert.match(source, /--chat-user-color/);
   assert.match(source, /isOwnChatMessage/);
   assert.match(source, /classList\.toggle\("is-own"/);
@@ -351,6 +354,9 @@ test("mobile chat view and chat messages have distinct author accents", async ()
   assert.match(styles, /border-right: 6px solid var\(--chat-user-color\)/);
   assert.match(styles, /\.chat-message-meta strong::before/);
   assert.match(source, /palette = \[/);
+  assert.match(source, /chatIdentityKey\(message\)/);
+  assert.match(source, /message\?\.authorUsername/);
+  assert.match(source, /username === normalizeChatIdentity\(state\.currentUser\.username\)/);
 });
 
 test("pwa haptics provide tactile feedback on mobile interaction paths", async () => {

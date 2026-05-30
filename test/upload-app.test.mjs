@@ -383,12 +383,15 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(chatPost.body.ok, true);
     assert.equal(chatPost.body.message.text, "Ready for photos");
     assert.equal(chatPost.body.message.author, TEST_USERNAME);
+    assert.equal(chatPost.body.message.authorDisplayName, TEST_USERNAME);
+    assert.equal(chatPost.body.message.authorUsername, TEST_USERNAME);
     assert.equal(chatPost.body.pushDelivery.requested, 1);
     assert.equal(chatPost.body.pushDelivery.skipped, 1);
 
     const chatAfterPost = await getJson(harness, "/api/chat/messages");
     assert.equal(chatAfterPost.messages.length, 1);
     assert.equal(chatAfterPost.messages[0].text, "Ready for photos");
+    assert.equal(chatAfterPost.messages[0].authorUsername, TEST_USERNAME);
 
     const cars = await getJson(harness, "/api/inventory/cars?dealershipId=15&inventoryTypeId=2");
     assert.equal(cars.count, 1);
@@ -756,7 +759,7 @@ test("multiple approved accounts can use live chat and upload to the same album 
   const harness = await startTestServer();
   const testAccounts = [
     { username: "lot.runner", displayName: "Lot Runner", password: "lot-runner-123" },
-    { username: "photo.desk", displayName: "Photo Desk", password: "photo-desk-123" },
+    { username: "photo.desk", displayName: "Lot Runner", password: "photo-desk-123" },
     { username: "sales.floor", displayName: "Sales Floor", password: "sales-floor-123" },
   ];
   const collectors = [];
@@ -784,6 +787,8 @@ test("multiple approved accounts can use live chat and upload to the same album 
     for (const [index, post] of chatPosts.entries()) {
       assert.equal(post.status, 201);
       assert.equal(post.body.message.author, chatUsers[index].displayName);
+      assert.equal(post.body.message.authorDisplayName, chatUsers[index].displayName);
+      assert.equal(post.body.message.authorUsername, chatUsers[index].username);
       assert.equal(post.body.message.text, `Concurrent message ${index + 1} from ${chatUsers[index].displayName}`);
     }
 
@@ -793,6 +798,10 @@ test("multiple approved accounts can use live chat and upload to the same album 
         streamedMessages.map((message) => message.author).sort(),
         chatUsers.map((user) => user.displayName).sort(),
       );
+      assert.deepEqual(
+        streamedMessages.map((message) => message.authorUsername).sort(),
+        chatUsers.map((user) => user.username).sort(),
+      );
     }
 
     const persistedChat = await getJson(harness, "/api/chat/messages");
@@ -800,6 +809,10 @@ test("multiple approved accounts can use live chat and upload to the same album 
     assert.deepEqual(
       persistedChat.messages.map((message) => message.text).sort(),
       chatUsers.map((user, index) => `Concurrent message ${index + 1} from ${user.displayName}`).sort(),
+    );
+    assert.deepEqual(
+      persistedChat.messages.map((message) => message.authorUsername).sort(),
+      chatUsers.map((user) => user.username).sort(),
     );
 
     const uploadUsers = chatUsers.slice(0, 3);

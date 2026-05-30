@@ -2365,9 +2365,13 @@ async function readChatMessages() {
 }
 
 async function appendChatMessage(text, user) {
+  const authorUsername = normalizeAuthUsername(user?.username || authUsername);
+  const authorDisplayName = normalizeChatAuthor(user?.displayName || authorUsername || authUsername);
   const message = {
     id: `${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`,
-    author: normalizeChatAuthor(user?.displayName || user?.username || authUsername),
+    author: authorDisplayName,
+    authorDisplayName,
+    authorUsername,
     text,
     createdAt: new Date().toISOString(),
   };
@@ -2409,7 +2413,9 @@ function normalizeStoredChatMessage(value) {
     : new Date().toISOString();
   return {
     id: normalizeSpace(value.id) || `${Date.parse(createdAt).toString(36)}-${crypto.randomUUID().slice(0, 8)}`,
-    author: normalizeChatAuthor(value.author),
+    author: normalizeChatAuthor(value.authorDisplayName || value.author),
+    authorDisplayName: normalizeChatAuthor(value.authorDisplayName || value.author),
+    authorUsername: normalizeAuthUsername(value.authorUsername || value.username),
     text,
     createdAt,
   };

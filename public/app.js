@@ -797,6 +797,8 @@ function normalizeChatMessage(message) {
   return {
     id: String(message.id || `${Date.now()}`),
     author: String(message.author || "CarPostClub").trim() || "CarPostClub",
+    authorDisplayName: String(message.authorDisplayName || message.author || "CarPostClub").trim() || "CarPostClub",
+    authorUsername: normalizeChatIdentity(message.authorUsername || message.username),
     text,
     createdAt,
   };
@@ -808,13 +810,13 @@ function renderChatMessages({ scrollToEnd = false } = {}) {
     const item = document.createElement("article");
     item.className = "chat-message";
     item.classList.toggle("is-own", isOwnChatMessage(message));
-    item.style.setProperty("--chat-user-color", chatColorForAuthor(message.author));
+    item.style.setProperty("--chat-user-color", chatColorForAuthor(chatIdentityKey(message)));
 
     const meta = document.createElement("div");
     meta.className = "chat-message-meta";
 
     const author = document.createElement("strong");
-    author.textContent = message.author;
+    author.textContent = message.authorDisplayName || message.author;
 
     const time = document.createElement("time");
     time.dateTime = message.createdAt;
@@ -849,8 +851,12 @@ function scrollChatToEnd() {
 }
 
 function isOwnChatMessage(message) {
+  if (!state.currentUser) return false;
+  const username = normalizeChatIdentity(message?.authorUsername);
+  if (username) return username === normalizeChatIdentity(state.currentUser.username);
+
   const author = normalizeChatIdentity(message?.author);
-  if (!author || !state.currentUser) return false;
+  if (!author) return false;
   return [
     state.currentUser.displayName,
     state.currentUser.username,
@@ -863,7 +869,11 @@ function normalizeChatIdentity(value) {
     .toLowerCase();
 }
 
-function chatColorForAuthor(author) {
+function chatIdentityKey(message) {
+  return message?.authorUsername || message?.author || message?.authorDisplayName || "CarPostClub";
+}
+
+function chatColorForAuthor(identity) {
   const palette = [
     "#0b6ec5",
     "#f35815",
@@ -875,7 +885,7 @@ function chatColorForAuthor(author) {
     "#5d6b00",
   ];
   let hash = 0;
-  for (const char of String(author || "CarPostClub").toLowerCase()) {
+  for (const char of String(identity || "CarPostClub").toLowerCase()) {
     hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   }
   return palette[hash % palette.length];
