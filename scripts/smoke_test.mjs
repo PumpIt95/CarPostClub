@@ -99,6 +99,8 @@ function buildAuthHeaders() {
   const payload = {
     v: 1,
     u: username,
+    role: "admin",
+    pv: bootstrapAdminPasswordVersion(secret),
     iat: Date.now(),
     exp: Date.now() + maxAgeDays * 24 * 60 * 60 * 1000,
   };
@@ -113,6 +115,18 @@ function fallbackSessionSecret() {
   return crypto.createHash("sha256")
     .update(process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH || process.env.CARPOSTCLUB_AUTH_PASSWORD || process.env.KONNER_AUTH_PASSWORD_HASH || process.env.KONNER_AUTH_PASSWORD || "carpostclub")
     .digest("hex");
+}
+
+function bootstrapAdminPasswordVersion(secret) {
+  const source = process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH
+    || process.env.CARPOSTCLUB_AUTH_PASSWORD
+    || process.env.KONNER_AUTH_PASSWORD_HASH
+    || process.env.KONNER_AUTH_PASSWORD
+    || "";
+  if (!source) return "";
+  return crypto.createHmac("sha256", secret)
+    .update(`bootstrap-password:${source}`)
+    .digest("base64url");
 }
 
 function loadEnvFile(filePath) {

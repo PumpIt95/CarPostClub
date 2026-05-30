@@ -12,6 +12,7 @@ const manifestPath = fileURLToPath(new URL("../public/manifest.webmanifest", imp
 const offlineHtmlPath = fileURLToPath(new URL("../public/offline.html", import.meta.url));
 const serverPath = fileURLToPath(new URL("../server.js", import.meta.url));
 const serviceWorkerPath = fileURLToPath(new URL("../public/sw.js", import.meta.url));
+const smokeTestPath = fileURLToPath(new URL("../scripts/smoke_test.mjs", import.meta.url));
 const shareCardPath = fileURLToPath(new URL("../public/share-card.png", import.meta.url));
 const faviconPath = fileURLToPath(new URL("../public/favicon.png", import.meta.url));
 const generatedIconPath = fileURLToPath(new URL("../public/icons/app-icon-ai.png", import.meta.url));
@@ -426,6 +427,14 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /\/styles\.css\?v=20260530-auth-pwa/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
+});
+
+test("production smoke helper mints versioned bootstrap admin sessions", async () => {
+  const source = await fs.readFile(smokeTestPath, "utf8");
+
+  assert.match(source, /pv: bootstrapAdminPasswordVersion\(secret\)/);
+  assert.match(source, /function bootstrapAdminPasswordVersion\(secret\)/);
+  assert.match(source, /bootstrap-password:\$\{source\}/);
 });
 
 function fetchEventFor(url, mode) {
