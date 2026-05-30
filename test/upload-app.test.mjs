@@ -705,6 +705,53 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
   }
 });
 
+test("upload limits return clear client errors", async () => {
+  const harness = await startTestServer({
+    env: {
+      MAX_FILE_BYTES: "16",
+      MAX_UPLOAD_FILES: "2",
+    },
+  });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+
+    const tooLarge = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [
+        { filename: "oversized.jpg", type: "image/jpeg", body: Buffer.alloc(32, 1) },
+      ],
+    });
+    assert.equal(tooLarge.status, 413);
+    assert.match(tooLarge.body.error, /Each file must be 16 B or smaller/);
+    assert.deepEqual(await fs.readdir(harness.tmpRoot), []);
+
+    const tooMany = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [
+        { filename: "front.jpg", type: "image/jpeg", body: jpegBytes("a") },
+        { filename: "rear.jpg", type: "image/jpeg", body: jpegBytes("b") },
+        { filename: "interior.jpg", type: "image/jpeg", body: jpegBytes("c") },
+      ],
+    });
+    assert.equal(tooMany.status, 400);
+    assert.match(tooMany.body.error, /Upload up to 2 files at a time/);
+    assert.deepEqual(await fs.readdir(harness.tmpRoot), []);
+
+    const afterLimits = await getJson(
+      harness,
+      `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
+    );
+    assert.deepEqual(afterLimits.photos, []);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("multiple approved accounts can use live chat and upload to the same album concurrently", async () => {
   const harness = await startTestServer();
   const testAccounts = [
@@ -818,7 +865,7 @@ test("multiple approved accounts can use live chat and upload to the same album 
   }
 });
 
-async function startTestServer() {
+async function startTestServer({ env = {} } = {}) {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "carpostclub-test-"));
   const uploadRoot = path.join(tempRoot, "uploads");
   const tmpRoot = path.join(tempRoot, "tmp");
@@ -843,6 +890,7 @@ async function startTestServer() {
       CARPOSTCLUB_AUTH_COOKIE_SECURE: "false",
       CARPOSTCLUB_PUSH_DELIVERY_DISABLED: "true",
       OPENAI_API_KEY: "",
+      ...env,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

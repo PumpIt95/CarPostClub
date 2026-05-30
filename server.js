@@ -808,10 +808,11 @@ app.use((req, _res, next) => {
 
 app.use(async (error, req, res, _next) => {
   if (Array.isArray(req.files)) await cleanupTempFiles(req.files);
-  const status = Number(error?.status || error?.statusCode || 500);
+  const responseError = uploadLimitHttpError(error);
+  const status = Number(responseError?.status || responseError?.statusCode || 500);
   const safeStatus = status >= 400 && status < 600 ? status : 500;
-  const message = safeStatus >= 500 ? "Unexpected server error." : String(error?.message || "Request failed.");
-  if (safeStatus >= 500) console.error(error);
+  const message = safeStatus >= 500 ? "Unexpected server error." : String(responseError?.message || "Request failed.");
+  if (safeStatus >= 500) console.error(responseError);
   res.status(safeStatus).json({ ok: false, error: message });
 });
 
@@ -3744,6 +3745,36 @@ function parseBooleanEnv(name, fallback) {
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function uploadLimitHttpError(error) {
+  if (!isMulterError(error)) return error;
+
+  if (error.code === "LIMIT_FILE_SIZE") {
+    return httpError(413, `Each file must be ${formatBytes(maxFileBytes)} or smaller.`);
+  }
+
+  if (error.code === "LIMIT_FILE_COUNT") {
+    return httpError(400, `Upload up to ${maxUploadFiles} ${maxUploadFiles === 1 ? "file" : "files"} at a time.`);
+  }
+
+  if (error.code === "LIMIT_UNEXPECTED_FILE") {
+    return httpError(400, "Upload files with the media picker before submitting.");
+  }
+
+  return httpError(400, "Upload could not be processed. Check the selected files and try again.");
+}
+
+function isMulterError(error) {
+  return error instanceof multer.MulterError || error?.name === "MulterError";
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 function httpError(status, message) {
