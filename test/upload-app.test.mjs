@@ -142,6 +142,16 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(approvedAccess.status, 200);
     assert.equal(approvedAccess.body.ok, true);
 
+    const approvedPasswordPush = await postJsonWithCookie(harness, approvedCookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("photo-tech-password"),
+    });
+    assert.equal(approvedPasswordPush.status, 201);
+    assert.equal(approvedPasswordPush.body.subscription.username, NEW_USERNAME);
+    const pushBeforePasswordChange = await postJsonWithCookie(harness, approvedCookie, "/api/push/test", {});
+    assert.equal(pushBeforePasswordChange.status, 200);
+    assert.equal(pushBeforePasswordChange.body.delivery.requested, 1);
+    assert.equal(pushBeforePasswordChange.body.delivery.skipped, 1);
+
     const passwordPage = await fetch(`${harness.baseUrl}/account/password`, {
       headers: { Cookie: approvedCookie },
     });
@@ -185,8 +195,18 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(staleAfterPasswordChange.status, 401);
     assert.equal((await loginAttempt(harness.baseUrl, NEW_USERNAME, NEW_PASSWORD)).status, 401);
     approvedCookie = refreshedCookie;
+    const pushAfterPasswordChange = await postJsonWithCookie(harness, approvedCookie, "/api/push/test", {});
+    assert.equal(pushAfterPasswordChange.status, 200);
+    assert.equal(pushAfterPasswordChange.body.delivery.requested, 0);
 
     const cookieBeforeAdminReset = approvedCookie;
+    const approvedResetPush = await postJsonWithCookie(harness, approvedCookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("photo-tech-reset"),
+    });
+    assert.equal(approvedResetPush.status, 201);
+    const pushBeforeAdminReset = await postJsonWithCookie(harness, approvedCookie, "/api/push/test", {});
+    assert.equal(pushBeforeAdminReset.status, 200);
+    assert.equal(pushBeforeAdminReset.body.delivery.requested, 1);
     const adminResetPassword = await fetch(`${harness.baseUrl}/admin/users/${encodeURIComponent(NEW_USERNAME)}/password`, {
       method: "POST",
       headers: { Cookie: harness.cookie, "Content-Type": "application/x-www-form-urlencoded" },
@@ -204,6 +224,32 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     });
     assert.equal(staleAfterAdminReset.status, 401);
     approvedCookie = await login(harness.baseUrl, NEW_USERNAME, RESET_PASSWORD);
+    const pushAfterAdminReset = await postJsonWithCookie(harness, approvedCookie, "/api/push/test", {});
+    assert.equal(pushAfterAdminReset.status, 200);
+    assert.equal(pushAfterAdminReset.body.delivery.requested, 0);
+
+    const rejectable = await createApprovedAccount(harness, {
+      username: "reject.me",
+      displayName: "Reject Me",
+      password: "reject-me-123",
+    });
+    const rejectableSubscription = pushSubscriptionFor("reject-me");
+    const rejectablePush = await postJsonWithCookie(harness, rejectable.cookie, "/api/push/subscriptions", {
+      subscription: rejectableSubscription,
+    });
+    assert.equal(rejectablePush.status, 201);
+    assert.equal((await postJsonWithCookie(harness, rejectable.cookie, "/api/push/test", {})).body.delivery.requested, 1);
+    const rejected = await fetch(`${harness.baseUrl}/admin/users/${encodeURIComponent(rejectable.username)}/reject`, {
+      method: "POST",
+      headers: { Cookie: harness.cookie },
+      redirect: "manual",
+    });
+    assert.equal(rejected.status, 303);
+    const rejectedAccess = await fetchJson(`${harness.baseUrl}/api/me`, {
+      headers: { Cookie: rejectable.cookie },
+    });
+    assert.equal(rejectedAccess.status, 401);
+    assert.equal((await readPushSubscriptionCount(harness, rejectableSubscription.endpoint)), 0);
 
     const home = await fetch(`${harness.baseUrl}/`, {
       headers: { Cookie: harness.cookie },
@@ -867,6 +913,16 @@ function pushSubscriptionFor(id) {
       auth: "A".repeat(22),
     },
   };
+}
+
+async function readPushSubscriptionCount(harness, endpoint) {
+  const storePath = path.join(harness.tempRoot, "push-subscriptions.json");
+  const raw = await fs.readFile(storePath, "utf8").catch(() => "{\"subscriptions\":[]}");
+  const store = JSON.parse(raw);
+  const subscriptions = Array.isArray(store) ? store : store.subscriptions;
+  return Array.isArray(subscriptions)
+    ? subscriptions.filter((subscription) => subscription.endpoint === endpoint).length
+    : 0;
 }
 
 async function fetchJson(url, options = {}) {

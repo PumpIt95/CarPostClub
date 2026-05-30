@@ -2490,6 +2490,18 @@ async function removePushSubscription(endpoint, user) {
   return removed;
 }
 
+async function removePushSubscriptionsForUser(usernameValue) {
+  const username = normalizeAuthUsername(usernameValue);
+  if (!username) return 0;
+  let removed = 0;
+  await updatePushSubscriptions((store) => {
+    const initialCount = store.subscriptions.length;
+    store.subscriptions = store.subscriptions.filter((record) => record.username !== username);
+    removed = initialCount - store.subscriptions.length;
+  });
+  return removed;
+}
+
 async function removePushEndpoints(endpoints) {
   const endpointSet = new Set(endpoints);
   if (!endpointSet.size) return 0;
@@ -2507,9 +2519,11 @@ async function sendPushNotifications({ payload, usernames = null, excludeUsernam
     ? new Set(usernames.map(normalizeAuthUsername).filter(Boolean))
     : null;
   const excluded = normalizeAuthUsername(excludeUsername);
+  const eligibleUsernames = await pushEligibleUsernames();
   const notificationPayload = JSON.stringify(cleanPushPayload(payload));
   const { subscriptions } = await readPushSubscriptions();
   const targets = subscriptions.filter((record) => {
+    if (!eligibleUsernames.has(record.username)) return false;
     if (excluded && record.username === excluded) return false;
     if (usernameSet && !usernameSet.has(record.username)) return false;
     return true;
@@ -2546,6 +2560,16 @@ async function sendPushNotifications({ payload, usernames = null, excludeUsernam
     skipped: results.filter((result) => result.status === "skipped").length,
     staleRemoved,
   };
+}
+
+async function pushEligibleUsernames() {
+  const usernames = new Set([normalizeAuthUsername(authUsername) || "admin"]);
+  if (!authEnabled) return usernames;
+  const { users } = await readAuthUsers();
+  for (const user of users) {
+    if (user.status === "approved") usernames.add(user.username);
+  }
+  return usernames;
 }
 
 function queuePushNotifications(options) {
@@ -3243,6 +3267,7 @@ async function setAuthUserStatus(usernameValue, status, actorUsername) {
     return user;
   });
   if (!updated) throw httpError(404, "User not found.");
+  if (status === "rejected") await removePushSubscriptionsForUser(username);
   return updated;
 }
 
@@ -3268,6 +3293,10 @@ async function setStoredUserPassword(usernameValue, password, actorUsername) {
     user.passwordUpdatedBy = normalizeAuthUsername(actorUsername);
     return user;
   });
+  if (updated) {
+    // Session cookies are versioned, but push endpoints are not. Clear them so old devices stop receiving notices.
+    await removePushSubscriptionsForUser(username);
+  }
   return updated;
 }
 
