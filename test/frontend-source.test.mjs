@@ -132,6 +132,11 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /\/api\/push\/config/);
   assert.match(source, /\/api\/push\/subscriptions/);
   assert.match(source, /\/api\/push\/test/);
+  assert.match(source, /handleLogoutSubmit/);
+  assert.match(source, /currentPushSubscription/);
+  assert.match(source, /pushEndpoint/);
+  assert.match(source, /subscription\.unsubscribe/);
+  assert.match(source, /HTMLFormElement\.prototype\.submit\.call/);
   assert.match(source, /openChat/);
   assert.match(source, /popstate/);
   assert.match(source, /syncChatUrl/);

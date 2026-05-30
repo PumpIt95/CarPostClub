@@ -228,6 +228,24 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(pushAfterAdminReset.status, 200);
     assert.equal(pushAfterAdminReset.body.delivery.requested, 0);
 
+    const logoutSubscription = pushSubscriptionFor("photo-tech-logout");
+    const approvedLogoutPush = await postJsonWithCookie(harness, approvedCookie, "/api/push/subscriptions", {
+      subscription: logoutSubscription,
+    });
+    assert.equal(approvedLogoutPush.status, 201);
+    assert.equal((await readPushSubscriptionCount(harness, logoutSubscription.endpoint)), 1);
+    const logout = await fetch(`${harness.baseUrl}/logout`, {
+      method: "POST",
+      headers: { Cookie: approvedCookie, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ pushEndpoint: logoutSubscription.endpoint }),
+      redirect: "manual",
+    });
+    assert.equal(logout.status, 303);
+    assert.equal(logout.headers.get("location"), "/login");
+    assert.match(logout.headers.get("set-cookie") || "", /Max-Age=0/);
+    assert.equal((await readPushSubscriptionCount(harness, logoutSubscription.endpoint)), 0);
+    approvedCookie = await login(harness.baseUrl, NEW_USERNAME, RESET_PASSWORD);
+
     const rejectable = await createApprovedAccount(harness, {
       username: "reject.me",
       displayName: "Reject Me",

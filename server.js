@@ -294,9 +294,15 @@ app.post("/signup", async (req, res, next) => {
   }
 });
 
-app.post("/logout", requireAuth, (_req, res) => {
-  res.setHeader("Set-Cookie", `${authCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${authCookieSecure ? "; Secure" : ""}`);
-  res.redirect(303, "/login");
+app.post("/logout", requireAuth, async (req, res, next) => {
+  try {
+    const pushEndpoint = cleanOptionalPushEndpoint(req.body?.pushEndpoint);
+    if (pushEndpoint) await removePushSubscription(pushEndpoint, req.authUser);
+    res.setHeader("Set-Cookie", `${authCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${authCookieSecure ? "; Secure" : ""}`);
+    res.redirect(303, "/login");
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/account/password", requireAuth, (req, res) => {
@@ -2680,6 +2686,16 @@ function cleanPushEndpoint(value) {
     throw httpError(400, "Invalid push endpoint.");
   }
   return endpoint;
+}
+
+function cleanOptionalPushEndpoint(value) {
+  const endpoint = normalizeSpace(value);
+  if (!endpoint) return "";
+  try {
+    return cleanPushEndpoint(endpoint);
+  } catch {
+    return "";
+  }
 }
 
 function cleanPushKey(value, label) {

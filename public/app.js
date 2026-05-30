@@ -321,10 +321,7 @@ function bindEvents() {
     loadMarketplaceDraft().catch((error) => showError(error));
   });
 
-  els.logoutForm?.addEventListener("submit", (event) => {
-    const confirmed = window.confirm("Are you sure you want to sign out?");
-    if (!confirmed) event.preventDefault();
-  });
+  els.logoutForm?.addEventListener("submit", handleLogoutSubmit);
 
   els.installButton?.addEventListener("click", installPwa);
   els.notificationButton?.addEventListener("click", togglePushNotifications);
@@ -500,6 +497,60 @@ async function togglePushNotifications() {
     state.pushBusy = false;
     renderPwaControls();
   }
+}
+
+async function handleLogoutSubmit(event) {
+  const confirmed = window.confirm("Are you sure you want to sign out?");
+  if (!confirmed) {
+    event.preventDefault();
+    return;
+  }
+
+  event.preventDefault();
+  const submitButton = els.logoutForm.querySelector("button[type='submit']");
+  if (submitButton) submitButton.disabled = true;
+  try {
+    const subscription = await currentPushSubscription();
+    if (subscription?.endpoint) {
+      setLogoutPushEndpoint(subscription.endpoint);
+      await subscription.unsubscribe().catch(() => false);
+      state.pushSubscription = null;
+    }
+  } finally {
+    HTMLFormElement.prototype.submit.call(els.logoutForm);
+  }
+}
+
+async function currentPushSubscription() {
+  if (!pushNotificationsSupported()) return null;
+  if (!state.serviceWorkerRegistration) {
+    state.serviceWorkerRegistration = await promiseWithTimeout(
+      navigator.serviceWorker.ready,
+      2500,
+    ).catch(() => null);
+  }
+  if (!state.serviceWorkerRegistration?.pushManager?.getSubscription) return null;
+  return state.serviceWorkerRegistration.pushManager.getSubscription().catch(() => null);
+}
+
+function promiseWithTimeout(promise, timeoutMs) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error("Timed out waiting for service worker.")), timeoutMs);
+    }),
+  ]);
+}
+
+function setLogoutPushEndpoint(endpoint) {
+  let input = els.logoutForm.querySelector("input[name='pushEndpoint']");
+  if (!input) {
+    input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "pushEndpoint";
+    els.logoutForm.append(input);
+  }
+  input.value = endpoint;
 }
 
 function pushNotificationsSupported() {
