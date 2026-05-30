@@ -66,7 +66,16 @@
           <h2>Inventory source</h2>
           <p id="pickerSubhead">Choose from O'Regan's inventory.</p>
         </div>
-        <a id="sourceLink" class="source-link" href="https://www.oregans.com/inventory/" target="_blank" rel="noreferrer">Open inventory</a>
+        <div class="inventory-actions">
+          <button id="addManualCarButton" class="icon-text-button subtle" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v14"/>
+              <path d="M5 12h14"/>
+            </svg>
+            <span>Add car</span>
+          </button>
+          <a id="sourceLink" class="source-link" href="https://www.oregans.com/inventory/" target="_blank" rel="noreferrer">Open inventory</a>
+        </div>
       </div>
 
       <div class="picker-grid">
@@ -87,6 +96,118 @@
           </select>
         </label>
       </div>
+
+      <form id="manualCarForm" class="manual-car-form" hidden>
+        <div class="manual-form-heading">
+          <h3>Add car not on inventory</h3>
+          <button id="cancelManualCarButton" class="icon-button subtle" type="button" aria-label="Cancel manual car" title="Cancel">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18 6 6 18"/>
+              <path d="m6 6 12 12"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="manual-grid">
+          <label class="field" for="manualInventoryTypeSelect">
+            <span>New or used</span>
+            <select id="manualInventoryTypeSelect" name="inventoryTypeId" required></select>
+          </label>
+          <label class="field" for="manualDealershipSelect">
+            <span>Lot</span>
+            <select id="manualDealershipSelect" name="dealershipId" required></select>
+          </label>
+          <label class="field" for="manualStockNumber">
+            <span>Inventory number</span>
+            <input id="manualStockNumber" name="stockNumber" autocomplete="off" required>
+          </label>
+          <label class="field" for="manualYear">
+            <span>Year</span>
+            <input id="manualYear" name="year" type="number" min="1980" max="2030" inputmode="numeric" required>
+          </label>
+          <label class="field" for="manualMake">
+            <span>Make</span>
+            <input id="manualMake" name="make" autocomplete="off" required>
+          </label>
+          <label class="field" for="manualModel">
+            <span>Model</span>
+            <input id="manualModel" name="model" autocomplete="off" required>
+          </label>
+          <label class="field" for="manualTrim">
+            <span>Trim</span>
+            <input id="manualTrim" name="trim" autocomplete="off">
+          </label>
+          <label class="field" for="manualPrice">
+            <span>Price CAD</span>
+            <input id="manualPrice" name="price" type="number" min="1" step="1" inputmode="numeric" required>
+          </label>
+          <label class="field" for="manualOdometer">
+            <span>Kilometers</span>
+            <input id="manualOdometer" name="odometer" type="number" min="0" step="1" inputmode="numeric" required>
+          </label>
+          <label class="field" for="manualExteriorColor">
+            <span>Exterior color</span>
+            <input id="manualExteriorColor" name="exteriorColor" autocomplete="off" required>
+          </label>
+          <label class="field" for="manualInteriorColor">
+            <span>Interior color</span>
+            <input id="manualInteriorColor" name="interiorColor" autocomplete="off">
+          </label>
+          <label class="field" for="manualBodyStyle">
+            <span>Body style</span>
+            <select id="manualBodyStyle" name="bodyStyle" required>
+              <option value="">Choose body style</option>
+              <option>SUV</option>
+              <option>Sedan</option>
+              <option>Truck</option>
+              <option>Hatchback</option>
+              <option>Coupe</option>
+              <option>Convertible</option>
+              <option>Wagon</option>
+              <option>Minivan</option>
+              <option>Other</option>
+            </select>
+          </label>
+          <label class="field" for="manualFuelType">
+            <span>Fuel type</span>
+            <select id="manualFuelType" name="fuelType" required>
+              <option value="">Choose fuel type</option>
+              <option>Gasoline</option>
+              <option>Hybrid</option>
+              <option>Plug-in hybrid</option>
+              <option>Electric</option>
+              <option>Diesel</option>
+              <option>Flex</option>
+              <option>Other</option>
+            </select>
+          </label>
+          <label class="field" for="manualTransmission">
+            <span>Transmission</span>
+            <select id="manualTransmission" name="transmission" required>
+              <option value="">Choose transmission</option>
+              <option>Automatic transmission</option>
+              <option>Manual transmission</option>
+            </select>
+          </label>
+          <label class="field" for="manualVin">
+            <span>VIN</span>
+            <input id="manualVin" name="vin" autocomplete="off">
+          </label>
+          <label class="field manual-wide" for="manualDescriptionPreview">
+            <span>Highlights</span>
+            <textarea id="manualDescriptionPreview" name="descriptionPreview" rows="3"></textarea>
+          </label>
+        </div>
+
+        <div class="manual-form-actions">
+          <button class="icon-text-button" type="submit">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 6 9 17l-5-5"/>
+            </svg>
+            <span>Save car</span>
+          </button>
+        </div>
+      </form>
     </section>
 
     <section class="selected-panel" aria-label="Selected car">

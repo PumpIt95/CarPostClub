@@ -13,6 +13,12 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="inventoryTypeSelect"/);
   assert.match(html, /id="dealershipSelect"/);
   assert.match(html, /id="carSelect"/);
+  assert.match(html, /id="addManualCarButton"/);
+  assert.match(html, /id="manualCarForm"/);
+  assert.match(html, /id="manualStockNumber"/);
+  assert.match(html, /id="manualYear"/);
+  assert.match(html, /id="manualPrice"/);
+  assert.match(html, /id="manualOdometer"/);
   assert.match(html, /id="dropZone"[^>]*disabled/);
   assert.match(html, /id="chatToggle"/);
   assert.match(html, /id="chatPanel"/);
@@ -47,13 +53,13 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
 
   assert.match(source, /\/api\/inventory\/dealerships/);
   assert.match(source, /\/api\/inventory\/cars/);
+  assert.match(source, /\/api\/manual-inventory\/cars/);
   assert.match(source, /\/api\/vehicle-album/);
   assert.match(source, /\/api\/marketplace-draft/);
   assert.doesNotMatch(source, /\/api\/marketplace-draft\/regenerate/);
   assert.match(source, /els\.carSelect\.addEventListener\("change"/);
-  assert.match(source, /form\.append\("dealershipId", state\.selectedDealershipId\)/);
-  assert.match(source, /form\.append\("inventoryTypeId", state\.selectedInventoryTypeId\)/);
-  assert.match(source, /form\.append\("vin", car\.vin\)/);
+  assert.match(source, /inventoryKey/);
+  assert.match(source, /carRequestPayload/);
   assert.match(source, /els\.videoButton\.addEventListener\("click"/);
   assert.match(source, /isVideoMedia/);
   assert.match(source, /video\.preload = "metadata"/);

@@ -23,6 +23,7 @@ const host = process.env.HOST || "127.0.0.1";
 const uploadRoot = path.resolve(process.env.UPLOAD_ROOT || "/var/lib/konner-upload/uploads");
 const tmpRoot = path.resolve(process.env.TMP_ROOT || "/var/lib/konner-upload/tmp");
 const chatMessagesPath = path.resolve(process.env.CHAT_MESSAGES_PATH || path.join(path.dirname(uploadRoot), "chat-messages.json"));
+const manualInventoryPath = path.resolve(process.env.MANUAL_INVENTORY_PATH || path.join(path.dirname(uploadRoot), "manual-inventory.json"));
 const releaseManifestPath = process.env.KONNER_RELEASE_MANIFEST || path.join(appRoot, "release-manifest.json");
 const maxFileBytes = positiveInteger(process.env.MAX_FILE_BYTES, 250 * 1024 * 1024);
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 100);
@@ -104,11 +105,13 @@ const marketplaceCopyPromises = new Map();
 const marketplaceCopyStoreWritePromises = new Map();
 let chatWritePromise = Promise.resolve();
 let authUsersWritePromise = Promise.resolve();
+let manualInventoryWritePromise = Promise.resolve();
 let openaiClient = null;
 
 await fs.mkdir(uploadRoot, { recursive: true });
 await fs.mkdir(tmpRoot, { recursive: true });
 await fs.mkdir(path.dirname(chatMessagesPath), { recursive: true });
+await fs.mkdir(path.dirname(manualInventoryPath), { recursive: true });
 await fs.mkdir(path.dirname(authUsersPath), { recursive: true });
 
 const storage = multer.diskStorage({
@@ -408,6 +411,18 @@ app.get("/api/inventory/cars", requireAuth, async (req, res, next) => {
       inventoryTypeId,
       cars,
       count: cars.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/manual-inventory/cars", requireAuth, async (req, res, next) => {
+  try {
+    const car = await createManualInventoryCar(req.body, req.authUser);
+    res.status(201).json({
+      ok: true,
+      car,
     });
   } catch (error) {
     next(error);
@@ -747,6 +762,9 @@ async function ensureCarAlbum(car) {
     inventoryTypeId: car.inventoryTypeId,
     sourceUrl: car.detailUrl,
     vehicle: {
+      source: car.source || "oregans",
+      inventoryKey: car.inventoryKey || car.vin,
+      manualInventoryId: car.manualInventoryId || "",
       vin: car.vin,
       stockNumber: car.stockNumber,
       title: car.title,
@@ -761,6 +779,7 @@ async function ensureCarAlbum(car) {
       bodyStyle: car.bodyStyle,
       fuelType: car.fuelType,
       transmission: car.transmission,
+      descriptionPreview: car.descriptionPreview,
       detailUrl: car.detailUrl,
       dealershipId: car.dealership.id,
       dealershipName: car.dealership.name,
@@ -777,6 +796,7 @@ async function ensureCarAlbum(car) {
 async function migrateLegacyCarAlbum(car, albumId) {
   const legacyAlbumId = legacyCarAlbumId(car);
   if (legacyAlbumId === albumId) return;
+  if (!legacyAlbumId) return;
 
   const legacyDirectory = albumPath(legacyAlbumId);
   const targetDirectory = albumPath(albumId);
@@ -797,11 +817,11 @@ async function migrateLegacyCarAlbum(car, albumId) {
 async function resolveInventoryCar(values) {
   const dealership = cleanDealershipId(values?.dealershipId);
   const inventoryTypeId = cleanInventoryTypeId(values?.inventoryTypeId || defaultInventoryTypeId);
-  const vin = cleanVin(values?.vin);
+  const inventoryKey = cleanInventoryKey(values?.inventoryKey || values?.manualInventoryId || values?.vin);
   const cars = await fetchInventoryCars({ dealershipId: dealership.id, inventoryTypeId });
-  const car = cars.find((candidate) => candidate.vin === vin);
+  const car = cars.find((candidate) => candidate.inventoryKey === inventoryKey || candidate.vin === inventoryKey);
   if (!car) {
-    throw httpError(400, "Select a current O'Regan's car from the chosen dealership before uploading media.");
+    throw httpError(400, "Select a saved inventory car from the chosen dealership before uploading media.");
   }
   return { dealership, inventoryTypeId, car };
 }
@@ -811,12 +831,14 @@ async function fetchInventoryCars({ dealershipId, inventoryTypeId }) {
   inventoryTypeId = cleanInventoryTypeId(inventoryTypeId || defaultInventoryTypeId);
 
   if (inventoryMockFile) {
-    return fetchMockInventoryCars({ dealership, inventoryTypeId });
+    return mergeManualInventoryCars(await fetchMockInventoryCars({ dealership, inventoryTypeId }), { dealership, inventoryTypeId });
   }
 
   const cacheKey = `${dealership.id}:${inventoryTypeId}`;
   const cached = inventoryCache.get(cacheKey);
-  if (cached && Date.now() - cached.fetchedAt < inventoryCacheTtlMs) return cached.cars;
+  if (cached && Date.now() - cached.fetchedAt < inventoryCacheTtlMs) {
+    return mergeManualInventoryCars(cached.cars, { dealership, inventoryTypeId });
+  }
 
   const limit = 100;
   const maxResults = 500;
@@ -844,7 +866,7 @@ async function fetchInventoryCars({ dealershipId, inventoryTypeId }) {
 
   const normalized = cars.map((car) => normalizeInventoryCar(car, { dealership, inventoryTypeId }));
   inventoryCache.set(cacheKey, { fetchedAt: Date.now(), cars: normalized });
-  return normalized;
+  return mergeManualInventoryCars(normalized, { dealership, inventoryTypeId });
 }
 
 async function fetchMockInventoryCars({ dealership, inventoryTypeId }) {
@@ -855,6 +877,152 @@ async function fetchMockInventoryCars({ dealership, inventoryTypeId }) {
     .filter((car) => String(car.inventoryTypeId || inventoryTypeId) === inventoryTypeId)
     .map((car) => normalizeInventoryCar(car, { dealership, inventoryTypeId }))
     .filter((car) => car.vin);
+}
+
+async function mergeManualInventoryCars(cars, { dealership, inventoryTypeId }) {
+  const manualCars = await listManualInventoryCars({ dealershipId: dealership.id, inventoryTypeId });
+  return [...manualCars, ...cars];
+}
+
+async function createManualInventoryCar(values, user) {
+  const dealership = cleanDealershipId(values?.dealershipId);
+  const inventoryTypeId = cleanInventoryTypeId(values?.inventoryTypeId);
+  const stockNumber = cleanManualText(values?.stockNumber, "Inventory number", { maxLength: 40 });
+  const year = cleanManualYear(values?.year);
+  const make = cleanManualText(values?.make, "Make", { maxLength: 40 });
+  const model = cleanManualText(values?.model, "Model", { maxLength: 48 });
+  const trim = cleanManualOptionalText(values?.trim, { maxLength: 64 });
+  const priceValue = cleanManualMoney(values?.priceValue ?? values?.price);
+  const odometerValue = cleanManualNonNegativeInteger(values?.odometerValue ?? values?.odometer, "Kilometers");
+  const exteriorColor = cleanManualText(values?.exteriorColor, "Exterior color", { maxLength: 32 });
+  const interiorColor = cleanManualOptionalText(values?.interiorColor, { maxLength: 32 });
+  const bodyStyle = cleanManualText(values?.bodyStyle, "Body style", { maxLength: 32 });
+  const fuelType = cleanManualText(values?.fuelType, "Fuel type", { maxLength: 32 });
+  const transmission = cleanManualText(values?.transmission, "Transmission", { maxLength: 40 });
+  const vin = cleanOptionalVin(values?.vin);
+  const descriptionPreview = cleanManualOptionalText(values?.descriptionPreview, { maxLength: 600 });
+  const now = new Date().toISOString();
+  const id = `manual-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`.toLowerCase();
+  const inventoryLabel = inventoryTypeId === "1" ? "New" : "Used";
+  const title = normalizeSpace([inventoryLabel, year, make, model, trim].filter(Boolean).join(" "));
+  const record = {
+    id,
+    source: "manual",
+    dealershipId: dealership.id,
+    inventoryTypeId,
+    stockNumber,
+    vin,
+    title,
+    year: String(year),
+    make,
+    model,
+    trim,
+    price: formatCadPrice(priceValue),
+    priceValue,
+    odometer: formatKilometers(odometerValue),
+    odometerValue,
+    exteriorColor,
+    interiorColor,
+    bodyStyle,
+    fuelType,
+    transmission,
+    descriptionPreview,
+    createdAt: now,
+    createdBy: publicAuthUser(user),
+    updatedAt: now,
+  };
+
+  const saved = await updateManualInventory((store) => {
+    const duplicate = store.cars.find((car) =>
+      String(car.dealershipId) === dealership.id
+      && String(car.inventoryTypeId) === inventoryTypeId
+      && normalizeSpace(car.stockNumber).toLowerCase() === stockNumber.toLowerCase()
+    );
+    if (duplicate) {
+      throw httpError(409, "That inventory number already exists for this lot and inventory type.");
+    }
+    store.cars.push(record);
+    return record;
+  });
+
+  return normalizeManualInventoryCar(saved);
+}
+
+async function listManualInventoryCars({ dealershipId, inventoryTypeId }) {
+  const store = await readManualInventory();
+  return store.cars
+    .filter((car) => String(car.dealershipId) === String(dealershipId))
+    .filter((car) => String(car.inventoryTypeId) === String(inventoryTypeId))
+    .map(normalizeManualInventoryCar)
+    .filter(Boolean)
+    .sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime());
+}
+
+async function readManualInventory() {
+  const store = await readJson(manualInventoryPath, { cars: [] });
+  return {
+    cars: Array.isArray(store?.cars) ? store.cars : [],
+  };
+}
+
+async function updateManualInventory(mutator) {
+  manualInventoryWritePromise = manualInventoryWritePromise.catch(() => {}).then(async () => {
+    const store = await readManualInventory();
+    const result = await mutator(store);
+    store.cars.sort((left, right) => String(left.stockNumber || "").localeCompare(String(right.stockNumber || "")));
+    await writeJson(manualInventoryPath, store);
+    return result;
+  });
+  return manualInventoryWritePromise;
+}
+
+function normalizeManualInventoryCar(record) {
+  if (!record || typeof record !== "object") return null;
+  const dealership = cleanDealershipId(record.dealershipId);
+  const inventoryTypeId = cleanInventoryTypeId(record.inventoryTypeId);
+  const manualInventoryId = cleanManualInventoryId(record.id);
+  const stockNumber = normalizeSpace(record.stockNumber);
+  const title = normalizeSpace(record.title || [
+    inventoryTypeId === "1" ? "New" : "Used",
+    record.year,
+    record.make,
+    record.model,
+    record.trim,
+  ].filter(Boolean).join(" "));
+  const normalized = {
+    source: "manual",
+    manualInventoryId,
+    inventoryKey: manualInventoryId,
+    vin: cleanOptionalVin(record.vin),
+    stockNumber,
+    title,
+    label: normalizeSpace([stockNumber, title].filter(Boolean).join(" - ")),
+    inventoryTypeId,
+    dealership,
+    albumId: carAlbumId({ ...record, stockNumber, title }),
+    albumName: vehicleAlbumName({ ...record, stockNumber, title }),
+    inventoryType: inventoryTypes.find((type) => type.id === inventoryTypeId)?.name || "",
+    year: String(record.year || ""),
+    make: normalizeSpace(record.make),
+    model: normalizeSpace(record.model),
+    trim: normalizeSpace(record.trim),
+    tagline: "",
+    price: record.price || formatCadPrice(record.priceValue),
+    priceValue: parseCurrency(record.price || record.priceValue),
+    ownerLocation: dealership.name,
+    detailUrl: "",
+    exteriorColor: normalizeSpace(record.exteriorColor),
+    interiorColor: normalizeSpace(record.interiorColor),
+    odometer: record.odometer || formatKilometers(record.odometerValue),
+    odometerValue: parseNullableInteger(record.odometer || record.odometerValue),
+    bodyStyle: normalizeSpace(record.bodyStyle),
+    fuelType: normalizeSpace(record.fuelType),
+    transmission: normalizeSpace(record.transmission),
+    descriptionPreview: normalizeSpace(record.descriptionPreview),
+    createdAt: record.createdAt || "",
+    createdBy: record.createdBy || null,
+  };
+  return normalized.stockNumber && normalized.title ? normalized : null;
 }
 
 async function fetchOregansJson(url) {
@@ -881,6 +1049,9 @@ function normalizeInventoryCar(car, { dealership, inventoryTypeId }) {
   const albumName = vehicleAlbumName({ ...car, stockNumber, vin, title });
 
   return {
+    source: "oregans",
+    manualInventoryId: "",
+    inventoryKey: vin,
     vin,
     stockNumber,
     title,
@@ -2069,10 +2240,69 @@ function cleanInventoryTypeId(value) {
   throw httpError(400, "Invalid O'Regan's inventory filter.");
 }
 
+function cleanInventoryKey(value) {
+  const key = String(value || "").trim();
+  if (/^manual-[a-z0-9-]{8,80}$/i.test(key)) return key.toLowerCase();
+  return cleanVin(key);
+}
+
+function cleanManualInventoryId(value) {
+  const id = String(value || "").trim().toLowerCase();
+  if (/^manual-[a-z0-9-]{8,80}$/.test(id)) return id;
+  throw httpError(400, "Invalid manual inventory record.");
+}
+
 function cleanVin(value) {
   const vin = String(value || "").trim().toUpperCase();
   if (/^[A-HJ-NPR-Z0-9]{11,17}$/.test(vin)) return vin;
   throw httpError(400, "Select a car before uploading media.");
+}
+
+function cleanOptionalVin(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return cleanVin(text);
+}
+
+function cleanManualText(value, label, { maxLength = 80 } = {}) {
+  const text = normalizeSpace(value).slice(0, maxLength);
+  if (!text) throw httpError(400, `${label} is required.`);
+  return text;
+}
+
+function cleanManualOptionalText(value, { maxLength = 160 } = {}) {
+  return normalizeSpace(value).slice(0, maxLength);
+}
+
+function cleanManualYear(value) {
+  const year = parseNullableInteger(value);
+  const nextYear = new Date().getFullYear() + 1;
+  if (!Number.isInteger(year) || year < 1980 || year > nextYear) {
+    throw httpError(400, `Year must be between 1980 and ${nextYear}.`);
+  }
+  return year;
+}
+
+function cleanManualMoney(value) {
+  const price = parseCurrency(value);
+  if (!Number.isFinite(price) || price <= 0) throw httpError(400, "Price in CAD is required.");
+  return Math.round(price);
+}
+
+function cleanManualNonNegativeInteger(value, label) {
+  const parsed = parseNullableInteger(value);
+  if (!Number.isInteger(parsed) || parsed < 0) throw httpError(400, `${label} is required.`);
+  return parsed;
+}
+
+function formatCadPrice(value) {
+  const amount = Number(value || 0);
+  return amount > 0 ? `$${Math.round(amount).toLocaleString("en-CA")}` : "";
+}
+
+function formatKilometers(value) {
+  const kilometers = Number(value);
+  return Number.isFinite(kilometers) && kilometers >= 0 ? `${Math.round(kilometers).toLocaleString("en-CA")} km` : "";
 }
 
 function cleanFilename(value) {
@@ -2090,6 +2320,7 @@ function carAlbumId(car) {
 }
 
 function legacyCarAlbumId(car) {
+  if (!car.vin) return "";
   return `car-${cleanVin(car.vin).toLowerCase()}`;
 }
 

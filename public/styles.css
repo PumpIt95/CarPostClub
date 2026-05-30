@@ -230,6 +230,13 @@ h2 {
   gap: var(--spacing-8);
 }
 
+.inventory-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--spacing-8);
+}
+
 .marketplace-actions {
   display: flex;
   flex: 0 0 auto;
@@ -268,6 +275,42 @@ h2 {
 
 .field-wide {
   grid-column: 1 / -1;
+}
+
+.manual-car-form {
+  margin-top: var(--spacing-16);
+  border-top: 1px solid var(--color-stone-gray);
+  padding-top: var(--spacing-16);
+}
+
+.manual-form-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-16);
+  margin-bottom: var(--spacing-16);
+}
+
+.manual-form-heading h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.manual-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--spacing-16);
+}
+
+.manual-wide {
+  grid-column: 1 / -1;
+}
+
+.manual-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--spacing-16);
 }
 
 .field span {

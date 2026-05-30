@@ -36,6 +36,23 @@ const TEST_CAR = {
   detailUrl: "https://www.oregans.com/inventory/Used-2026-Kia-Seltos-U6247A/",
 };
 const TEST_ALBUM_ID = "car-used-2026-kia-seltos-x-line-awd-u6247a";
+const MANUAL_CAR = {
+  dealershipId: "15",
+  inventoryTypeId: "2",
+  stockNumber: "MNL123",
+  year: "2024",
+  make: "Toyota",
+  model: "Corolla",
+  trim: "LE",
+  price: "24990",
+  odometer: "12000",
+  exteriorColor: "Red",
+  interiorColor: "Black",
+  bodyStyle: "Sedan",
+  fuelType: "Gasoline",
+  transmission: "Automatic transmission",
+  descriptionPreview: "Heated seats, backup camera, lane keep assist",
+};
 
 test("photo uploads require an O'Regan's dealership and car selection", async () => {
   const harness = await startTestServer();
@@ -180,6 +197,47 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(cars.count, 1);
     assert.equal(cars.cars[0].vin, TEST_CAR.vin);
     assert.equal(cars.cars[0].albumId, TEST_ALBUM_ID);
+    assert.equal(cars.cars[0].inventoryKey, TEST_CAR.vin);
+
+    const incompleteManualCar = await postJson(harness, "/api/manual-inventory/cars", {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      stockNumber: "MISSING",
+    });
+    assert.equal(incompleteManualCar.status, 400);
+    assert.match(incompleteManualCar.body.error, /Year/i);
+
+    const manualCreated = await postJson(harness, "/api/manual-inventory/cars", MANUAL_CAR);
+    assert.equal(manualCreated.status, 201);
+    assert.equal(manualCreated.body.car.source, "manual");
+    assert.equal(manualCreated.body.car.vin, "");
+    assert.match(manualCreated.body.car.inventoryKey, /^manual-/);
+    assert.equal(manualCreated.body.car.stockNumber, MANUAL_CAR.stockNumber);
+    assert.equal(manualCreated.body.car.price, "$24,990");
+    assert.equal(manualCreated.body.car.odometer, "12,000 km");
+
+    const carsWithManual = await getJson(harness, "/api/inventory/cars?dealershipId=15&inventoryTypeId=2");
+    assert.equal(carsWithManual.count, 2);
+    assert.ok(carsWithManual.cars.some((car) => car.inventoryKey === manualCreated.body.car.inventoryKey));
+
+    const manualAlbum = await getJson(
+      harness,
+      `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&inventoryKey=${manualCreated.body.car.inventoryKey}`,
+    );
+    assert.equal(manualAlbum.album.vehicle.source, "manual");
+    assert.equal(manualAlbum.album.vehicle.stockNumber, MANUAL_CAR.stockNumber);
+    assert.equal(manualAlbum.album.vehicle.year, MANUAL_CAR.year);
+    assert.equal(manualAlbum.album.vehicle.make, MANUAL_CAR.make);
+
+    const manualUpload = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      inventoryKey: manualCreated.body.car.inventoryKey,
+      photos: [{ filename: "manual-front.jpg", type: "image/jpeg", body: jpegBytes("manual-front") }],
+    });
+    assert.equal(manualUpload.status, 201);
+    assert.equal(manualUpload.body.album.vehicle.source, "manual");
+    assert.equal(manualUpload.body.marketplaceGeneration.variantCount, 6);
 
     const blockedUpload = await uploadPhotos(harness, {
       dealershipId: "15",
@@ -310,11 +368,13 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(invalidVideoRange.headers.get("content-range"), `bytes */${firstVideo.bytes}`);
 
     const albums = await getJson(harness, "/api/albums");
-    assert.equal(albums.albums.length, 1);
-    assert.equal(albums.albums[0].vehicle.vin, TEST_CAR.vin);
-    assert.equal(albums.albums[0].photoCount, 2);
-    assert.equal(albums.albums[0].videoCount, 1);
-    assert.equal(albums.albums[0].mediaCount, 3);
+    const testAlbum = albums.albums.find((album) => album.vehicle.vin === TEST_CAR.vin);
+    const savedManualAlbum = albums.albums.find((album) => album.vehicle.inventoryKey === manualCreated.body.car.inventoryKey);
+    assert.ok(testAlbum);
+    assert.ok(savedManualAlbum);
+    assert.equal(testAlbum.photoCount, 2);
+    assert.equal(testAlbum.videoCount, 1);
+    assert.equal(testAlbum.mediaCount, 3);
 
     const albumDownload = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/download`, {
       headers: { Cookie: harness.cookie },
@@ -492,10 +552,11 @@ async function fetchJson(url, options = {}) {
   };
 }
 
-async function uploadPhotos(harness, { dealershipId, inventoryTypeId, vin, photos }) {
+async function uploadPhotos(harness, { dealershipId, inventoryTypeId, vin, inventoryKey, photos }) {
   const form = new FormData();
   form.set("dealershipId", dealershipId);
   form.set("inventoryTypeId", inventoryTypeId);
+  if (inventoryKey) form.set("inventoryKey", inventoryKey);
   if (vin) form.set("vin", vin);
   for (const photo of photos) {
     form.append("photos", new Blob([photo.body], { type: photo.type }), photo.filename);

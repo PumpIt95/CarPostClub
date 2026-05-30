@@ -16,6 +16,7 @@ const state = {
   selectedDealershipId: localStorage.getItem("konner.selectedDealershipId") || "15",
   selectedInventoryTypeId: localStorage.getItem("konner.selectedInventoryTypeId") || "2",
   selectedVin: localStorage.getItem("konner.selectedVin") || "",
+  manualFormOpen: false,
   uploading: false,
   uploadCelebrationTimer: 0,
   chatSending: false,
@@ -25,6 +26,7 @@ const els = {
   activeCarLink: document.querySelector("#activeCarLink"),
   activeCarMeta: document.querySelector("#activeCarMeta"),
   activeCarName: document.querySelector("#activeCarName"),
+  addManualCarButton: document.querySelector("#addManualCarButton"),
   adminUsersLink: document.querySelector("#adminUsersLink"),
   cameraButton: document.querySelector("#cameraButton"),
   cameraInput: document.querySelector("#cameraInput"),
@@ -54,6 +56,24 @@ const els = {
   marketplacePanel: document.querySelector("#marketplacePanel"),
   marketplaceRegenerateButton: document.querySelector("#marketplaceRegenerateButton"),
   marketplaceStatus: document.querySelector("#marketplaceStatus"),
+  manualBodyStyle: document.querySelector("#manualBodyStyle"),
+  manualCarForm: document.querySelector("#manualCarForm"),
+  manualDealershipSelect: document.querySelector("#manualDealershipSelect"),
+  manualDescriptionPreview: document.querySelector("#manualDescriptionPreview"),
+  manualExteriorColor: document.querySelector("#manualExteriorColor"),
+  manualFuelType: document.querySelector("#manualFuelType"),
+  manualInteriorColor: document.querySelector("#manualInteriorColor"),
+  manualInventoryTypeSelect: document.querySelector("#manualInventoryTypeSelect"),
+  manualMake: document.querySelector("#manualMake"),
+  manualModel: document.querySelector("#manualModel"),
+  manualOdometer: document.querySelector("#manualOdometer"),
+  manualPrice: document.querySelector("#manualPrice"),
+  manualStockNumber: document.querySelector("#manualStockNumber"),
+  manualTransmission: document.querySelector("#manualTransmission"),
+  manualTrim: document.querySelector("#manualTrim"),
+  manualVin: document.querySelector("#manualVin"),
+  manualYear: document.querySelector("#manualYear"),
+  cancelManualCarButton: document.querySelector("#cancelManualCarButton"),
   photoCount: document.querySelector("#photoCount"),
   refreshButton: document.querySelector("#refreshButton"),
   sourceLink: document.querySelector("#sourceLink"),
@@ -117,6 +137,18 @@ function bindEvents() {
 
   els.refreshButton.addEventListener("click", () => {
     loadCars({ keepSelectedCar: true, forceAlbumRefresh: true }).catch((error) => showError(error));
+  });
+
+  els.addManualCarButton.addEventListener("click", () => {
+    setManualCarFormOpen(true);
+  });
+
+  els.cancelManualCarButton.addEventListener("click", () => {
+    setManualCarFormOpen(false);
+  });
+
+  els.manualCarForm.addEventListener("submit", (event) => {
+    createManualCar(event).catch((error) => showError(error));
   });
 
   els.downloadAllButton.addEventListener("click", (event) => {
@@ -384,21 +416,65 @@ async function loadInventoryFilters() {
 }
 
 function renderFilterOptions() {
-  els.inventoryTypeSelect.replaceChildren(...state.inventoryTypes.map((type) => {
+  const inventoryTypeOptions = state.inventoryTypes.map((type) => {
     const option = document.createElement("option");
     option.value = type.id;
     option.textContent = type.name;
     option.selected = type.id === state.selectedInventoryTypeId;
     return option;
-  }));
+  });
+  els.inventoryTypeSelect.replaceChildren(...inventoryTypeOptions.map((option) => option.cloneNode(true)));
+  els.manualInventoryTypeSelect.replaceChildren(...inventoryTypeOptions.map((option) => option.cloneNode(true)));
+  els.manualInventoryTypeSelect.value = state.selectedInventoryTypeId;
 
-  els.dealershipSelect.replaceChildren(...state.dealerships.map((dealership) => {
+  const dealershipOptions = state.dealerships.map((dealership) => {
     const option = document.createElement("option");
     option.value = dealership.id;
     option.textContent = dealership.name;
     option.selected = dealership.id === state.selectedDealershipId;
     return option;
-  }));
+  });
+  els.dealershipSelect.replaceChildren(...dealershipOptions.map((option) => option.cloneNode(true)));
+  els.manualDealershipSelect.replaceChildren(...dealershipOptions.map((option) => option.cloneNode(true)));
+  els.manualDealershipSelect.value = state.selectedDealershipId;
+}
+
+function setManualCarFormOpen(isOpen) {
+  state.manualFormOpen = Boolean(isOpen);
+  els.manualCarForm.hidden = !state.manualFormOpen;
+  if (!state.manualFormOpen) {
+    els.manualCarForm.reset();
+    return;
+  }
+  els.manualInventoryTypeSelect.value = state.selectedInventoryTypeId;
+  els.manualDealershipSelect.value = state.selectedDealershipId;
+  els.manualYear.value = new Date().getFullYear();
+  window.requestAnimationFrame(() => els.manualStockNumber.focus());
+}
+
+async function createManualCar(event) {
+  event.preventDefault();
+  const submitButton = els.manualCarForm.querySelector("button[type='submit']");
+  submitButton.disabled = true;
+  try {
+    const formData = new FormData(els.manualCarForm);
+    const response = await apiJson("/api/manual-inventory/cars", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(formData.entries())),
+    });
+    const car = response.car;
+    state.selectedDealershipId = car.dealership.id;
+    state.selectedInventoryTypeId = car.inventoryTypeId;
+    state.selectedVin = carInventoryKey(car);
+    persistSelection();
+    setManualCarFormOpen(false);
+    renderFilterOptions();
+    await loadCars({ keepSelectedCar: true, forceAlbumRefresh: true });
+    showStatus(`Added ${car.stockNumber || car.title}.`);
+  } finally {
+    submitButton.disabled = false;
+  }
 }
 
 async function loadCars({ keepSelectedCar = false, forceAlbumRefresh = false } = {}) {
@@ -410,7 +486,7 @@ async function loadCars({ keepSelectedCar = false, forceAlbumRefresh = false } =
     });
     const response = await apiJson(`/api/inventory/cars?${params}`);
     state.cars = response.cars;
-    if (!keepSelectedCar || !state.cars.some((car) => car.vin === state.selectedVin)) {
+    if (!keepSelectedCar || !state.cars.some((car) => carInventoryKey(car) === state.selectedVin)) {
       state.selectedVin = "";
       state.activeAlbum = null;
       state.photos = [];
@@ -429,15 +505,15 @@ function renderCarOptions() {
   els.carCount.textContent = String(state.cars.length);
   const options = [
     new Option(state.cars.length ? "Choose a car" : "No cars found", ""),
-    ...state.cars.map((car) => new Option(carOptionLabel(car), car.vin)),
+    ...state.cars.map((car) => new Option(carOptionLabel(car), carInventoryKey(car))),
   ];
   els.carSelect.replaceChildren(...options);
-  els.carSelect.value = state.cars.some((car) => car.vin === state.selectedVin) ? state.selectedVin : "";
+  els.carSelect.value = state.cars.some((car) => carInventoryKey(car) === state.selectedVin) ? state.selectedVin : "";
   els.carSelect.disabled = state.uploading || !state.cars.length;
 }
 
-async function selectCar(vin) {
-  state.selectedVin = vin;
+async function selectCar(inventoryKey) {
+  state.selectedVin = inventoryKey;
   persistSelection();
   renderCarOptions();
   await loadSelectedCarAlbum({ force: true });
@@ -453,18 +529,14 @@ async function loadSelectedCarAlbum({ force = false } = {}) {
     resetMarketplaceDraft();
     return;
   }
-  if (!force && state.activeAlbum?.vehicle?.vin === car.vin) {
+  if (!force && state.activeAlbum?.vehicle?.inventoryKey === carInventoryKey(car)) {
     if (!state.marketplaceDraft && !state.marketplaceLoading) {
       loadMarketplaceDraft().catch((error) => showError(error));
     }
     return;
   }
 
-  const params = new URLSearchParams({
-    dealershipId: state.selectedDealershipId,
-    inventoryTypeId: state.selectedInventoryTypeId,
-    vin: car.vin,
-  });
+  const params = new URLSearchParams(carRequestPayload(car));
   const response = await apiJson(`/api/vehicle-album?${params}`);
   state.activeAlbum = response.album;
   state.photos = response.photos;
@@ -476,10 +548,10 @@ function renderActiveCar() {
   const car = selectedCar();
   const unlocked = Boolean(car) && !state.uploading;
   els.activeCarMeta.textContent = car
-    ? [selectedDealership()?.name, car.stockNumber, car.price].filter(Boolean).join(" · ")
+    ? [car.source === "manual" ? "Manual inventory" : selectedDealership()?.name, car.stockNumber, car.price].filter(Boolean).join(" · ")
     : "Select dealership and car";
   els.activeCarName.textContent = car?.title || "Upload is locked";
-  els.uploadHint.textContent = car ? `Media will save to ${car.stockNumber || car.vin}` : "Choose a dealership and car first";
+  els.uploadHint.textContent = car ? `Media will save to ${car.stockNumber || carInventoryKey(car)}` : "Choose a dealership and car first";
   els.uploadState.textContent = car ? "Ready" : "Locked";
   els.dropZone.disabled = !unlocked;
   els.cameraButton.disabled = !unlocked;
@@ -502,11 +574,7 @@ async function loadMarketplaceDraft() {
   state.marketplaceLoading = true;
   renderMarketplaceDraft();
 
-  const payload = {
-    dealershipId: state.selectedDealershipId,
-    inventoryTypeId: state.selectedInventoryTypeId,
-    vin: car.vin,
-  };
+  const payload = carRequestPayload(car);
   const response = await apiJson(`/api/marketplace-draft?${new URLSearchParams(payload)}`);
 
   if (state.marketplaceRequestId !== requestId) return;
@@ -661,9 +729,9 @@ async function uploadFiles(files) {
   if (!car || !mediaFiles.length || state.uploading) return;
 
   const form = new FormData();
-  form.append("dealershipId", state.selectedDealershipId);
-  form.append("inventoryTypeId", state.selectedInventoryTypeId);
-  form.append("vin", car.vin);
+  for (const [key, value] of Object.entries(carRequestPayload(car))) {
+    form.append(key, value);
+  }
   for (const file of mediaFiles) form.append("photos", file, file.name);
 
   state.uploading = true;
@@ -682,7 +750,7 @@ async function uploadFiles(files) {
     renderGallery();
     uploadSucceeded = true;
     triggerUploadConfetti();
-    showStatus(`Uploaded ${response.count} ${plural(response.count, "file")} to ${car.stockNumber || car.vin}.`);
+    showStatus(`Uploaded ${response.count} ${plural(response.count, "file")} to ${car.stockNumber || carInventoryKey(car)}.`);
   } catch (error) {
     showError(error);
   } finally {
@@ -805,7 +873,22 @@ function selectedDealership() {
 }
 
 function selectedCar() {
-  return state.cars.find((car) => car.vin === state.selectedVin) || null;
+  return state.cars.find((car) => carInventoryKey(car) === state.selectedVin) || null;
+}
+
+function carInventoryKey(car) {
+  return car?.inventoryKey || car?.manualInventoryId || car?.vin || "";
+}
+
+function carRequestPayload(car = selectedCar()) {
+  const payload = {
+    dealershipId: car?.dealership?.id || state.selectedDealershipId,
+    inventoryTypeId: car?.inventoryTypeId || state.selectedInventoryTypeId,
+    inventoryKey: carInventoryKey(car),
+  };
+  if (car?.vin) payload.vin = car.vin;
+  if (car?.manualInventoryId) payload.manualInventoryId = car.manualInventoryId;
+  return payload;
 }
 
 function persistSelection() {
@@ -917,6 +1000,7 @@ function plural(count, word) {
 
 function carOptionLabel(car) {
   return [
+    car.source === "manual" ? "Manual" : "",
     car.stockNumber || car.vin,
     car.title,
     [car.price, car.odometer, car.exteriorColor].filter(Boolean).join(" / "),
