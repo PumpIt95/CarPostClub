@@ -178,6 +178,11 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /Upload already in progress/);
   assert.match(source, /Select a car before uploading media/);
   assert.match(source, /Only photos and videos can be uploaded/);
+  assert.match(source, /const uploadTimeoutMs = 20 \* 60 \* 1000/);
+  assert.match(source, /request\.timeout = uploadTimeoutMs/);
+  assert.match(source, /reject\(new Error\("Authentication required\."\)\)/);
+  assert.match(source, /addEventListener\("timeout"/);
+  assert.match(source, /Upload timed out\. Check your connection and try again\./);
   assert.match(source, /Skipped \$\{skippedCount\} unsupported/);
   assert.match(source, /beforeunload/);
   assert.match(source, /failedUploadFiles/);

@@ -67,6 +67,7 @@ const hapticSelector = [
 ].join(",");
 const hapticThrottleMs = 60;
 const hapticCssResetMs = 140;
+const uploadTimeoutMs = 20 * 60 * 1000;
 let lastHapticAt = 0;
 let hapticCssTimer = 0;
 
@@ -1427,6 +1428,7 @@ function uploadForm(form) {
     const request = new XMLHttpRequest();
     request.open("POST", "/api/upload");
     request.responseType = "json";
+    request.timeout = uploadTimeoutMs;
 
     request.upload.addEventListener("progress", (event) => {
       if (!event.lengthComputable) return;
@@ -1440,6 +1442,7 @@ function uploadForm(form) {
       const body = request.response;
       if (request.status === 401) {
         window.location.href = "/login";
+        reject(new Error("Authentication required."));
         return;
       }
       if (request.status < 200 || request.status >= 300) {
@@ -1451,6 +1454,7 @@ function uploadForm(form) {
 
     request.addEventListener("error", () => reject(new Error("Upload failed.")));
     request.addEventListener("abort", () => reject(new Error("Upload was cancelled.")));
+    request.addEventListener("timeout", () => reject(new Error("Upload timed out. Check your connection and try again.")));
     request.send(form);
   });
 }
