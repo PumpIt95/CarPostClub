@@ -3195,7 +3195,11 @@ async function identifyRequestUser(req) {
   if (!session) return null;
 
   const username = normalizeAuthUsername(session.u);
-  if (username === normalizeAuthUsername(authUsername)) return bootstrapAdminUser();
+  if (username === normalizeAuthUsername(authUsername)) {
+    const admin = bootstrapAdminUser();
+    if (isSessionInvalidatedByPasswordChange(session, admin)) return null;
+    return admin;
+  }
 
   const account = (await readAuthUsers()).users.find((user) => user.username === username);
   if (!account || account.status !== "approved") return null;
@@ -3280,8 +3284,17 @@ function bootstrapAdminUser() {
     displayName: normalizeDisplayName(authUsername) || "Admin",
     role: "admin",
     status: "approved",
+    passwordVersion: bootstrapAdminPasswordVersion(),
     bootstrap: true,
   };
+}
+
+function bootstrapAdminPasswordVersion() {
+  const source = authPasswordHash || authPassword;
+  if (!source) return "";
+  return crypto.createHmac("sha256", authSessionSecret)
+    .update(`bootstrap-password:${source}`)
+    .digest("base64url");
 }
 
 function authUserFromAccount(account) {

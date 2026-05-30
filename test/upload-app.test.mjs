@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
@@ -93,6 +94,22 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(pendingLogin.cookie, null);
 
     harness.cookie = await login(harness.baseUrl);
+    const adminSession = sessionPayloadFromCookie(harness.cookie);
+    assert.equal(adminSession.u, TEST_USERNAME);
+    assert.match(adminSession.pv, /^[A-Za-z0-9_-]{40,}$/);
+    const staleBootstrapCookie = signedSessionCookie({
+      v: 1,
+      u: TEST_USERNAME,
+      role: "admin",
+      pv: "stale-bootstrap-password-version",
+      iat: Date.now(),
+      exp: Date.now() + 24 * 60 * 60 * 1000,
+    });
+    const staleBootstrapAccess = await fetchJson(`${harness.baseUrl}/api/me`, {
+      headers: { Cookie: staleBootstrapCookie },
+    });
+    assert.equal(staleBootstrapAccess.status, 401);
+
     const me = await getJson(harness, "/api/me");
     assert.equal(me.user.username, TEST_USERNAME);
     assert.equal(me.user.role, "admin");
@@ -1046,6 +1063,18 @@ function assertNoStoreHeaders(response) {
   assert.equal(response.headers.get("cache-control"), "private, no-store");
   assert.equal(response.headers.get("pragma"), "no-cache");
   assert.equal(response.headers.get("expires"), "0");
+}
+
+function sessionPayloadFromCookie(cookie) {
+  const value = String(cookie || "").split("=")[1] || "";
+  const [payload] = decodeURIComponent(value).split(".");
+  return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+}
+
+function signedSessionCookie(payload) {
+  const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = crypto.createHmac("sha256", "test-session-secret").update(encodedPayload).digest("base64url");
+  return `carpostclub_session=${encodeURIComponent(`${encodedPayload}.${signature}`)}`;
 }
 
 async function fetchJson(url, options = {}) {
