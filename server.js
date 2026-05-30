@@ -574,12 +574,12 @@ app.get("/api/albums/:albumId/download", requireAuth, downloadAlbumMedia);
 
 app.post("/api/upload", requireAuth, upload.array("photos", maxUploadFiles), async (req, res, next) => {
   const files = Array.isArray(req.files) ? req.files : [];
+  const saved = [];
   try {
     const { car } = await resolveInventoryCar(req.body);
     const album = await ensureCarAlbum(car);
     if (!files.length) throw httpError(400, "No media files were uploaded.");
 
-    const saved = [];
     for (const file of files) {
       saved.push(await saveUploadedPhoto(album.id, file, req.authUser));
     }
@@ -604,6 +604,7 @@ app.post("/api/upload", requireAuth, upload.array("photos", maxUploadFiles), asy
       payload: uploadPushPayload(car, saved.length),
     });
   } catch (error) {
+    await cleanupSavedUploads(saved);
     await cleanupTempFiles(files);
     next(error);
   }
@@ -2110,20 +2111,31 @@ async function saveUploadedPhoto(albumId, file, user) {
   const filename = `${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID().slice(0, 8)}-${baseName}${extension}`;
   const destination = path.join(directory, filename);
 
-  await moveFile(file.path, destination);
-  const stats = await fs.stat(destination);
-  const uploadedAt = new Date().toISOString();
-  const contentType = contentTypeFor(filename);
-  const uploadedBy = publicUploader(user);
-  await updatePhotoMetadata(albumId, (metadata) => {
-    metadata[filename] = {
-      originalName: file.originalname,
-      contentType,
-      bytes: stats.size,
-      uploadedAt,
-      uploadedBy,
-    };
-  });
+  let moved = false;
+  let stats;
+  let uploadedAt;
+  let contentType;
+  let uploadedBy;
+  try {
+    await moveFile(file.path, destination);
+    moved = true;
+    stats = await fs.stat(destination);
+    uploadedAt = new Date().toISOString();
+    contentType = contentTypeFor(filename);
+    uploadedBy = publicUploader(user);
+    await updatePhotoMetadata(albumId, (metadata) => {
+      metadata[filename] = {
+        originalName: file.originalname,
+        contentType,
+        bytes: stats.size,
+        uploadedAt,
+        uploadedBy,
+      };
+    });
+  } catch (error) {
+    if (moved) await fs.unlink(destination).catch(() => {});
+    throw error;
+  }
 
   return photoResponse(albumId, filename, {
     originalName: file.originalname,
@@ -2779,6 +2791,33 @@ async function moveFile(source, destination) {
 
 async function cleanupTempFiles(files) {
   await Promise.all(files.map((file) => fs.unlink(file.path).catch(() => {})));
+}
+
+async function cleanupSavedUploads(photos) {
+  if (!Array.isArray(photos) || !photos.length) return;
+
+  const filenamesByAlbum = new Map();
+  for (const photo of photos) {
+    let albumId;
+    let filename;
+    try {
+      albumId = cleanAlbumId(photo?.albumId);
+      filename = cleanFilename(photo?.filename);
+    } catch {
+      continue;
+    }
+    if (!filenamesByAlbum.has(albumId)) filenamesByAlbum.set(albumId, new Set());
+    filenamesByAlbum.get(albumId).add(filename);
+    await fs.unlink(photoPath(albumId, filename)).catch(() => {});
+    await fs.unlink(thumbnailPath(albumId, filename)).catch(() => {});
+  }
+
+  await Promise.all([...filenamesByAlbum].map(async ([albumId, filenames]) => {
+    await updatePhotoMetadata(albumId, (metadata) => {
+      for (const filename of filenames) delete metadata[filename];
+    }).catch(() => {});
+    await removeMarketplaceCopyIfAlbumEmpty(albumId).catch(() => {});
+  }));
 }
 
 function albumPath(albumId) {

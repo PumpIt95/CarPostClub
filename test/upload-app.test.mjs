@@ -425,6 +425,31 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(marketplaceDraft.draft.copyText, "");
     assert.ok(marketplaceDraft.draft.missingFields.includes("Description"));
 
+    const marketplaceCopyConflictPath = path.join(harness.uploadRoot, TEST_ALBUM_ID, ".marketplace-copy.json");
+    await fs.mkdir(marketplaceCopyConflictPath, { recursive: true });
+    const failedGeneratedUpload = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [
+        { filename: "rollback-front.jpg", type: "image/jpeg", body: jpegBytes("rollback-front") },
+        { filename: "rollback-interior.png", type: "image/png", body: pngBytes("rollback-interior") },
+      ],
+    });
+    assert.equal(failedGeneratedUpload.status, 500);
+    assert.match(failedGeneratedUpload.body.error, /Unexpected server error/);
+    const afterFailedGeneratedUpload = await getJson(
+      harness,
+      `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
+    );
+    assert.deepEqual(afterFailedGeneratedUpload.photos, []);
+    assert.deepEqual(await fs.readdir(harness.tmpRoot), []);
+    assert.deepEqual(
+      JSON.parse(await fs.readFile(path.join(harness.uploadRoot, TEST_ALBUM_ID, ".photos.json"), "utf8")),
+      {},
+    );
+    await fs.rm(marketplaceCopyConflictPath, { recursive: true, force: true });
+
     const uploaded = await uploadPhotos(harness, {
       dealershipId: "15",
       inventoryTypeId: "2",
