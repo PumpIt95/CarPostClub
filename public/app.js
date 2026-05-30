@@ -408,9 +408,10 @@ function bindEvents() {
     els.chatForm.requestSubmit();
   });
 
-  window.addEventListener("pagehide", () => {
-    state.chatEventSource?.close();
-    window.clearTimeout(state.chatReconnectTimer);
+  window.addEventListener("pagehide", disconnectChatStream);
+  window.addEventListener("pageshow", resumeChatStream);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) resumeChatStream();
   });
 }
 
@@ -656,6 +657,21 @@ function connectChatStream() {
     window.clearTimeout(state.chatReconnectTimer);
     state.chatReconnectTimer = window.setTimeout(connectChatStream, 3000);
   });
+}
+
+function disconnectChatStream() {
+  state.chatEventSource?.close();
+  state.chatEventSource = null;
+  window.clearTimeout(state.chatReconnectTimer);
+  state.chatReconnectTimer = null;
+}
+
+function resumeChatStream() {
+  window.clearTimeout(state.chatReconnectTimer);
+  state.chatReconnectTimer = null;
+  if (state.chatEventSource) return;
+  loadChatMessages().catch(() => {});
+  connectChatStream();
 }
 
 function setChatOpen(isOpen, { syncUrl = true, feedback = false } = {}) {

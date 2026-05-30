@@ -141,6 +141,12 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /pushEndpoint/);
   assert.match(source, /subscription\.unsubscribe/);
   assert.match(source, /HTMLFormElement\.prototype\.submit\.call/);
+  assert.match(source, /addEventListener\("pagehide", disconnectChatStream\)/);
+  assert.match(source, /addEventListener\("pageshow", resumeChatStream\)/);
+  assert.match(source, /function disconnectChatStream\(\)/);
+  assert.match(source, /function resumeChatStream\(\)/);
+  assert.match(source, /state\.chatEventSource = null/);
+  assert.match(source, /if \(!document\.hidden\) resumeChatStream\(\)/);
   assert.match(source, /openChat/);
   assert.match(source, /popstate/);
   assert.match(source, /syncChatUrl/);
