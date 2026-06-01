@@ -1,6 +1,6 @@
 const APP_ICON = "/icons/carpostclub-icon-192.png";
 const APP_BADGE = "/icons/carpostclub-apple-touch-icon.png";
-const CACHE_VERSION = "carpostclub-pwa-v13";
+const CACHE_VERSION = "carpostclub-pwa-v25";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/offline.html",
@@ -40,6 +40,8 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+
+  if (isShortcutDownloadPath(url.pathname)) return;
 
   if (request.mode === "navigate") {
     event.respondWith(networkFirstNavigation(request));
@@ -175,6 +177,10 @@ async function cachedStaticResponse(cache, request) {
 
 function isApiPath(pathname) {
   return pathname.startsWith("/api/");
+}
+
+function isShortcutDownloadPath(pathname) {
+  return pathname.startsWith("/shortcuts/");
 }
 
 function isStaticAsset(pathname) {

@@ -13,6 +13,7 @@ const offlineHtmlPath = fileURLToPath(new URL("../public/offline.html", import.m
 const serverPath = fileURLToPath(new URL("../server.js", import.meta.url));
 const serviceWorkerPath = fileURLToPath(new URL("../public/sw.js", import.meta.url));
 const smokeTestPath = fileURLToPath(new URL("../scripts/smoke_test.mjs", import.meta.url));
+const shortcutPlistPath = fileURLToPath(new URL("../shortcuts/Upload to CarPostClub.unsigned.plist", import.meta.url));
 const shareCardPath = fileURLToPath(new URL("../public/share-card.png", import.meta.url));
 const faviconPath = fileURLToPath(new URL("../public/favicon.png", import.meta.url));
 const generatedIconPath = fileURLToPath(new URL("../public/icons/app-icon-ai.png", import.meta.url));
@@ -59,6 +60,17 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="logoutForm"/);
   assert.match(html, /id="installButton"/);
   assert.match(html, /id="notificationButton"/);
+  assert.match(html, /id="shortcutButton"/);
+  assert.match(html, /id="shortcutPanel"/);
+  assert.match(html, /id="shortcutTokenForm"/);
+  assert.match(html, /id="shortcutCopyButton"/);
+  assert.match(html, /class="shortcut-download"/);
+  assert.match(html, /href="\/shortcuts\/upload-to-carpostclub-pick-vehicle\.shortcut"/);
+  assert.match(html, /download="Upload to CarPostClub Pick Vehicle\.shortcut"/);
+  assert.match(html, /Download Shortcut/);
+  assert.match(html, /Photos Shortcut/);
+  assert.match(html, /Konner iPhone or Mac/);
+  assert.match(html, /Device tokens/);
   assert.match(html, /Open Inventory on oregans\.com/);
   assert.match(html, /href="\/account\/password"/);
   assert.match(html, /Change password/);
@@ -82,10 +94,45 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.doesNotMatch(html, /&#128018;/);
   assert.match(html, /id="galleryToggleButton"/);
   assert.match(html, /id="gallerySummary"/);
-  assert.match(html, /\/app\.js\?v=20260530-auth-pwa/);
+  assert.match(html, /\/app\.js\?v=20260601-shortcut-stage-pwa-v9/);
   assert.match(html, /\/styles\.css\?v=20260530-auth-pwa/);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
+});
+
+test("Apple Shortcut opens the pending vehicle picker and supports macOS Quick Actions", async () => {
+  const plist = await fs.readFile(shortcutPlistPath, "utf8");
+
+  assert.doesNotMatch(plist, /is\.workflow\.actions\.ask/);
+  assert.doesNotMatch(plist, /CarPostClub username/);
+  assert.doesNotMatch(plist, /CarPostClub password/);
+  assert.doesNotMatch(plist, /<string>Shortcut Username<\/string>/);
+  assert.doesNotMatch(plist, /<string>Shortcut Password<\/string>/);
+  assert.match(plist, /<string>Upload to CarPostClub Pick Vehicle<\/string>/);
+  assert.match(plist, /<string>shortcutVersion<\/string>/);
+  assert.match(plist, /<string>pick-vehicle-v8<\/string>/);
+  assert.match(plist, /Vehicle Picker URL/);
+  assert.doesNotMatch(plist, /Paste CarPostClub shortcut token here/);
+  assert.doesNotMatch(plist, /WFTextActionText/);
+  assert.match(plist, /https:\/\/carpostclub\.com\/api\/shortcut\/stage/);
+  assert.match(plist, /is\.workflow\.actions\.openurl/);
+  assert.doesNotMatch(plist, /<string>Authorization<\/string>/);
+  assert.doesNotMatch(plist, /Bearer/);
+  assert.match(plist, /<string>photos<\/string>/);
+  assert.match(plist, /<key>WFItemType<\/key>\s*<integer>5<\/integer>[\s\S]*?<string>photos<\/string>/);
+  assert.match(plist, /<string>photos<\/string>[\s\S]*?<string>WFTokenAttachmentParameterState<\/string>/);
+  assert.match(plist, /<string>Accept<\/string>/);
+  assert.match(plist, /<string>text\/plain<\/string>/);
+  assert.doesNotMatch(plist, /is\.workflow\.actions\.choosefromlist/);
+  assert.doesNotMatch(plist, /is\.workflow\.actions\.text\.split/);
+  assert.doesNotMatch(plist, /<string>dealership<\/string>/);
+  assert.doesNotMatch(plist, /<string>inventoryType<\/string>/);
+  assert.doesNotMatch(plist, /<string>inventory<\/string>/);
+  assert.match(plist, /<string>ActionExtension<\/string>/);
+  assert.match(plist, /<string>QuickActions<\/string>/);
+  assert.match(plist, /Finder Quick Action on macOS files/);
+  assert.doesNotMatch(plist, /Choose O'Regan's vehicle/);
+  assert.doesNotMatch(plist, /Stock number or VIN/);
 });
 
 test("frontend sends dealership, inventory filter, and vin with uploads", async () => {
@@ -140,6 +187,16 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /\/api\/push\/config/);
   assert.match(source, /\/api\/push\/subscriptions/);
   assert.match(source, /\/api\/push\/test/);
+  assert.match(source, /\/api\/shortcut\/tokens/);
+  assert.match(source, /setShortcutPanelOpen/);
+  assert.match(source, /createShortcutToken/);
+  assert.match(source, /copyShortcutToken/);
+  assert.match(source, /revokeShortcutToken/);
+  assert.match(source, /shortcutDownloadUrl/);
+  assert.match(source, /\/shortcuts\/upload-to-carpostclub-pick-vehicle\.shortcut/);
+  assert.match(source, /applyInitialSelectionFromUrl/);
+  assert.match(source, /shortcutUpload/);
+  assert.match(source, /openAlbum/);
   assert.match(source, /handleLogoutSubmit/);
   assert.match(source, /currentPushSubscription/);
   assert.match(source, /pushEndpoint/);
@@ -234,7 +291,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v13/);
+  assert.match(serviceWorker, /carpostclub-pwa-v25/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.doesNotMatch(serviceWorker, /Konner Photos/);
@@ -242,6 +299,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(serviceWorker, /networkFirstNavigation/);
   assert.match(serviceWorker, /staleWhileRevalidate/);
   assert.match(serviceWorker, /networkFirstVersionedStaticAsset/);
+  assert.match(serviceWorker, /isShortcutDownloadPath/);
   assert.match(serviceWorker, /url\.search && isStaticAsset\(url\.pathname\)/);
   assert.match(serviceWorker, /cache\.put\(pathname, networkResponse\.clone\(\)\)/);
   assert.match(serviceWorker, /cachedStaticResponse/);
@@ -307,6 +365,10 @@ test("service worker offline fallback handles page navigations but not API reque
   assert.equal(accountNavigation.responded, true);
   assert.equal(await accountNavigation.response, offlineResponse);
 
+  const shortcutDownload = fetchEventFor("https://carpostclub.test/shortcuts/upload-to-carpostclub-pick-vehicle.shortcut", "navigate");
+  fetchHandler(shortcutDownload);
+  assert.equal(shortcutDownload.responded, false);
+
   const apiRequest = fetchEventFor("https://carpostclub.test/api/me", "same-origin");
   fetchHandler(apiRequest);
   assert.equal(apiRequest.responded, false);
@@ -354,6 +416,10 @@ test("mobile chat view and chat messages have distinct author accents", async ()
   assert.match(styles, /justify-self: end/);
   assert.match(styles, /border-right: 6px solid var\(--chat-user-color\)/);
   assert.match(styles, /\.chat-message-meta strong::before/);
+  assert.match(styles, /\.shortcut-panel/);
+  assert.match(styles, /\.shortcut-download/);
+  assert.match(styles, /\.shortcut-token-item/);
+  assert.match(styles, /body\.shortcut-view-active/);
   assert.match(source, /palette = \[/);
   assert.match(source, /chatIdentityKey\(message\)/);
   assert.match(source, /message\?\.authorUsername/);

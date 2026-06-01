@@ -1140,6 +1140,137 @@ textarea:focus {
   line-height: 1;
 }
 
+.shortcut-panel {
+  position: fixed;
+  right: max(var(--spacing-24), env(safe-area-inset-right));
+  bottom: max(var(--spacing-24), env(safe-area-inset-bottom));
+  z-index: 50;
+  display: none;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spacing-16);
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(680px, calc(100svh - 96px));
+  border: 1px solid var(--color-midnight-graphite);
+  padding: var(--spacing-16);
+  color: var(--color-ash-black);
+  background: var(--color-cloud-white);
+  box-shadow: 8px 8px 0 rgba(17, 17, 17, 0.16);
+  overflow: auto;
+}
+
+.shortcut-panel.is-open {
+  display: grid;
+}
+
+.shortcut-header,
+.shortcut-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-16);
+}
+
+.shortcut-header {
+  border-bottom: 1px solid var(--color-midnight-graphite);
+  padding-bottom: var(--spacing-16);
+}
+
+.shortcut-header .icon-text-button {
+  min-height: 40px;
+  padding: 0 12px;
+}
+
+.shortcut-download {
+  display: grid;
+}
+
+.shortcut-download .icon-text-button {
+  min-height: 48px;
+}
+
+.shortcut-token-form,
+.shortcut-secret {
+  display: grid;
+  gap: 12px;
+}
+
+.shortcut-secret {
+  border: 1px solid var(--color-stone-gray);
+  padding: var(--spacing-16);
+  background: #f7fbff;
+}
+
+.shortcut-secret input {
+  font-family: var(--font-ui-monospace);
+  font-size: 12px;
+}
+
+.shortcut-secret-actions {
+  display: flex;
+  gap: var(--spacing-8);
+}
+
+.shortcut-secret-actions .icon-text-button {
+  flex: 1;
+}
+
+.shortcut-list-heading {
+  border-top: 1px solid var(--color-stone-gray);
+  padding-top: var(--spacing-16);
+}
+
+.shortcut-list-heading h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.shortcut-token-list {
+  display: grid;
+  gap: var(--spacing-8);
+}
+
+.shortcut-token-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--spacing-16);
+  border: 1px solid var(--color-stone-gray);
+  padding: 12px;
+  background: #ffffff;
+}
+
+.shortcut-token-item strong,
+.shortcut-token-item span {
+  display: block;
+}
+
+.shortcut-token-item strong {
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.shortcut-token-item span {
+  margin-top: 3px;
+  color: var(--color-smoke-gray);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.shortcut-token-item.is-revoked {
+  opacity: 0.58;
+}
+
+.shortcut-token-empty {
+  border: 1px dashed var(--color-stone-gray);
+  padding: var(--spacing-16);
+  color: var(--color-smoke-gray);
+  background: #ffffff;
+  font-size: 14px;
+  text-align: center;
+}
+
 .chat-panel {
   position: fixed;
   right: max(var(--spacing-24), env(safe-area-inset-right));
@@ -1703,6 +1834,37 @@ textarea:focus {
   }
 
   .admin-password-form {
+    grid-template-columns: 1fr;
+  }
+
+  .shortcut-panel {
+    inset: 0;
+    z-index: 100;
+    width: 100vw;
+    max-height: 100svh;
+    min-height: 100svh;
+    border: 0;
+    padding: max(12px, env(safe-area-inset-top)) var(--spacing-16) max(var(--spacing-16), env(safe-area-inset-bottom));
+    box-shadow: none;
+  }
+
+  body.shortcut-view-active {
+    overflow: hidden;
+  }
+
+  .shortcut-header {
+    min-height: 52px;
+  }
+
+  .shortcut-header .icon-text-button span {
+    display: inline;
+  }
+
+  .shortcut-secret-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .shortcut-token-item {
     grid-template-columns: 1fr;
   }
 

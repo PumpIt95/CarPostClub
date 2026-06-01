@@ -18,12 +18,20 @@ const state = {
   pushPublicKey: "",
   pushSubscription: null,
   pushBusy: false,
+  shortcutPanelOpen: false,
+  shortcutTokens: [],
+  shortcutLoading: false,
+  shortcutBusy: false,
+  shortcutSecret: "",
+  shortcutDownloadUrl: "/shortcuts/upload-to-carpostclub-pick-vehicle.shortcut",
   selectedDealershipId: safeStorageGet("carpostclub.selectedDealershipId", "15"),
   selectedInventoryTypeId: safeStorageGet("carpostclub.selectedInventoryTypeId", "2"),
   selectedMake: safeStorageGet("carpostclub.selectedMake"),
   selectedModel: safeStorageGet("carpostclub.selectedModel"),
   selectedVin: safeStorageGet("carpostclub.selectedVin"),
   carSearch: safeStorageGet("carpostclub.carSearch"),
+  initialOpenAlbum: false,
+  initialShortcutUploadComplete: false,
   galleryExpanded: false,
   failedUploadFiles: [],
   failedUploadMessage: "",
@@ -135,6 +143,18 @@ const els = {
   pickerSubhead: document.querySelector("#pickerSubhead"),
   notificationButton: document.querySelector("#notificationButton"),
   refreshButton: document.querySelector("#refreshButton"),
+  shortcutButton: document.querySelector("#shortcutButton"),
+  shortcutClose: document.querySelector("#shortcutClose"),
+  shortcutCopyButton: document.querySelector("#shortcutCopyButton"),
+  shortcutCreateButton: document.querySelector("#shortcutCreateButton"),
+  shortcutDownloadLink: document.querySelector("#shortcutDownloadLink"),
+  shortcutPanel: document.querySelector("#shortcutPanel"),
+  shortcutRefreshButton: document.querySelector("#shortcutRefreshButton"),
+  shortcutSecret: document.querySelector("#shortcutSecret"),
+  shortcutTokenForm: document.querySelector("#shortcutTokenForm"),
+  shortcutTokenList: document.querySelector("#shortcutTokenList"),
+  shortcutTokenName: document.querySelector("#shortcutTokenName"),
+  shortcutTokenValue: document.querySelector("#shortcutTokenValue"),
   sourceLink: document.querySelector("#sourceLink"),
   statusBar: document.querySelector("#statusBar"),
   uploadHint: document.querySelector("#uploadHint"),
@@ -161,6 +181,7 @@ async function init() {
     renderPwaControls();
   });
   openInitialPanel();
+  applyInitialSelectionFromUrl();
   await loadInventoryFilters();
   await loadCars({ keepSelectedCar: true });
 }
@@ -328,6 +349,24 @@ function bindEvents() {
 
   els.installButton?.addEventListener("click", installPwa);
   els.notificationButton?.addEventListener("click", togglePushNotifications);
+  els.shortcutButton?.addEventListener("click", () => setShortcutPanelOpen(!state.shortcutPanelOpen, { feedback: true }));
+  els.shortcutClose?.addEventListener("click", () => setShortcutPanelOpen(false, { feedback: true }));
+  els.shortcutRefreshButton?.addEventListener("click", () => {
+    haptic("tap");
+    loadShortcutTokens().catch((error) => showError(error));
+  });
+  els.shortcutTokenForm?.addEventListener("submit", (event) => {
+    createShortcutToken(event).catch((error) => showError(error));
+  });
+  els.shortcutCopyButton?.addEventListener("click", () => {
+    haptic("tap");
+    copyShortcutToken().catch((error) => showError(error));
+  });
+  els.shortcutTokenList?.addEventListener("click", (event) => {
+    const button = event.target.closest?.("button[data-shortcut-token-id]");
+    if (!button) return;
+    revokeShortcutToken(button.dataset.shortcutTokenId).catch((error) => showError(error));
+  });
 
   window.addEventListener("popstate", () => {
     const shouldOpenChat = new URLSearchParams(window.location.search).get("openChat") === "1";
@@ -636,6 +675,210 @@ function openInitialPanel() {
   if (params.get("openChat") === "1") setChatOpen(true, { syncUrl: false });
 }
 
+function applyInitialSelectionFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const dealershipId = cleanQueryValue(params.get("dealershipId"));
+  const inventoryTypeId = cleanQueryValue(params.get("inventoryTypeId"));
+  const inventoryKey = cleanQueryValue(params.get("inventoryKey") || params.get("vin"));
+  if (dealershipId) state.selectedDealershipId = dealershipId;
+  if (inventoryTypeId) state.selectedInventoryTypeId = inventoryTypeId;
+  if (inventoryKey) {
+    state.selectedVin = inventoryKey;
+    state.selectedMake = "";
+    state.selectedModel = "";
+    state.carSearch = "";
+    safeStorageRemove("carpostclub.carSearch");
+  }
+  state.initialOpenAlbum = params.get("openAlbum") === "1" || params.get("shortcutUpload") === "complete";
+  state.initialShortcutUploadComplete = params.get("shortcutUpload") === "complete";
+}
+
+function setShortcutPanelOpen(isOpen, { feedback = false } = {}) {
+  if (!els.shortcutPanel) return;
+  if (feedback && Boolean(isOpen) !== state.shortcutPanelOpen) haptic("select");
+  if (isOpen && state.chatOpen) setChatOpen(false);
+  state.shortcutPanelOpen = Boolean(isOpen);
+  els.shortcutPanel.hidden = !state.shortcutPanelOpen;
+  els.shortcutPanel.classList.toggle("is-open", state.shortcutPanelOpen);
+  document.body.classList.toggle("shortcut-view-active", state.shortcutPanelOpen);
+  els.shortcutPanel.setAttribute("aria-hidden", String(!state.shortcutPanelOpen));
+  els.shortcutButton?.setAttribute("aria-expanded", String(state.shortcutPanelOpen));
+  if (state.shortcutPanelOpen) {
+    renderShortcutPanel();
+    loadShortcutTokens().catch((error) => showError(error));
+    window.setTimeout(() => els.shortcutDownloadLink?.focus(), 0);
+  }
+}
+
+async function loadShortcutTokens() {
+  if (state.shortcutLoading) return;
+  state.shortcutLoading = true;
+  renderShortcutPanel();
+  try {
+    const response = await apiJson("/api/shortcut/tokens");
+    state.shortcutTokens = Array.isArray(response.tokens) ? response.tokens : [];
+    state.shortcutDownloadUrl = response.shortcutDownloadUrl || state.shortcutDownloadUrl;
+  } finally {
+    state.shortcutLoading = false;
+    renderShortcutPanel();
+  }
+}
+
+async function createShortcutToken(event) {
+  event.preventDefault();
+  if (state.shortcutBusy) return;
+  haptic("start");
+  state.shortcutBusy = true;
+  state.shortcutSecret = "";
+  renderShortcutPanel();
+
+  try {
+    const response = await apiJson("/api/shortcut/tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: els.shortcutTokenName?.value || "" }),
+    });
+    state.shortcutSecret = response.token || "";
+    if (response.record) {
+      state.shortcutTokens = [
+        response.record,
+        ...state.shortcutTokens.filter((token) => token.id !== response.record.id),
+      ];
+    }
+    state.shortcutDownloadUrl = response.shortcutDownloadUrl || state.shortcutDownloadUrl;
+    if (els.shortcutTokenName) els.shortcutTokenName.value = "";
+    renderShortcutPanel();
+    haptic("success");
+    showStatus("Shortcut token created.");
+  } finally {
+    state.shortcutBusy = false;
+    renderShortcutPanel();
+  }
+}
+
+async function copyShortcutToken() {
+  const token = state.shortcutSecret || els.shortcutTokenValue?.value || "";
+  if (!token) return;
+  await copyTextToClipboard(token);
+  haptic("success");
+  showStatus("Shortcut token copied.");
+}
+
+async function revokeShortcutToken(tokenId) {
+  if (!tokenId || state.shortcutBusy) return;
+  const token = state.shortcutTokens.find((candidate) => candidate.id === tokenId);
+  const label = token?.name || "this token";
+  const confirmed = window.confirm(`Revoke ${label}?`);
+  if (!confirmed) return;
+
+  haptic("warning");
+  state.shortcutBusy = true;
+  renderShortcutPanel();
+  try {
+    await apiJson(`/api/shortcut/tokens/${encodeURIComponent(tokenId)}`, {
+      method: "DELETE",
+    });
+    await loadShortcutTokens();
+    haptic("success");
+    showStatus("Shortcut token revoked.");
+  } finally {
+    state.shortcutBusy = false;
+    renderShortcutPanel();
+  }
+}
+
+function renderShortcutPanel() {
+  if (!els.shortcutPanel) return;
+  if (els.shortcutCreateButton) {
+    els.shortcutCreateButton.disabled = state.shortcutBusy;
+  }
+  if (els.shortcutRefreshButton) {
+    els.shortcutRefreshButton.disabled = state.shortcutLoading || state.shortcutBusy;
+  }
+  if (els.shortcutDownloadLink) {
+    els.shortcutDownloadLink.href = state.shortcutDownloadUrl;
+    els.shortcutDownloadLink.download = "Upload to CarPostClub Pick Vehicle.shortcut";
+  }
+  if (els.shortcutSecret) {
+    els.shortcutSecret.hidden = !state.shortcutSecret;
+  }
+  if (els.shortcutTokenValue) {
+    els.shortcutTokenValue.value = state.shortcutSecret;
+  }
+  renderShortcutTokenList();
+}
+
+function renderShortcutTokenList() {
+  if (!els.shortcutTokenList) return;
+  if (state.shortcutLoading) {
+    const item = document.createElement("div");
+    item.className = "shortcut-token-empty";
+    item.textContent = "Loading tokens";
+    els.shortcutTokenList.replaceChildren(item);
+    return;
+  }
+
+  if (!state.shortcutTokens.length) {
+    const item = document.createElement("div");
+    item.className = "shortcut-token-empty";
+    item.textContent = "No device tokens";
+    els.shortcutTokenList.replaceChildren(item);
+    return;
+  }
+
+  els.shortcutTokenList.replaceChildren(...state.shortcutTokens.map((token) => {
+    const item = document.createElement("article");
+    item.className = "shortcut-token-item";
+    item.classList.toggle("is-revoked", token.status === "revoked");
+
+    const copy = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = token.name || "Photos Shortcut";
+    const meta = document.createElement("span");
+    meta.textContent = shortcutTokenMeta(token);
+    copy.append(title, meta);
+    item.append(copy);
+
+    if (token.status !== "revoked") {
+      const button = document.createElement("button");
+      button.className = "icon-button danger";
+      button.type = "button";
+      button.dataset.shortcutTokenId = token.id;
+      button.setAttribute("aria-label", `Revoke ${title.textContent}`);
+      button.title = "Revoke";
+      button.disabled = state.shortcutBusy;
+      button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3 6h18"/>
+        <path d="M8 6V4h8v2"/>
+        <path d="M19 6l-1 14H6L5 6"/>
+        <path d="M10 11v5"/>
+        <path d="M14 11v5"/>
+      </svg>`;
+      item.append(button);
+    }
+
+    return item;
+  }));
+}
+
+function shortcutTokenMeta(token) {
+  if (token.status === "revoked") {
+    return `Revoked ${formatShortcutTokenTime(token.revokedAt)}`;
+  }
+  const lastUsed = token.lastUsedAt ? `Last used ${formatShortcutTokenTime(token.lastUsedAt)}` : "Not used yet";
+  return `${lastUsed} · Created ${formatShortcutTokenTime(token.createdAt)}`;
+}
+
+function formatShortcutTokenTime(value) {
+  if (!Number.isFinite(Date.parse(value))) return "unknown";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
 function urlBase64ToUint8Array(value) {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
   const base64 = `${value}${padding}`.replace(/-/g, "+").replace(/_/g, "/");
@@ -712,6 +955,7 @@ function resumeChatStream() {
 
 function setChatOpen(isOpen, { syncUrl = true, feedback = false } = {}) {
   if (feedback && Boolean(isOpen) !== state.chatOpen) haptic("select");
+  if (isOpen && state.shortcutPanelOpen) setShortcutPanelOpen(false);
   state.chatOpen = Boolean(isOpen);
   els.chatPanel.hidden = !state.chatOpen;
   els.chatPanel.classList.toggle("is-open", state.chatOpen);
@@ -993,11 +1237,25 @@ async function loadCars({ keepSelectedCar = false, forceAlbumRefresh = false } =
     renderCarOptions();
     persistSelection();
     await loadSelectedCarAlbum({ force: forceAlbumRefresh });
+    applyInitialAlbumView();
     renderActiveCar();
     renderGallery();
   } finally {
     setSelectorBusy(false);
   }
+}
+
+function applyInitialAlbumView() {
+  if (!state.initialOpenAlbum) return;
+  const car = selectedCar();
+  if (!car) return;
+  state.galleryExpanded = state.photos.length > 0;
+  if (state.initialShortcutUploadComplete) {
+    showStatus(`Shortcut upload saved to ${car.stockNumber || carInventoryKey(car)}.`);
+  }
+  state.initialOpenAlbum = false;
+  state.initialShortcutUploadComplete = false;
+  clearInitialSelectionUrl();
 }
 
 function renderCarOptions() {
@@ -1647,6 +1905,21 @@ function persistSelection() {
   else safeStorageRemove("carpostclub.selectedModel");
   if (state.selectedVin) safeStorageSet("carpostclub.selectedVin", state.selectedVin);
   else safeStorageRemove("carpostclub.selectedVin");
+}
+
+function clearInitialSelectionUrl() {
+  const url = new URL(window.location.href);
+  let changed = false;
+  for (const key of ["dealershipId", "inventoryTypeId", "inventoryKey", "vin", "openAlbum", "shortcutUpload"]) {
+    if (!url.searchParams.has(key)) continue;
+    url.searchParams.delete(key);
+    changed = true;
+  }
+  if (changed) window.history.replaceState({}, "", url);
+}
+
+function cleanQueryValue(value) {
+  return String(value || "").trim().slice(0, 120);
 }
 
 function safeStorageGet(key, fallback = "") {
