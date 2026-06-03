@@ -33,7 +33,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="galleryPageLink"[^>]*href="\/gallery"/);
   assert.match(html, /Open media gallery/);
   assert.match(html, /id="uploadPageLink"[^>]*href="\/"[^>]*hidden/);
-  assert.match(html, /Open upload page/);
+  assert.match(html, /aria-label="Home"/);
+  assert.match(html, /title="Home"/);
   assert.match(html, /id="inventoryTypeSelect"/);
   assert.match(html, /id="dealershipSelect"/);
   assert.match(html, /id="makeFilterSelect"/);
