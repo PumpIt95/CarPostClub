@@ -80,6 +80,8 @@ const els = {
   albumCount: document.querySelector("#albumCount"),
   albumEmpty: document.querySelector("#albumEmpty"),
   albumList: document.querySelector("#albumList"),
+  albumSectionSubhead: document.querySelector("#albumSectionSubhead"),
+  albumSectionTitle: document.querySelector("#albumSectionTitle"),
   adminUsersLink: document.querySelector("#adminUsersLink"),
   appShell: document.querySelector(".app-shell"),
   cameraButton: document.querySelector("#cameraButton"),
@@ -180,6 +182,8 @@ function applyPageMode() {
   if (els.uploadPageLink) els.uploadPageLink.hidden = !galleryPage;
   if (els.pageEyebrow) els.pageEyebrow.textContent = galleryPage ? "CarPostClub / Gallery" : "CarPostClub / Media";
   if (els.pageTitle) els.pageTitle.textContent = galleryPage ? "Media gallery" : "Vehicle media intake";
+  if (els.albumSectionTitle) els.albumSectionTitle.textContent = galleryPage ? "Albums" : "Album tiles";
+  if (els.albumSectionSubhead) els.albumSectionSubhead.textContent = galleryPage ? "All saved packages" : "Saved packages";
   document.title = galleryPage ? "Media Gallery | CarPostClub" : "CarPostClub";
 }
 
@@ -1153,6 +1157,7 @@ function renderActiveCar() {
 function renderAlbumList() {
   const tiles = albumTiles();
   els.albumCount.textContent = state.albumsLoading ? "..." : String(tiles.length);
+  els.albumEmpty.textContent = state.page === "gallery" ? "No albums yet" : "No album tiles yet";
   els.albumEmpty.hidden = state.albumsLoading || tiles.length > 0;
   els.albumList.replaceChildren(...tiles.map(renderAlbumCard));
 }
@@ -1241,9 +1246,12 @@ function selectedCarInventoryStatus(car) {
 }
 
 function renderAlbumCard(album) {
+  const isGalleryPage = state.page === "gallery";
   const isOpen = album.isSelected || state.expandedAlbumId === album.id;
   const article = document.createElement("article");
   article.className = "album-card";
+  article.classList.toggle("is-gallery-album", isGalleryPage);
+  article.classList.toggle("is-collapsed", isGalleryPage && !isOpen);
   article.classList.toggle("is-open", isOpen);
   article.classList.toggle("is-selected", Boolean(album.isSelected));
 
@@ -1351,7 +1359,31 @@ function renderAlbumDetail(album) {
   }
 
   detail.append(actions, statusLine, media);
+  if (state.page === "gallery") detail.insertBefore(renderAlbumDescription(albumDetails), media);
   return detail;
+}
+
+function renderAlbumDescription(albumDetails) {
+  const section = document.createElement("section");
+  section.className = "album-description";
+
+  const title = document.createElement("strong");
+  title.textContent = "Description";
+
+  const body = document.createElement("p");
+  const description = albumDetails.draft?.description || "";
+  if (albumDetails.draftLoading) {
+    section.classList.add("is-muted");
+    body.textContent = "Loading description";
+  } else if (description) {
+    body.textContent = description;
+  } else {
+    section.classList.add("is-muted");
+    body.textContent = albumDetails.draftError || "Description is not ready for this album yet.";
+  }
+
+  section.append(title, body);
+  return section;
 }
 
 function albumActionLink(album, label, href, available) {
@@ -1461,28 +1493,59 @@ async function toggleAlbum(albumId) {
 
   state.expandedAlbumId = albumId;
   renderAlbumList();
-  await loadAlbumDetails(albumId);
+  await loadAlbumDetails(albumId, { includeDraft: state.page === "gallery" });
   renderAlbumList();
 }
 
-async function loadAlbumDetails(albumId, { force = false } = {}) {
+async function loadAlbumDetails(albumId, { force = false, includeDraft = false } = {}) {
   const existing = state.albumDetails[albumId] || {};
-  if (!force && Array.isArray(existing.photos)) return existing;
+  const needsPhotos = force || !Array.isArray(existing.photos);
+  const needsDraft = includeDraft && (force || !existing.draft);
+  if (!needsPhotos && !needsDraft) return existing;
 
-  state.albumDetails[albumId] = { ...existing, loading: true };
+  state.albumDetails[albumId] = {
+    ...existing,
+    loading: needsPhotos,
+    draftLoading: needsDraft,
+    draftError: needsDraft ? "" : existing.draftError,
+  };
   renderAlbumList();
   try {
-    const response = await apiJson(`/api/albums/${encodeURIComponent(albumId)}/photos`);
-    state.albumDetails[albumId] = {
-      ...state.albumDetails[albumId],
-      album: response.album,
-      photos: response.photos || [],
-      loading: false,
-    };
-    updateAlbumSummary(response.album);
-    return state.albumDetails[albumId];
+    const draftPromise = needsDraft
+      ? apiJson(`/api/albums/${encodeURIComponent(albumId)}/marketplace-draft`)
+        .then((response) => ({ response }))
+        .catch((error) => ({ error }))
+      : Promise.resolve(null);
+
+    if (needsPhotos) {
+      const photosResponse = await apiJson(`/api/albums/${encodeURIComponent(albumId)}/photos`);
+      state.albumDetails[albumId] = {
+        ...state.albumDetails[albumId],
+        album: photosResponse.album,
+        photos: photosResponse.photos || [],
+        loading: false,
+      };
+      updateAlbumSummary(photosResponse.album);
+      if (needsDraft) renderAlbumList();
+    } else {
+      state.albumDetails[albumId] = { ...state.albumDetails[albumId], loading: false };
+    }
+
+    const draftResult = await draftPromise;
+    const nextDetails = { ...state.albumDetails[albumId], draftLoading: false };
+    if (draftResult?.response) {
+      nextDetails.draft = draftResult.response.draft || null;
+      nextDetails.draftError = "";
+      updateAlbumSummary(draftResult.response.album);
+    } else if (draftResult?.error) {
+      nextDetails.draftError = draftResult.error instanceof Error
+        ? draftResult.error.message
+        : "Description unavailable.";
+    }
+    state.albumDetails[albumId] = nextDetails;
+    return nextDetails;
   } catch (error) {
-    state.albumDetails[albumId] = { ...existing, loading: false };
+    state.albumDetails[albumId] = { ...existing, loading: false, draftLoading: false };
     throw error;
   }
 }

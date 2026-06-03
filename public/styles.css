@@ -472,14 +472,37 @@ textarea:focus {
   border-left: 4px solid var(--color-marigold-yellow);
 }
 
+.app-shell.is-gallery-page .album-section {
+  border-left-width: 1px;
+  padding: var(--spacing-12);
+}
+
+.app-shell.is-gallery-page .section-heading {
+  margin-bottom: var(--spacing-12);
+  padding-bottom: var(--spacing-8);
+}
+
+.app-shell.is-gallery-page .section-heading p {
+  font-size: 12px;
+}
+
 .album-list {
   display: grid;
   gap: var(--spacing-8);
 }
 
+.app-shell.is-gallery-page .album-list {
+  gap: 6px;
+}
+
 .album-card {
   border: 1px solid var(--color-stone-gray);
   background: var(--color-cloud-white);
+}
+
+.app-shell.is-gallery-page .album-card.is-collapsed {
+  border-color: #d8d8d8;
+  background: rgba(255, 255, 255, 0.84);
 }
 
 .album-card.is-open {
@@ -508,6 +531,12 @@ textarea:focus {
   background: #f6f6f6;
 }
 
+.app-shell.is-gallery-page .album-card.is-collapsed .album-summary-button {
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: var(--spacing-12);
+  padding: 6px var(--spacing-8);
+}
+
 .album-card.is-selected .album-summary-button {
   background: #eef6ff;
 }
@@ -523,6 +552,10 @@ textarea:focus {
   background: var(--color-midnight-graphite);
   font-size: 13px;
   font-weight: var(--font-weight-bold);
+}
+
+.app-shell.is-gallery-page .album-card.is-collapsed .album-cover {
+  width: 56px;
 }
 
 .album-cover img {
@@ -548,6 +581,14 @@ textarea:focus {
 .album-summary-copy strong {
   font-size: 15px;
   line-height: 1.25;
+}
+
+.app-shell.is-gallery-page .album-card.is-collapsed .album-summary-copy strong {
+  font-size: 14px;
+}
+
+.app-shell.is-gallery-page .album-card.is-collapsed .album-summary-copy span {
+  font-size: 12px;
 }
 
 .album-summary-copy span,
@@ -588,6 +629,10 @@ textarea:focus {
   background: #eef6ff;
 }
 
+.app-shell.is-gallery-page .album-card.is-collapsed .inventory-status-badge {
+  display: none;
+}
+
 .album-detail {
   display: grid;
   gap: 12px;
@@ -619,6 +664,34 @@ textarea:focus {
 
 .album-status-line {
   color: var(--color-steel-gray);
+}
+
+.album-description {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--color-stone-gray);
+  padding: var(--spacing-12);
+  background: #ffffff;
+}
+
+.album-description strong {
+  color: var(--color-steel-gray);
+  font-size: 12px;
+  font-weight: var(--font-weight-bold);
+  text-transform: uppercase;
+}
+
+.album-description p {
+  margin: 0;
+  color: var(--color-midnight-graphite);
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.album-description.is-muted p {
+  color: var(--color-smoke-gray);
 }
 
 .album-media-strip {
@@ -1615,8 +1688,16 @@ textarea:focus {
     gap: var(--spacing-8);
   }
 
+  .app-shell.is-gallery-page .album-card.is-collapsed .album-summary-button {
+    grid-template-columns: 52px minmax(0, 1fr);
+  }
+
   .album-cover {
     width: 64px;
+  }
+
+  .app-shell.is-gallery-page .album-card.is-collapsed .album-cover {
+    width: 52px;
   }
 
   .inventory-status-badge {
