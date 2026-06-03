@@ -182,8 +182,8 @@ function applyPageMode() {
   if (els.uploadPageLink) els.uploadPageLink.hidden = !galleryPage;
   if (els.pageEyebrow) els.pageEyebrow.textContent = galleryPage ? "CarPostClub / Gallery" : "CarPostClub / Media";
   if (els.pageTitle) els.pageTitle.textContent = galleryPage ? "Media gallery" : "Vehicle media intake";
-  if (els.albumSectionTitle) els.albumSectionTitle.textContent = galleryPage ? "Albums" : "Album tiles";
-  if (els.albumSectionSubhead) els.albumSectionSubhead.textContent = galleryPage ? "All saved packages" : "Saved packages";
+  if (els.albumSectionTitle) els.albumSectionTitle.textContent = galleryPage ? "Shared albums" : "Album tiles";
+  if (els.albumSectionSubhead) els.albumSectionSubhead.textContent = galleryPage ? "All user accounts" : "Saved packages";
   document.title = galleryPage ? "Media Gallery | CarPostClub" : "CarPostClub";
 }
 
@@ -1279,16 +1279,28 @@ function renderAlbumCard(album) {
   const copy = document.createElement("span");
   copy.className = "album-summary-copy";
   const title = document.createElement("strong");
-  title.textContent = album.name || album.vehicle?.title || "Vehicle package";
+  title.textContent = albumSummaryTitle(album, { inventoryFirst: isGalleryPage });
+  copy.append(title);
+
+  const descriptionLine = isGalleryPage ? albumSummaryDescription(album) : "";
+  if (descriptionLine) {
+    const description = document.createElement("span");
+    description.className = "album-summary-description";
+    description.textContent = descriptionLine;
+    copy.append(description);
+  }
+
   const meta = document.createElement("span");
+  meta.className = "album-summary-meta";
   meta.textContent = [
     album.isSelected ? "Selected" : "",
-    album.vehicle?.stockNumber || album.inventoryNumber,
+    ...(!isGalleryPage ? [album.vehicle?.stockNumber || album.inventoryNumber] : []),
+    ...(isGalleryPage ? [albumCreatorLabel(album), albumUploaderCountLabel(album)] : []),
     album.vehicle?.dealershipName || album.dealership?.name,
     `${album.mediaCount || 0} ${plural(album.mediaCount || 0, "asset")}`,
     album.updatedAt && `Updated ${formatDate(album.updatedAt)}`,
   ].filter(Boolean).join(" · ");
-  copy.append(title, meta);
+  copy.append(meta);
 
   const status = inventoryStatusBadge(album.inventoryStatus);
   summary.append(cover, copy, status);
@@ -1384,6 +1396,53 @@ function renderAlbumDescription(albumDetails) {
 
   section.append(title, body);
   return section;
+}
+
+function albumSummaryTitle(album, { inventoryFirst = false } = {}) {
+  const title = album.vehicle?.title || album.name || "Vehicle package";
+  const inventory = albumInventoryLabel(album);
+  if (!inventoryFirst || !inventory) return title;
+  return title.toLowerCase().includes(inventory.toLowerCase()) ? title : `${inventory} · ${title}`;
+}
+
+function albumInventoryLabel(album) {
+  return [
+    album.vehicle?.stockNumber,
+    album.inventoryNumber,
+    album.vehicle?.manualInventoryId,
+    album.vehicle?.inventoryKey,
+    album.vehicle?.vin,
+  ].find(Boolean) || "";
+}
+
+function albumSummaryDescription(album) {
+  const preview = album.descriptionPreview || album.vehicle?.descriptionPreview;
+  if (preview) return preview;
+  return [
+    album.vehicle?.price,
+    album.vehicle?.odometer,
+    album.vehicle?.exteriorColor && `${album.vehicle.exteriorColor} exterior`,
+    album.vehicle?.interiorColor && `${album.vehicle.interiorColor} interior`,
+    album.vehicle?.bodyStyle,
+    album.vehicle?.fuelType,
+    album.vehicle?.transmission,
+  ].filter(Boolean).join(" · ");
+}
+
+function albumCreatorLabel(album) {
+  const creator = album.createdBy || album.uploadedByUsers?.[0];
+  const label = userAccountLabel(creator);
+  return label ? `Created by ${label}` : "Creator unknown";
+}
+
+function albumUploaderCountLabel(album) {
+  const count = Array.isArray(album.uploadedByUsers) ? album.uploadedByUsers.length : 0;
+  if (count <= 1) return "";
+  return `${count} uploaders`;
+}
+
+function userAccountLabel(user) {
+  return user?.displayName || user?.username || "";
 }
 
 function albumActionLink(album, label, href, available) {

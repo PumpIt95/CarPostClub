@@ -1184,6 +1184,9 @@ async function readAlbum(albumId) {
   const cover = photos.find((photo) => photo.kind !== "video") || photos[0] || null;
   const inventoryNumber = albumInventoryNumberFromMetadata(metadata);
   const storage = albumStorageInfo(albumId, metadata);
+  const uploadedByUsers = albumUploadedByUsers(photos);
+  const createdBy = albumCreator(metadata, photos);
+  const updatedBy = publicUploader(metadata.updatedBy) || publicUploader(photos[0]?.uploadedBy) || createdBy;
 
   return {
     id: albumId,
@@ -1191,11 +1194,15 @@ async function readAlbum(albumId) {
     inventoryNumber,
     createdAt: metadata.createdAt || stats.birthtime.toISOString(),
     updatedAt,
+    createdBy,
+    updatedBy,
+    uploadedByUsers,
     photoCount,
     videoCount,
     mediaCount: photos.length,
     bytes,
     coverUrl: cover?.url || null,
+    descriptionPreview: normalizeSpace(metadata.vehicle?.descriptionPreview),
     objectStoragePrefix: storage.prefix,
     storage,
     dealership: metadata.dealership || null,
@@ -1207,6 +1214,33 @@ async function readAlbum(albumId) {
 
 async function albumsWithInventoryStatus(albums) {
   return Promise.all(albums.map(albumWithInventoryStatus));
+}
+
+function albumCreator(metadata = {}, photos = []) {
+  const firstUploader = albumPhotosOldestFirst(photos).find((photo) => publicUploader(photo.uploadedBy));
+  return publicUploader(firstUploader?.uploadedBy) || publicUploader(metadata.createdBy) || null;
+}
+
+function albumUploadedByUsers(photos = []) {
+  const seen = new Set();
+  const users = [];
+  for (const photo of albumPhotosOldestFirst(photos)) {
+    const user = publicUploader(photo.uploadedBy);
+    if (!user) continue;
+    const key = user.username || user.displayName;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    users.push(user);
+  }
+  return users;
+}
+
+function albumPhotosOldestFirst(photos = []) {
+  return [...photos].sort((left, right) => {
+    const leftTime = Date.parse(left?.uploadedAt || "") || 0;
+    const rightTime = Date.parse(right?.uploadedAt || "") || 0;
+    return leftTime - rightTime;
+  });
 }
 
 async function albumWithInventoryStatus(album) {
@@ -1284,13 +1318,13 @@ function inventoryCarMatchesAlbum(car, album) {
   return Boolean(carStock && albumStock && carStock === albumStock);
 }
 
-async function ensureCarAlbum(car) {
+async function ensureCarAlbum(car, user = null) {
   const targetAlbumId = carAlbumId(car);
   await migrateLegacyCarAlbum(car, targetAlbumId);
   const albumId = await reusableVehicleAlbumId(car, targetAlbumId);
   const directory = albumPath(albumId);
   await fs.mkdir(directory, { recursive: true });
-  await writeCarAlbumMetadata(albumId, car);
+  await writeCarAlbumMetadata(albumId, car, user);
   const photoMetadataPath = path.join(directory, ".photos.json");
   await fs.access(photoMetadataPath).catch(async (error) => {
     if (error?.code !== "ENOENT") throw error;
@@ -1299,10 +1333,12 @@ async function ensureCarAlbum(car) {
   return readAlbum(albumId);
 }
 
-async function writeCarAlbumMetadata(albumId, car) {
+async function writeCarAlbumMetadata(albumId, car, user = null) {
   const existing = await readAlbumMetadata(albumId);
   const inventoryNumber = albumInventoryNumberFromCar(car) || albumInventoryNumberFromMetadata(existing);
   const albumPrefix = albumObjectStoragePrefixForCar(albumId, car, existing);
+  const createdBy = publicUploader(existing.createdBy) || publicUploader(user);
+  const updatedBy = publicUploader(user) || publicUploader(existing.updatedBy) || createdBy;
   await writeJson(path.join(albumPath(albumId), ".album.json"), {
     id: albumId,
     name: car.albumName,
@@ -1310,7 +1346,9 @@ async function writeCarAlbumMetadata(albumId, car) {
     objectStoragePrefix: albumPrefix,
     storage: albumStorageInfo(albumId, { ...existing, objectStoragePrefix: albumPrefix }),
     createdAt: existing.createdAt || new Date().toISOString(),
+    createdBy,
     updatedAt: new Date().toISOString(),
+    updatedBy,
     dealership: car.dealership,
     inventoryTypeId: car.inventoryTypeId,
     sourceUrl: car.detailUrl,
@@ -4077,7 +4115,7 @@ async function cleanupSavedUploads(photos) {
 async function saveUploadedMediaForCar({ files, car, user }) {
   const saved = [];
   try {
-    const album = await ensureCarAlbum(car);
+    const album = await ensureCarAlbum(car, user);
     if (!files.length) throw httpError(400, "No media files were uploaded.");
 
     for (const file of files) {

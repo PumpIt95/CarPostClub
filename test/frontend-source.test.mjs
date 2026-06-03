@@ -99,8 +99,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /src="\/upload-monkey\.svg"/);
   assert.match(html, /class="progress-confetti"/);
   assert.doesNotMatch(html, /&#128018;/);
-  assert.match(html, /\/app\.js\?v=20260603-album-index-v28/);
-  assert.match(html, /\/styles\.css\?v=20260603-album-index-v28/);
+  assert.match(html, /\/app\.js\?v=20260603-shared-albums-v29/);
+  assert.match(html, /\/styles\.css\?v=20260603-shared-albums-v29/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -132,7 +132,13 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /galleryPageLink/);
   assert.match(source, /uploadPageLink/);
   assert.match(source, /albumSectionTitle/);
-  assert.match(source, /All saved packages/);
+  assert.match(source, /Shared albums/);
+  assert.match(source, /All user accounts/);
+  assert.match(source, /albumSummaryTitle/);
+  assert.match(source, /albumSummaryDescription/);
+  assert.match(source, /albumCreatorLabel/);
+  assert.match(source, /uploadedByUsers/);
+  assert.match(source, /Created by/);
   assert.match(source, /is-gallery-album/);
   assert.match(source, /is-collapsed/);
   assert.match(source, /includeDraft: state\.page === "gallery"/);
@@ -494,6 +500,9 @@ test("uploaded package albums show inventory status and mobile download controls
   assert.match(styles, /\.app-shell\.is-gallery-page \.album-card\.is-collapsed/);
   assert.match(styles, /\.app-shell\.is-gallery-page \.album-card\.is-collapsed \.inventory-status-badge/);
   assert.match(styles, /\.album-summary-button/);
+  assert.match(styles, /\.album-summary-copy \.album-summary-description/);
+  assert.match(styles, /-webkit-line-clamp: 2/);
+  assert.match(styles, /\.album-summary-copy \.album-summary-meta/);
   assert.match(styles, /\.album-media-strip/);
   assert.match(styles, /\.album-description/);
   assert.match(styles, /white-space: pre-wrap/);

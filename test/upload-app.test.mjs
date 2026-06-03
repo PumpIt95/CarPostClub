@@ -474,6 +474,10 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(manualUpload.status, 201);
     assert.equal(manualUpload.body.album.vehicle.source, "manual");
     assert.equal(manualUpload.body.album.inventoryNumber, MANUAL_CAR.stockNumber);
+    assert.equal(manualUpload.body.album.createdBy.username, TEST_USERNAME);
+    assert.equal(manualUpload.body.album.createdBy.displayName, TEST_USERNAME);
+    assert.deepEqual(manualUpload.body.album.uploadedByUsers.map((user) => user.username), [TEST_USERNAME]);
+    assert.equal(manualUpload.body.album.descriptionPreview, MANUAL_CAR.descriptionPreview);
     assert.match(manualUpload.body.album.storage.prefix, /^inventory\/15\/used-vehicles\/mnl123-manual-/);
     assert.equal(manualUpload.body.album.mediaCount, 1);
     assert.equal(manualUpload.body.album.photoCount, 1);
@@ -617,6 +621,9 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     }
     const savedAlbumMetadata = JSON.parse(await fs.readFile(path.join(harness.uploadRoot, TEST_ALBUM_ID, ".album.json"), "utf8"));
     assert.equal(savedAlbumMetadata.inventoryNumber, TEST_CAR.stockNumber);
+    assert.equal(savedAlbumMetadata.createdBy.username, TEST_USERNAME);
+    assert.equal(savedAlbumMetadata.createdBy.displayName, TEST_USERNAME);
+    assert.equal(savedAlbumMetadata.updatedBy.username, TEST_USERNAME);
     assert.equal(savedAlbumMetadata.objectStoragePrefix, TEST_OBJECT_STORAGE_PREFIX);
     assert.equal(savedAlbumMetadata.storage.prefix, TEST_OBJECT_STORAGE_PREFIX);
 
@@ -712,9 +719,13 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(testAlbum.photoCount, 3);
     assert.equal(testAlbum.videoCount, 1);
     assert.equal(testAlbum.mediaCount, 4);
+    assert.equal(testAlbum.createdBy.username, TEST_USERNAME);
+    assert.deepEqual(testAlbum.uploadedByUsers.map((user) => user.username), [TEST_USERNAME]);
     assert.equal(testAlbum.inventoryStatus.active, true);
     assert.match(testAlbum.inventoryStatus.label, /Active in O'Regan's inventory as of/);
     assert.equal(savedManualAlbum.inventoryStatus.status, "manual");
+    assert.equal(savedManualAlbum.createdBy.username, TEST_USERNAME);
+    assert.equal(savedManualAlbum.descriptionPreview, MANUAL_CAR.descriptionPreview);
 
     const albumMarketplaceDraft = await getJson(harness, `/api/albums/${afterUpload.album.id}/marketplace-draft`);
     assert.equal(albumMarketplaceDraft.draft.descriptionSource, "template-upload");

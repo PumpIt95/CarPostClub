@@ -591,6 +591,19 @@ textarea:focus {
   font-size: 12px;
 }
 
+.album-summary-copy .album-summary-description {
+  display: -webkit-box;
+  color: var(--color-steel-gray);
+  overflow: hidden;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.album-summary-copy .album-summary-meta {
+  color: var(--color-smoke-gray);
+}
+
 .album-summary-copy span,
 .album-status-line {
   color: var(--color-smoke-gray);
