@@ -89,7 +89,12 @@ async function request(pathname, headers) {
 }
 
 function buildAuthHeaders() {
-  const authEnabled = Boolean(process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH || process.env.CARPOSTCLUB_AUTH_PASSWORD || process.env.KONNER_AUTH_PASSWORD_HASH || process.env.KONNER_AUTH_PASSWORD);
+  const authEnabled = Boolean(process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH
+    || process.env.CARPOSTCLUB_AUTH_PASSWORD
+    || process.env.KONNER_AUTH_PASSWORD_HASH
+    || process.env.KONNER_AUTH_PASSWORD
+    || process.env.AUTH_PASSWORD_HASH
+    || process.env.AUTH_PASSWORD);
   if (!authEnabled) return {};
 
   const secret = process.env.CARPOSTCLUB_AUTH_SESSION_SECRET || process.env.KONNER_AUTH_SESSION_SECRET || process.env.AUTH_SESSION_SECRET || fallbackSessionSecret();
@@ -113,7 +118,13 @@ function buildAuthHeaders() {
 
 function fallbackSessionSecret() {
   return crypto.createHash("sha256")
-    .update(process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH || process.env.CARPOSTCLUB_AUTH_PASSWORD || process.env.KONNER_AUTH_PASSWORD_HASH || process.env.KONNER_AUTH_PASSWORD || "carpostclub")
+    .update(process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH
+      || process.env.CARPOSTCLUB_AUTH_PASSWORD
+      || process.env.KONNER_AUTH_PASSWORD_HASH
+      || process.env.KONNER_AUTH_PASSWORD
+      || process.env.AUTH_PASSWORD_HASH
+      || process.env.AUTH_PASSWORD
+      || "carpostclub")
     .digest("hex");
 }
 
@@ -122,6 +133,8 @@ function bootstrapAdminPasswordVersion(secret) {
     || process.env.CARPOSTCLUB_AUTH_PASSWORD
     || process.env.KONNER_AUTH_PASSWORD_HASH
     || process.env.KONNER_AUTH_PASSWORD
+    || process.env.AUTH_PASSWORD_HASH
+    || process.env.AUTH_PASSWORD
     || "";
   if (!source) return "";
   return crypto.createHmac("sha256", secret)

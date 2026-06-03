@@ -1,9 +1,18 @@
 import crypto from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { ZipArchive } from "archiver";
 import bcrypt from "bcryptjs";
 import dotenv from "dotenv";
@@ -16,10 +25,6 @@ import webPush from "web-push";
 
 const appRoot = fileURLToPath(new URL("./", import.meta.url));
 const publicRoot = fileURLToPath(new URL("./public/", import.meta.url));
-const shortcutDownloadName = "Upload to CarPostClub Pick Vehicle.shortcut";
-const shortcutDownloadUrl = "/shortcuts/upload-to-carpostclub-pick-vehicle.shortcut";
-const shortcutWorkflowVersion = "pick-vehicle-v8";
-const shortcutBundlePath = path.join(appRoot, "shortcuts", "Upload to CarPostClub.shortcut");
 const appName = "CarPostClub";
 const serviceName = "carpostclub";
 
@@ -31,11 +36,44 @@ const port = Number(process.env.PORT || 3911);
 const host = process.env.HOST || "127.0.0.1";
 const uploadRoot = path.resolve(process.env.UPLOAD_ROOT || "/var/lib/carpostclub/uploads");
 const tmpRoot = path.resolve(process.env.TMP_ROOT || "/var/lib/carpostclub/tmp");
+const objectStorageBucket = process.env.CARPOSTCLUB_S3_BUCKET || process.env.HETZNER_OBJECT_STORAGE_BUCKET || "";
+const objectStorageRegion = process.env.CARPOSTCLUB_S3_REGION || process.env.HETZNER_OBJECT_STORAGE_REGION || "fsn1";
+const objectStorageEndpoint = process.env.CARPOSTCLUB_S3_ENDPOINT
+  || process.env.HETZNER_OBJECT_STORAGE_ENDPOINT
+  || (objectStorageBucket ? `https://${objectStorageRegion}.your-objectstorage.com` : "");
+const objectStorageAccessKeyId = process.env.CARPOSTCLUB_S3_ACCESS_KEY_ID
+  || process.env.HETZNER_OBJECT_STORAGE_ACCESS_KEY_ID
+  || process.env.AWS_ACCESS_KEY_ID
+  || "";
+const objectStorageSecretAccessKey = process.env.CARPOSTCLUB_S3_SECRET_ACCESS_KEY
+  || process.env.HETZNER_OBJECT_STORAGE_SECRET_ACCESS_KEY
+  || process.env.AWS_SECRET_ACCESS_KEY
+  || "";
+const objectStoragePrefix = normalizeObjectStoragePrefix(process.env.CARPOSTCLUB_S3_PREFIX || process.env.HETZNER_OBJECT_STORAGE_PREFIX || "");
+const requestedMediaStorageDriver = String(process.env.CARPOSTCLUB_MEDIA_STORAGE_DRIVER || process.env.MEDIA_STORAGE_DRIVER || "").trim().toLowerCase();
+const mediaStorageDriver = requestedMediaStorageDriver || (objectStorageBucket ? "s3" : "local");
+if (!["local", "s3"].includes(mediaStorageDriver)) {
+  throw new Error(`Unsupported media storage driver: ${mediaStorageDriver}`);
+}
+if (mediaStorageDriver === "s3" && (!objectStorageBucket || !objectStorageEndpoint || !objectStorageAccessKeyId || !objectStorageSecretAccessKey)) {
+  throw new Error("S3 media storage requires bucket, endpoint, access key ID, and secret access key.");
+}
+const s3MediaStorageEnabled = mediaStorageDriver === "s3";
+const s3MediaClient = s3MediaStorageEnabled
+  ? new S3Client({
+    region: objectStorageRegion,
+    endpoint: objectStorageEndpoint,
+    forcePathStyle: parseBooleanEnv("CARPOSTCLUB_S3_FORCE_PATH_STYLE", parseBooleanEnv("HETZNER_OBJECT_STORAGE_FORCE_PATH_STYLE", false)),
+    credentials: {
+      accessKeyId: objectStorageAccessKeyId,
+      secretAccessKey: objectStorageSecretAccessKey,
+    },
+  })
+  : null;
 const chatMessagesPath = path.resolve(process.env.CHAT_MESSAGES_PATH || path.join(path.dirname(uploadRoot), "chat-messages.json"));
 const manualInventoryPath = path.resolve(process.env.MANUAL_INVENTORY_PATH || path.join(path.dirname(uploadRoot), "manual-inventory.json"));
 const pushSubscriptionsPath = path.resolve(process.env.CARPOSTCLUB_PUSH_SUBSCRIPTIONS_PATH || process.env.KONNER_PUSH_SUBSCRIPTIONS_PATH || process.env.PUSH_SUBSCRIPTIONS_PATH || path.join(path.dirname(uploadRoot), "push-subscriptions.json"));
 const pushVapidKeysPath = path.resolve(process.env.CARPOSTCLUB_PUSH_VAPID_KEYS_PATH || process.env.KONNER_PUSH_VAPID_KEYS_PATH || process.env.PUSH_VAPID_KEYS_PATH || path.join(path.dirname(uploadRoot), "push-vapid-keys.json"));
-const shortcutPendingRoot = path.resolve(process.env.CARPOSTCLUB_SHORTCUT_PENDING_ROOT || process.env.KONNER_SHORTCUT_PENDING_ROOT || path.join(path.dirname(uploadRoot), "shortcut-pending"));
 const releaseManifestPath = process.env.CARPOSTCLUB_RELEASE_MANIFEST || process.env.KONNER_RELEASE_MANIFEST || path.join(appRoot, "release-manifest.json");
 const maxFileBytes = positiveInteger(process.env.MAX_FILE_BYTES, 250 * 1024 * 1024);
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 100);
@@ -45,12 +83,12 @@ const chatMessageMaxLength = positiveInteger(process.env.CHAT_MESSAGE_MAX_LENGTH
 const marketplaceDescriptionModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_MODEL || "gpt-5-nano";
 const marketplaceDescriptionFallbackModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_FALLBACK_MODEL || "gpt-4.1-nano";
 const marketplaceDescriptionVariantCount = positiveInteger(process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_VARIANT_COUNT, 6);
-const marketplaceDescriptionPromptVersion = "facebook-marketplace-user-description-v1";
+const marketplaceDescriptionPromptVersion = "facebook-marketplace-user-description-v2";
 const marketplaceLocation = process.env.FACEBOOK_MARKETPLACE_LOCATION || "Halifax, Nova Scotia";
 const marketplaceCleanTitleDefault = parseBooleanEnv("FACEBOOK_MARKETPLACE_CLEAN_TITLE_DEFAULT", true);
 const marketplacePriceDisclosureFee = 499.95;
 const marketplacePriceDisclosureHst = 14;
-const marketplaceContactLine = "Message me for more details. If you're coming into the dealership, mention CarPostClub.";
+const marketplaceContactPerson = normalizeSpace(process.env.FACEBOOK_MARKETPLACE_CONTACT_NAME || "Konner") || "Konner";
 const pushSubject = process.env.CARPOSTCLUB_PUSH_SUBJECT || process.env.KONNER_PUSH_SUBJECT || process.env.WEB_PUSH_SUBJECT || "mailto:hello@carpostclub.local";
 const pushTtlSeconds = positiveInteger(process.env.CARPOSTCLUB_PUSH_TTL_SECONDS || process.env.KONNER_PUSH_TTL_SECONDS, 60 * 60);
 const pushDeliveryDisabled = parseBooleanEnv("CARPOSTCLUB_PUSH_DELIVERY_DISABLED", parseBooleanEnv("KONNER_PUSH_DELIVERY_DISABLED", false));
@@ -60,15 +98,13 @@ const authPassword = process.env.CARPOSTCLUB_AUTH_PASSWORD || process.env.KONNER
 const authPasswordHash = process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH || process.env.KONNER_AUTH_PASSWORD_HASH || "";
 const authEnabled = Boolean(authPassword || authPasswordHash);
 const authUsersPath = path.resolve(process.env.CARPOSTCLUB_AUTH_USERS_PATH || process.env.KONNER_AUTH_USERS_PATH || process.env.AUTH_USERS_PATH || path.join(path.dirname(uploadRoot), "auth-users.json"));
-const shortcutTokensPath = path.resolve(process.env.CARPOSTCLUB_SHORTCUT_TOKENS_PATH || process.env.KONNER_SHORTCUT_TOKENS_PATH || process.env.SHORTCUT_TOKENS_PATH || path.join(path.dirname(uploadRoot), "shortcut-tokens.json"));
+const authInvitesPath = path.resolve(process.env.CARPOSTCLUB_AUTH_INVITES_PATH || process.env.KONNER_AUTH_INVITES_PATH || process.env.AUTH_INVITES_PATH || path.join(path.dirname(uploadRoot), "auth-invites.json"));
 const authCookieName = process.env.CARPOSTCLUB_AUTH_COOKIE_NAME || process.env.KONNER_AUTH_COOKIE_NAME || "carpostclub_session";
 const authCookieSecure = parseBooleanEnv("CARPOSTCLUB_AUTH_COOKIE_SECURE", parseBooleanEnv("KONNER_AUTH_COOKIE_SECURE", process.env.NODE_ENV === "production"));
 const authSessionDays = positiveInteger(process.env.CARPOSTCLUB_AUTH_SESSION_DAYS || process.env.KONNER_AUTH_SESSION_DAYS, 365);
 const authSessionMs = authSessionDays * 24 * 60 * 60 * 1000;
-const shortcutPendingTtlMs = positiveInteger(process.env.CARPOSTCLUB_SHORTCUT_PENDING_TTL_SECONDS || process.env.KONNER_SHORTCUT_PENDING_TTL_SECONDS, 24 * 60 * 60) * 1000;
-const shortcutPendingMaxJobs = positiveInteger(process.env.CARPOSTCLUB_SHORTCUT_PENDING_MAX_JOBS || process.env.KONNER_SHORTCUT_PENDING_MAX_JOBS, 300);
-const shortcutStageRateLimitWindowMs = positiveInteger(process.env.CARPOSTCLUB_SHORTCUT_STAGE_RATE_LIMIT_WINDOW_SECONDS || process.env.KONNER_SHORTCUT_STAGE_RATE_LIMIT_WINDOW_SECONDS, 10 * 60) * 1000;
-const shortcutStageRateLimitMax = positiveInteger(process.env.CARPOSTCLUB_SHORTCUT_STAGE_RATE_LIMIT_MAX || process.env.KONNER_SHORTCUT_STAGE_RATE_LIMIT_MAX, 30);
+const authInviteLifetimeHours = positiveInteger(process.env.CARPOSTCLUB_AUTH_INVITE_HOURS || process.env.KONNER_AUTH_INVITE_HOURS, 24);
+const authInviteLifetimeMs = authInviteLifetimeHours * 60 * 60 * 1000;
 const authSessionSecret = sessionSecret();
 const releaseInfo = await readReleaseInfo();
 const thumbnailDirectoryName = ".thumbnails";
@@ -98,11 +134,9 @@ const legacyStorageDirectories = new Set(["optimized", "originals", "thumbnails"
 const oregansInventorySearchApiUrl = "https://oserv3.oreganscdn.com/api/vehicle-inventory-search/";
 const oregansInventoryRegionId = "1";
 const defaultInventoryTypeId = "2";
+const shortcutDefaultDealershipId = process.env.CARPOSTCLUB_SHORTCUT_DEFAULT_DEALERSHIP_ID || "15";
 const inventoryCacheTtlMs = positiveInteger(process.env.OREGANS_INVENTORY_CACHE_TTL_MS, 5 * 60 * 1000);
 const inventoryMockFile = process.env.OREGANS_INVENTORY_MOCK_FILE || "";
-const shortcutDefaultDealershipId = process.env.CARPOSTCLUB_SHORTCUT_DEFAULT_DEALERSHIP_ID || "15";
-const shortcutTokenPrefix = "cpcst";
-const shortcutTokenScope = "shortcut_upload";
 const inventoryTypes = Object.freeze([
   { id: "2", name: "Used vehicles" },
   { id: "1", name: "New vehicles" },
@@ -133,10 +167,9 @@ const marketplaceCopyStoreWritePromises = new Map();
 const photoMetadataWritePromises = new Map();
 let chatWritePromise = Promise.resolve();
 let authUsersWritePromise = Promise.resolve();
-let shortcutTokensWritePromise = Promise.resolve();
+let authInvitesWritePromise = Promise.resolve();
 let manualInventoryWritePromise = Promise.resolve();
 let pushSubscriptionsWritePromise = Promise.resolve();
-let shortcutStageRateLimitHits = new Map();
 let openaiClient = null;
 
 await fs.mkdir(uploadRoot, { recursive: true });
@@ -144,8 +177,7 @@ await fs.mkdir(tmpRoot, { recursive: true });
 await fs.mkdir(path.dirname(chatMessagesPath), { recursive: true });
 await fs.mkdir(path.dirname(manualInventoryPath), { recursive: true });
 await fs.mkdir(path.dirname(authUsersPath), { recursive: true });
-await fs.mkdir(path.dirname(shortcutTokensPath), { recursive: true });
-await fs.mkdir(shortcutPendingRoot, { recursive: true });
+await fs.mkdir(path.dirname(authInvitesPath), { recursive: true });
 await fs.mkdir(path.dirname(pushSubscriptionsPath), { recursive: true });
 await fs.mkdir(path.dirname(pushVapidKeysPath), { recursive: true });
 
@@ -195,6 +227,13 @@ app.get("/healthz", (_req, res) => {
     release: releaseInfo,
     storage: {
       uploadRoot,
+      mediaDriver: mediaStorageDriver,
+      objectStorage: s3MediaStorageEnabled ? {
+        bucket: objectStorageBucket,
+        endpoint: objectStorageEndpoint,
+        region: objectStorageRegion,
+        prefix: objectStoragePrefix,
+      } : null,
     },
     uptimeSeconds: Math.round(process.uptime()),
     shuttingDown: false,
@@ -253,12 +292,23 @@ app.post("/login", async (req, res, next) => {
   }
 });
 
-app.get("/signup", (req, res) => {
-  if (!authEnabled) {
-    res.redirect("/");
-    return;
+app.get("/signup", async (req, res, next) => {
+  try {
+    if (!authEnabled) {
+      res.redirect("/");
+      return;
+    }
+
+    const inviteState = await authInviteState(req.query.invite);
+    sendSignupPage(res, {
+      invite: inviteState.invite,
+      inviteToken: inviteState.token,
+      error: inviteState.status === "expired" || inviteState.status === "invalid" ? inviteState.message : "",
+      inviteMessage: inviteState.status === "missing" ? inviteState.message : "",
+    });
+  } catch (error) {
+    next(error);
   }
-  sendSignupPage(res);
 });
 
 app.post("/signup", async (req, res, next) => {
@@ -272,9 +322,24 @@ app.post("/signup", async (req, res, next) => {
     const displayName = normalizeDisplayName(req.body?.displayName) || username;
     const password = String(req.body?.password || "");
     const confirmPassword = String(req.body?.confirmPassword || "");
+    const inviteState = await authInviteState(req.body?.invite);
+    if (inviteState.status !== "valid") {
+      sendSignupPage(res, {
+        error: inviteState.message,
+        inviteToken: inviteState.token,
+        values: { username, displayName },
+      });
+      return;
+    }
+
     const validationError = validateSignup({ username, password, confirmPassword });
     if (validationError) {
-      sendSignupPage(res, { error: validationError, values: { username, displayName } });
+      sendSignupPage(res, {
+        error: validationError,
+        invite: inviteState.invite,
+        inviteToken: inviteState.token,
+        values: { username, displayName },
+      });
       return;
     }
 
@@ -290,9 +355,11 @@ app.post("/signup", async (req, res, next) => {
         passwordHash,
         passwordVersion: newPasswordVersion(),
         role: "user",
-        status: "pending",
+        status: "approved",
         createdAt: now,
         updatedAt: now,
+        approvedAt: now,
+        approvedBy: `invite:${inviteState.invite.id}`,
         passwordUpdatedAt: now,
         passwordUpdatedBy: username,
       };
@@ -301,12 +368,18 @@ app.post("/signup", async (req, res, next) => {
     });
 
     if (!createdUser) {
-      sendSignupPage(res, { error: "That username already exists.", values: { username, displayName } });
+      sendSignupPage(res, {
+        error: "That username already exists.",
+        invite: inviteState.invite,
+        inviteToken: inviteState.token,
+        values: { username, displayName },
+      });
       return;
     }
 
+    await markAuthInviteUsed(inviteState.invite.id, createdUser);
     sendSignupPage(res, {
-      success: "Account request sent. A CarPostClub admin needs to approve it before you can sign in.",
+      success: "Account created. You can sign in now.",
     });
   } catch (error) {
     next(error);
@@ -363,12 +436,27 @@ app.post("/account/password", requireAuth, async (req, res, next) => {
 
 app.get("/admin/users", requireAdmin, async (req, res, next) => {
   try {
+    const generatedInvite = await authInviteForAdmin(req.query.invite, req);
     sendAdminUsersPage(res, {
       currentUser: req.authUser,
       users: (await readAuthUsers()).users,
+      invites: await listAuthInvitesForAdmin(),
+      generatedInvite,
       error: flashMessage(req.query.error),
       success: flashMessage(req.query.success),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/admin/invites", requireAdmin, async (req, res, next) => {
+  try {
+    const invite = await createAuthInvite(req.authUser);
+    res.redirect(303, adminUsersUrl({
+      invite: invite.id,
+      success: "Invite link created. It is valid for 24 hours.",
+    }));
   } catch (error) {
     next(error);
   }
@@ -419,6 +507,11 @@ app.get("/", requireAuth, (_req, res) => {
   res.sendFile(path.join(publicRoot, "index.html"));
 });
 
+app.get("/gallery", requireAuth, (_req, res) => {
+  setPrivateNoStore(res);
+  res.sendFile(path.join(publicRoot, "index.html"));
+});
+
 app.get("/inventory", requireAuth, (_req, res) => {
   res.redirect(302, "/");
 });
@@ -428,7 +521,8 @@ app.get("/api/albums", requireAuth, async (_req, res, next) => {
     res.json({
       ok: true,
       uploadRoot,
-      albums: await listAlbums(),
+      mediaDriver: mediaStorageDriver,
+      albums: await listAlbums({ includeInventoryStatus: true }),
     });
   } catch (error) {
     next(error);
@@ -441,22 +535,6 @@ app.get("/api/me", requireAuth, (req, res) => {
     user: publicAuthUser(req.authUser),
   });
 });
-
-app.get(shortcutDownloadUrl, sendShortcutBundle);
-app.get("/shortcuts/upload-to-carpostclub-v2.shortcut", sendShortcutBundle);
-app.get("/shortcuts/upload-to-carpostclub.shortcut", sendShortcutBundle);
-
-async function sendShortcutBundle(_req, res, next) {
-  try {
-    await fs.access(shortcutBundlePath);
-    setPrivateNoStore(res);
-    res.type("application/octet-stream");
-    res.download(shortcutBundlePath, shortcutDownloadName);
-  } catch (error) {
-    if (error?.code === "ENOENT") next(httpError(404, "Shortcut file is not available on this server."));
-    else next(error);
-  }
-}
 
 app.get("/api/push/config", requireAuth, (_req, res) => {
   res.setHeader("Cache-Control", "private, no-store");
@@ -507,50 +585,6 @@ app.post("/api/push/test", requireAuth, async (req, res, next) => {
   }
 });
 
-app.get("/api/shortcut/tokens", requireAuth, async (req, res, next) => {
-  try {
-    setPrivateNoStore(res);
-    res.json({
-      ok: true,
-      tokens: await listShortcutTokensForUser(req.authUser),
-      shortcutDownloadUrl,
-      shortcutWorkflowVersion,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/shortcut/tokens", requireAuth, async (req, res, next) => {
-  try {
-    const created = await createShortcutTokenForUser(req.authUser, {
-      name: cleanShortcutTokenName(req.body?.name),
-      userAgent: req.get("user-agent") || "",
-    });
-    setPrivateNoStore(res);
-    res.status(201).json({
-      ok: true,
-      token: created.token,
-      authorizationHeader: `Bearer ${created.token}`,
-      record: publicShortcutTokenRecord(created.record),
-      shortcutDownloadUrl,
-      shortcutWorkflowVersion,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.delete("/api/shortcut/tokens/:tokenId", requireAuth, async (req, res, next) => {
-  try {
-    const revoked = await revokeShortcutTokenForUser(req.params.tokenId, req.authUser);
-    setPrivateNoStore(res);
-    res.json({ ok: true, revoked });
-  } catch (error) {
-    next(error);
-  }
-});
-
 app.get("/api/inventory/dealerships", requireAuth, (_req, res) => {
   res.json({
     ok: true,
@@ -565,14 +599,36 @@ app.get("/api/inventory/cars", requireAuth, async (req, res, next) => {
   try {
     const dealership = cleanDealershipId(req.query.dealershipId);
     const inventoryTypeId = cleanInventoryTypeId(req.query.inventoryTypeId || defaultInventoryTypeId);
-    const cars = await fetchInventoryCars({ dealershipId: dealership.id, inventoryTypeId });
+    const inventory = await fetchInventoryCarsSnapshot({ dealershipId: dealership.id, inventoryTypeId });
+    const cars = await mergeManualInventoryCars(inventory.cars, { dealership, inventoryTypeId });
     res.json({
       ok: true,
       dealership,
       inventoryTypeId,
       cars,
       count: cars.length,
+      fetchedAt: inventory.fetchedAtIso,
+      source: inventory.source,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Public contract for the macOS/iOS "Inventory Album v3" Shortcut.
+// Shortcuts cannot carry the upload app's browser session cookie.
+app.get("/api/shortcuts/inventory-albums", async (req, res, next) => {
+  try {
+    const picker = await shortcutInventoryAlbumPicker(req.query);
+    res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+
+    const format = normalizeSpace(req.query?.format).toLowerCase();
+    if (format === "labels" || format === "list") {
+      res.json(picker.items.map((item) => item.albumName));
+      return;
+    }
+
+    res.json(picker);
   } catch (error) {
     next(error);
   }
@@ -593,7 +649,7 @@ app.post("/api/manual-inventory/cars", requireAuth, async (req, res, next) => {
 app.get("/api/marketplace-draft", requireAuth, async (req, res, next) => {
   try {
     const { car } = await resolveInventoryCar(req.query);
-    const album = await ensureCarAlbum(car);
+    const album = await findExistingVehicleAlbum(car);
     const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album });
     res.json({
       ok: true,
@@ -609,7 +665,7 @@ app.get("/api/marketplace-draft", requireAuth, async (req, res, next) => {
 app.post("/api/marketplace-draft/regenerate", requireAuth, async (req, res, next) => {
   try {
     const { car } = await resolveInventoryCar(req.body);
-    const album = await ensureCarAlbum(car);
+    const album = await findExistingVehicleAlbum(car);
     const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album, force: true });
     res.json({
       ok: true,
@@ -622,73 +678,19 @@ app.post("/api/marketplace-draft/regenerate", requireAuth, async (req, res, next
   }
 });
 
-app.get("/api/shortcut/vehicle", requireShortcutAuth, async (req, res, next) => {
+app.get("/api/albums/:albumId/marketplace-draft", requireAuth, async (req, res, next) => {
   try {
-    const match = await resolveShortcutInventoryCar(req.query);
+    const albumId = cleanAlbumId(req.params.albumId);
+    const album = await readAlbum(albumId);
+    if (!album) throw httpError(404, "Album not found.");
+    const car = carFromAlbum(album);
+    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album });
     res.json({
       ok: true,
-      source: "ios-shortcut",
-      query: match.query,
-      matchedBy: match.matchedBy,
-      dealership: match.dealership,
-      inventoryTypeId: match.inventoryTypeId,
-      car: match.car,
+      album: await albumWithInventoryStatus(album),
+      car,
+      draft,
     });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/shortcut/dealerships", requireShortcutAuth, async (req, res, next) => {
-  try {
-    sendShortcutPicklistResponse(res, req.query, "dealerships", shortcutDealershipItems());
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/shortcut/dealerships", requireShortcutAuth, async (req, res, next) => {
-  try {
-    sendShortcutPicklistResponse(res, shortcutRequestValues(req), "dealerships", shortcutDealershipItems());
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/shortcut/inventory-types", requireShortcutAuth, async (req, res, next) => {
-  try {
-    const values = req.query;
-    cleanOptionalShortcutDealership(values);
-    sendShortcutPicklistResponse(res, values, "inventoryTypes", shortcutInventoryTypeItems());
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/shortcut/inventory-types", requireShortcutAuth, async (req, res, next) => {
-  try {
-    const values = shortcutRequestValues(req);
-    cleanOptionalShortcutDealership(values);
-    sendShortcutPicklistResponse(res, values, "inventoryTypes", shortcutInventoryTypeItems());
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/shortcut/inventory", requireShortcutAuth, async (req, res, next) => {
-  try {
-    const items = await listShortcutInventoryItems(req.query);
-    sendShortcutPicklistResponse(res, req.query, "cars", items);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/shortcut/inventory", requireShortcutAuth, async (req, res, next) => {
-  try {
-    const values = shortcutRequestValues(req);
-    const items = await listShortcutInventoryItems(values);
-    sendShortcutPicklistResponse(res, values, "cars", items);
   } catch (error) {
     next(error);
   }
@@ -697,11 +699,11 @@ app.post("/api/shortcut/inventory", requireShortcutAuth, async (req, res, next) 
 app.get("/api/vehicle-album", requireAuth, async (req, res, next) => {
   try {
     const { car } = await resolveInventoryCar(req.query);
-    const album = await ensureCarAlbum(car);
+    const album = await findExistingVehicleAlbum(car);
     res.json({
       ok: true,
-      album,
-      photos: await listAlbumPhotos(album.id),
+      album: await albumWithInventoryStatus(album),
+      photos: album ? await listAlbumPhotos(album.id) : [],
     });
   } catch (error) {
     next(error);
@@ -715,7 +717,7 @@ app.get("/api/albums/:albumId/photos", requireAuth, async (req, res, next) => {
     if (!album) throw httpError(404, "Album not found.");
     res.json({
       ok: true,
-      album,
+      album: await albumWithInventoryStatus(album),
       photos: await listAlbumPhotos(albumId),
     });
   } catch (error) {
@@ -724,6 +726,8 @@ app.get("/api/albums/:albumId/photos", requireAuth, async (req, res, next) => {
 });
 
 app.get("/api/albums/:albumId/download", requireAuth, downloadAlbumMedia);
+app.get("/api/albums/:albumId/description.txt", requireAuth, downloadAlbumDescription);
+app.get("/api/albums/:albumId/package", requireAuth, downloadAlbumPackage);
 
 app.post("/api/upload", requireAuth, upload.array("photos", maxUploadFiles), async (req, res, next) => {
   const files = Array.isArray(req.files) ? req.files : [];
@@ -751,164 +755,6 @@ app.post("/api/upload", requireAuth, upload.array("photos", maxUploadFiles), asy
   }
 });
 
-app.post("/api/shortcut/stage", limitAnonymousShortcutStage, upload.any(), async (req, res, next) => {
-  const files = Array.isArray(req.files) ? req.files : [];
-  try {
-    const version = normalizeSpace(firstFormValue(req.body?.shortcutVersion));
-    if (version !== shortcutWorkflowVersion || shortcutVehicleQuery(req.body)) {
-      throw httpError(400, "Update the Shortcut from CarPostClub, then share the photos again.");
-    }
-
-    const pending = await createPendingShortcutUpload({
-      req,
-      files,
-      user: null,
-      source: "ios-shortcut-stage",
-    });
-    sendShortcutPendingUploadResponse(req, res, pending);
-  } catch (error) {
-    await cleanupTempFiles(files);
-    next(error);
-  }
-});
-
-app.post("/api/shortcut/upload", requireShortcutAuth, upload.any(), async (req, res, next) => {
-  const files = Array.isArray(req.files) ? req.files : [];
-  try {
-    if (!shortcutVehicleQuery(req.body) && normalizeSpace(firstFormValue(req.body?.shortcutVersion)) === shortcutWorkflowVersion) {
-      const pending = await createPendingShortcutUpload({
-        req,
-        files,
-        user: req.authUser,
-        source: "ios-shortcut-pending",
-      });
-      sendShortcutPendingUploadResponse(req, res, pending);
-      return;
-    }
-
-    const match = await resolveShortcutInventoryCar(req.body);
-    const result = await saveUploadedMediaForCar({ files, car: match.car, user: req.authUser });
-
-    res.status(201).json({
-      ok: true,
-      source: "ios-shortcut",
-      message: `Uploaded ${result.photos.length} ${result.photos.length === 1 ? "file" : "files"} to ${match.car.stockNumber || match.car.inventoryKey}.`,
-      appUrl: shortcutCompletionAppUrl(req, match.car),
-      query: match.query,
-      matchedBy: match.matchedBy,
-      dealership: match.dealership,
-      inventoryTypeId: match.inventoryTypeId,
-      album: result.album,
-      albumId: result.album.id,
-      car: match.car,
-      count: result.photos.length,
-      photos: result.photos,
-      marketplaceGeneration: result.marketplaceGeneration,
-      marketplaceDraft: result.marketplaceDraft,
-    });
-    queuePushNotifications({
-      excludeUsername: req.authUser.username,
-      payload: uploadPushPayload(match.car, result.photos.length),
-    });
-  } catch (error) {
-    await cleanupTempFiles(files);
-    next(error);
-  }
-});
-
-app.get("/shortcut/complete/:pendingId", async (req, res, next) => {
-  try {
-    const pending = await readPendingShortcutUpload(req.params.pendingId, req.query.secret);
-    const sessionUser = await identifyRequestUser(req);
-    if (authEnabled && !sessionUser) {
-      res.redirect(302, `/login?next=${encodeURIComponent(safeRedirectPath(req.originalUrl || req.url) || "/")}`);
-      return;
-    }
-    setPrivateNoStore(res);
-    res.type("html").send(shortcutPendingPickerHtml(req, pending, { user: sessionUser || bootstrapAdminUser() }));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/shortcut/pending/:pendingId/dealerships", requireAuth, async (req, res, next) => {
-  try {
-    await readPendingShortcutUpload(req.params.pendingId, req.query.secret);
-    setPrivateNoStore(res);
-    res.json({ ok: true, dealerships: shortcutDealershipItems() });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/shortcut/pending/:pendingId/inventory-types", requireAuth, async (req, res, next) => {
-  try {
-    const pending = await readPendingShortcutUpload(req.params.pendingId, req.query.secret);
-    cleanOptionalShortcutDealership(req.query);
-    setPrivateNoStore(res);
-    res.json({ ok: true, pendingId: pending.id, inventoryTypes: shortcutInventoryTypeItems() });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/shortcut/pending/:pendingId/inventory", requireAuth, async (req, res, next) => {
-  try {
-    await readPendingShortcutUpload(req.params.pendingId, req.query.secret);
-    const items = await listShortcutInventoryItems(req.query);
-    setPrivateNoStore(res);
-    res.json({ ok: true, cars: items });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/shortcut/pending/:pendingId/complete", requireAuth, async (req, res, next) => {
-  try {
-    const pending = await readPendingShortcutUpload(req.params.pendingId, req.query.secret || req.body?.secret);
-    const match = await resolveShortcutInventoryCar({
-      dealership: req.body?.dealership,
-      inventoryType: req.body?.inventoryType,
-      inventory: req.body?.inventory,
-    });
-    const files = pending.files.map((file) => ({
-      fieldname: file.fieldname || "photos",
-      originalname: file.originalName || file.filename,
-      encoding: file.encoding || "7bit",
-      mimetype: file.mimetype || contentTypeFor(file.filename),
-      size: file.size || 0,
-      filename: file.filename,
-      path: path.join(pendingShortcutDirectory(pending.id), file.filename),
-    }));
-    const result = await saveUploadedMediaForCar({ files, car: match.car, user: req.authUser });
-    await removePendingShortcutUpload(pending.id);
-    setPrivateNoStore(res);
-    res.json({
-      ok: true,
-      source: "ios-shortcut-pending",
-      message: `Uploaded ${result.photos.length} ${result.photos.length === 1 ? "file" : "files"} to ${match.car.stockNumber || match.car.inventoryKey}.`,
-      appUrl: shortcutCompletionAppUrl(req, match.car),
-      query: match.query,
-      matchedBy: match.matchedBy,
-      dealership: match.dealership,
-      inventoryTypeId: match.inventoryTypeId,
-      album: result.album,
-      albumId: result.album.id,
-      car: match.car,
-      count: result.photos.length,
-      photos: result.photos,
-      marketplaceGeneration: result.marketplaceGeneration,
-      marketplaceDraft: result.marketplaceDraft,
-    });
-    queuePushNotifications({
-      excludeUsername: req.authUser.username,
-      payload: uploadPushPayload(match.car, result.photos.length),
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
 app.get("/api/albums/:albumId/media/:filename", requireAuth, serveAlbumMedia);
 app.get("/api/albums/:albumId/photos/:filename", requireAuth, serveAlbumMedia);
 app.get("/api/albums/:albumId/media/:filename/thumbnail", requireAuth, serveAlbumThumbnail);
@@ -922,16 +768,11 @@ async function serveAlbumMedia(req, res, next) {
   try {
     const albumId = cleanAlbumId(req.params.albumId);
     const filename = cleanFilename(req.params.filename);
-    const filePath = photoPath(albumId, filename);
-    const stats = await fs.stat(filePath).catch((error) => {
-      if (error?.code === "ENOENT") return null;
-      throw error;
-    });
-    if (!stats?.isFile()) throw httpError(404, "Media not found.");
-
     const metadata = await readPhotoMetadata(albumId);
+    const media = await storedMediaInfo(albumId, filename, metadata);
+    if (!media) throw httpError(404, "Media not found.");
     const originalName = metadata[filename]?.originalName || filename;
-    sendMediaFile(req, res, filePath, filename, stats, {
+    await sendStoredMedia(req, res, media, {
       downloadName: isDownloadRequest(req) ? mediaDownloadName(originalName, filename) : "",
     });
   } catch (error) {
@@ -943,17 +784,14 @@ async function serveAlbumThumbnail(req, res, next) {
   try {
     const albumId = cleanAlbumId(req.params.albumId);
     const filename = cleanFilename(req.params.filename);
-    const filePath = photoPath(albumId, filename);
-    const stats = await fs.stat(filePath).catch((error) => {
-      if (error?.code === "ENOENT") throw httpError(404, "Media not found.");
-      throw error;
-    });
+    const media = await storedMediaInfo(albumId, filename);
+    if (!media) throw httpError(404, "Media not found.");
 
     if (!isPhotoFilename(filename)) throw httpError(404, "Thumbnail not available.");
 
-    const thumbnail = await ensureImageThumbnail(albumId, filename, filePath, stats).catch(() => null);
+    const thumbnail = await ensureStoredMediaThumbnail(media).catch(() => null);
     if (!thumbnail) {
-      sendMediaFile(req, res, filePath, filename, stats);
+      await sendStoredMedia(req, res, media);
       return;
     }
 
@@ -990,9 +828,7 @@ async function downloadAlbumMedia(req, res, next) {
 
     const archiveNames = new Set();
     for (const photo of photos) {
-      archive.file(photoPath(albumId, photo.filename), {
-        name: uniqueArchiveName(mediaDownloadName(photo.originalName, photo.filename), archiveNames),
-      });
+      await appendStoredMediaToArchive(archive, albumId, photo.filename, uniqueArchiveName(mediaDownloadName(photo.originalName, photo.filename), archiveNames));
     }
     await archive.finalize();
   } catch (error) {
@@ -1000,16 +836,205 @@ async function downloadAlbumMedia(req, res, next) {
   }
 }
 
+async function downloadAlbumDescription(req, res, next) {
+  try {
+    const albumId = cleanAlbumId(req.params.albumId);
+    const album = await readAlbum(albumId);
+    if (!album) throw httpError(404, "Album not found.");
+    const car = carFromAlbum(album);
+    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album });
+    const photos = await listAlbumPhotos(albumId);
+    const inventoryStatus = await inventoryStatusForAlbum(album);
+    const documentText = marketplaceDescriptionDocument({
+      album,
+      car,
+      draft,
+      photos,
+      user: req.authUser,
+      inventoryStatus,
+    });
+
+    res.attachment(`${slugify(album.name || albumId)}-marketplace-description.txt`);
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(documentText);
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function downloadAlbumPackage(req, res, next) {
+  try {
+    const albumId = cleanAlbumId(req.params.albumId);
+    const album = await readAlbum(albumId);
+    if (!album) throw httpError(404, "Album not found.");
+    const photos = await listAlbumPhotos(albumId);
+    if (!photos.length) throw httpError(404, "No media to package.");
+
+    const car = carFromAlbum(album);
+    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album });
+    const inventoryStatus = await inventoryStatusForAlbum(album);
+    const descriptionText = marketplaceDescriptionDocument({
+      album,
+      car,
+      draft,
+      photos,
+      user: req.authUser,
+      inventoryStatus,
+    });
+    const manifest = marketplacePackageManifest({
+      album,
+      car,
+      draft,
+      photos,
+      user: req.authUser,
+      inventoryStatus,
+    });
+
+    const archive = new ZipArchive({ zlib: { level: 9 } });
+    archive.on("error", (error) => {
+      if (res.headersSent) {
+        res.destroy(error);
+        return;
+      }
+      next(error);
+    });
+
+    res.attachment(`${slugify(album.name || albumId)}-marketplace-package.zip`);
+    res.setHeader("Cache-Control", "private, no-store");
+    archive.pipe(res);
+
+    const archiveNames = new Set();
+    for (const photo of photos) {
+      const archiveName = uniqueArchiveName(mediaDownloadName(photo.originalName, photo.filename), archiveNames);
+      await appendStoredMediaToArchive(archive, albumId, photo.filename, path.posix.join("media", archiveName));
+    }
+    archive.append(descriptionText, { name: "facebook-marketplace-description.txt" });
+    archive.append(JSON.stringify(draft.fields || {}, null, 2), { name: "facebook-marketplace-fields.json" });
+    archive.append(`${JSON.stringify(manifest, null, 2)}\n`, { name: "package-manifest.json" });
+    await archive.finalize();
+  } catch (error) {
+    next(error);
+  }
+}
+
+function carFromAlbum(album) {
+  const vehicle = album?.vehicle || {};
+  const dealership = cleanDealershipId(vehicle.dealershipId || album?.dealership?.id);
+  const inventoryTypeId = cleanInventoryTypeId(vehicle.inventoryTypeId || album?.inventoryTypeId || defaultInventoryTypeId);
+  const source = normalizeSpace(vehicle.source || "oregans").toLowerCase() === "manual" ? "manual" : "oregans";
+  return {
+    source,
+    manualInventoryId: source === "manual" ? cleanManualInventoryId(vehicle.manualInventoryId || vehicle.inventoryKey) : "",
+    inventoryKey: normalizeSpace(vehicle.inventoryKey || vehicle.manualInventoryId || vehicle.vin),
+    vin: cleanOptionalVin(vehicle.vin),
+    stockNumber: normalizeSpace(vehicle.stockNumber),
+    title: normalizeSpace(vehicle.title || album?.name),
+    label: normalizeSpace([vehicle.stockNumber, vehicle.title || album?.name].filter(Boolean).join(" - ")),
+    inventoryTypeId,
+    dealership,
+    albumId: album.id,
+    albumName: album.name,
+    inventoryType: inventoryTypes.find((type) => type.id === inventoryTypeId)?.name || "",
+    year: normalizeSpace(vehicle.year),
+    make: normalizeSpace(vehicle.make),
+    model: normalizeSpace(vehicle.model),
+    trim: normalizeSpace(vehicle.trim),
+    tagline: "",
+    price: normalizeSpace(vehicle.price),
+    priceValue: parseCurrency(vehicle.price),
+    ownerLocation: normalizeSpace(vehicle.dealershipName || dealership.name),
+    detailUrl: normalizeSpace(vehicle.detailUrl || album?.sourceUrl),
+    exteriorColor: normalizeSpace(vehicle.exteriorColor),
+    interiorColor: normalizeSpace(vehicle.interiorColor),
+    odometer: normalizeSpace(vehicle.odometer),
+    odometerValue: parseNullableInteger(vehicle.odometer),
+    bodyStyle: normalizeSpace(vehicle.bodyStyle),
+    fuelType: normalizeSpace(vehicle.fuelType),
+    transmission: normalizeSpace(vehicle.transmission),
+    descriptionPreview: normalizeSpace(vehicle.descriptionPreview),
+  };
+}
+
+function marketplaceDescriptionDocument({ album, car, draft, photos, user, inventoryStatus }) {
+  const displayName = normalizeDisplayName(user?.displayName) || normalizeAuthUsername(user?.username) || "CarPostClub user";
+  const missingFields = Array.isArray(draft.missingFields) ? draft.missingFields : [];
+  const reviewFields = Array.isArray(draft.reviewFields) ? draft.reviewFields : [];
+  return [
+    "CarPostClub Marketplace Package",
+    "",
+    `Prepared for: ${displayName}`,
+    `Vehicle: ${draft.title || car.title || album.name}`,
+    `Stock: ${car.stockNumber || "Needs review"}`,
+    `VIN: ${car.vin || "Needs review"}`,
+    `Media: ${photos.length} ${photos.length === 1 ? "file" : "files"}`,
+    `Inventory status: ${inventoryStatus?.label || "Unknown"}`,
+    `Ready to post: ${draft.ready ? "Yes" : "No"}`,
+    missingFields.length ? `Missing fields: ${missingFields.join(", ")}` : "",
+    reviewFields.length ? `Review fields: ${reviewFields.join(", ")}` : "",
+    "",
+    "Facebook Marketplace Fields",
+    draft.copyText || buildMarketplaceCopyText({
+      title: draft.title,
+      fields: draft.fields || {},
+      description: draft.description || "",
+      car,
+    }),
+  ].filter((line, index, lines) => line || lines[index - 1] !== "").join("\n").trimEnd() + "\n";
+}
+
+function marketplacePackageManifest({ album, car, draft, photos, user, inventoryStatus }) {
+  return {
+    app: appName,
+    generatedAt: new Date().toISOString(),
+    generatedFor: publicAuthUser(user),
+    readyToPost: Boolean(draft.ready),
+    missingFields: draft.missingFields || [],
+    reviewFields: draft.reviewFields || [],
+    inventoryStatus,
+    album: {
+      id: album.id,
+      name: album.name,
+      createdAt: album.createdAt,
+      updatedAt: album.updatedAt,
+    },
+    vehicle: {
+      source: car.source,
+      inventoryKey: car.inventoryKey,
+      vin: car.vin,
+      stockNumber: car.stockNumber,
+      title: car.title,
+      year: car.year,
+      make: car.make,
+      model: car.model,
+      trim: car.trim,
+      dealership: car.dealership,
+      inventoryTypeId: car.inventoryTypeId,
+    },
+    marketplace: {
+      title: draft.title,
+      fields: draft.fields,
+      descriptionSource: draft.descriptionSource,
+      descriptionVariantId: draft.descriptionVariantId,
+      descriptionOwner: draft.descriptionOwner,
+    },
+    media: photos.map((photo) => ({
+      originalName: photo.originalName,
+      downloadName: photo.downloadName,
+      kind: photo.kind,
+      contentType: photo.contentType,
+      bytes: photo.bytes,
+      uploadedAt: photo.uploadedAt,
+      uploadedBy: photo.uploadedBy,
+    })),
+  };
+}
+
 async function deleteAlbumMedia(req, res, next) {
   try {
     const albumId = cleanAlbumId(req.params.albumId);
     const filename = cleanFilename(req.params.filename);
-    await fs.unlink(photoPath(albumId, filename)).catch((error) => {
-      if (error?.code !== "ENOENT") throw error;
-    });
-    await fs.unlink(thumbnailPath(albumId, filename)).catch((error) => {
-      if (error?.code !== "ENOENT") throw error;
-    });
+    await deleteStoredMedia(albumId, filename);
     await updatePhotoMetadata(albumId, (metadata) => {
       delete metadata[filename];
     });
@@ -1026,10 +1051,7 @@ async function deleteAlbumMediaCollection(req, res, next) {
     const album = await readAlbum(albumId);
     if (!album) throw httpError(404, "Album not found.");
     const photos = await listAlbumPhotos(albumId);
-    await Promise.all(photos.map((photo) => fs.unlink(photoPath(albumId, photo.filename)).catch((error) => {
-      if (error?.code !== "ENOENT") throw error;
-    })));
-    await fs.rm(thumbnailDirectoryPath(albumId), { recursive: true, force: true });
+    await Promise.all(photos.map((photo) => deleteStoredMedia(albumId, photo.filename)));
     await updatePhotoMetadata(albumId, (metadata) => {
       for (const filename of Object.keys(metadata)) delete metadata[filename];
     });
@@ -1110,11 +1132,6 @@ app.use(async (error, req, res, _next) => {
   const safeStatus = status >= 400 && status < 600 ? status : 500;
   const message = safeStatus >= 500 ? "Unexpected server error." : String(responseError?.message || "Request failed.");
   if (safeStatus >= 500) console.error(responseError);
-  if (wantsShortcutPlainTextError(req)) {
-    setPrivateNoStore(res);
-    res.status(safeStatus).type("text/plain; charset=utf-8").send(`Error: ${message}\n`);
-    return;
-  }
   res.status(safeStatus).json({ ok: false, error: message });
 });
 
@@ -1127,7 +1144,7 @@ process.on("SIGTERM", () => {
   setTimeout(() => process.exit(1), 30_000).unref();
 });
 
-async function listAlbums() {
+async function listAlbums({ includeInventoryStatus = false } = {}) {
   const entries = await fs.readdir(uploadRoot, { withFileTypes: true }).catch((error) => {
     if (error?.code === "ENOENT") return [];
     throw error;
@@ -1138,14 +1155,15 @@ async function listAlbums() {
     if (!entry.isDirectory()) continue;
     if (legacyStorageDirectories.has(entry.name)) continue;
     const album = await readAlbum(entry.name);
-    if (album?.vehicle) albums.push(album);
+    if (album?.vehicle && album.mediaCount > 0) albums.push(album);
   }
 
-  return albums.sort((left, right) => {
+  const sorted = albums.sort((left, right) => {
     const time = new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
     if (time) return time;
     return left.name.localeCompare(right.name);
   });
+  return includeInventoryStatus ? albumsWithInventoryStatus(sorted) : sorted;
 }
 
 async function readAlbum(albumId) {
@@ -1164,10 +1182,13 @@ async function readAlbum(albumId) {
   const photoCount = photos.filter((photo) => photo.kind !== "video").length;
   const videoCount = photos.filter((photo) => photo.kind === "video").length;
   const cover = photos.find((photo) => photo.kind !== "video") || photos[0] || null;
+  const inventoryNumber = albumInventoryNumberFromMetadata(metadata);
+  const storage = albumStorageInfo(albumId, metadata);
 
   return {
     id: albumId,
     name: metadata.name || titleFromAlbumId(albumId),
+    inventoryNumber,
     createdAt: metadata.createdAt || stats.birthtime.toISOString(),
     updatedAt,
     photoCount,
@@ -1175,11 +1196,92 @@ async function readAlbum(albumId) {
     mediaCount: photos.length,
     bytes,
     coverUrl: cover?.url || null,
+    objectStoragePrefix: storage.prefix,
+    storage,
     dealership: metadata.dealership || null,
     vehicle: metadata.vehicle || null,
     inventoryTypeId: metadata.inventoryTypeId || null,
     sourceUrl: metadata.sourceUrl || metadata.vehicle?.detailUrl || null,
   };
+}
+
+async function albumsWithInventoryStatus(albums) {
+  return Promise.all(albums.map(albumWithInventoryStatus));
+}
+
+async function albumWithInventoryStatus(album) {
+  if (!album) return album;
+  return {
+    ...album,
+    inventoryStatus: await inventoryStatusForAlbum(album),
+  };
+}
+
+async function inventoryStatusForAlbum(album) {
+  const vehicle = album?.vehicle || {};
+  const source = normalizeSpace(vehicle.source || "oregans").toLowerCase();
+  if (source === "manual") {
+    return {
+      source: "manual",
+      status: "manual",
+      active: null,
+      checkedAt: null,
+      label: "Manual entry, not checked against O'Regan's inventory.",
+    };
+  }
+
+  const dealershipId = normalizeSpace(vehicle.dealershipId || album?.dealership?.id);
+  const inventoryTypeId = normalizeSpace(vehicle.inventoryTypeId || album?.inventoryTypeId || defaultInventoryTypeId);
+  if (!dealershipId || !inventoryTypeId) {
+    return {
+      source: "oregans",
+      status: "unknown",
+      active: null,
+      checkedAt: null,
+      label: "O'Regan's inventory status is unavailable.",
+    };
+  }
+
+  try {
+    const inventory = await fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId });
+    const matchedCar = inventory.cars.find((car) => inventoryCarMatchesAlbum(car, album));
+    const checkedAt = inventory.fetchedAtIso || new Date(inventory.fetchedAt || Date.now()).toISOString();
+    return {
+      source: "oregans",
+      status: matchedCar ? "active" : "missing",
+      active: Boolean(matchedCar),
+      checkedAt,
+      label: matchedCar
+        ? `Active in O'Regan's inventory as of ${checkedAt}.`
+        : `No longer active in O'Regan's inventory as of ${checkedAt}.`,
+      matchedInventoryKey: matchedCar?.inventoryKey || matchedCar?.vin || "",
+      matchedStockNumber: matchedCar?.stockNumber || "",
+    };
+  } catch (error) {
+    return {
+      source: "oregans",
+      status: "unknown",
+      active: null,
+      checkedAt: null,
+      label: "O'Regan's inventory check is temporarily unavailable.",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function inventoryCarMatchesAlbum(car, album) {
+  const vehicle = album?.vehicle || {};
+  const carKey = normalizeSpace(car?.inventoryKey || car?.vin || car?.manualInventoryId).toUpperCase();
+  const albumKey = normalizeSpace(vehicle.inventoryKey || vehicle.vin || vehicle.manualInventoryId).toUpperCase();
+  if (carKey && albumKey && carKey === albumKey) return true;
+
+  const carVin = normalizeSpace(car?.vin).toUpperCase();
+  const albumVin = normalizeSpace(vehicle.vin).toUpperCase();
+  if (carVin && albumVin && carVin === albumVin) return true;
+
+  const carStock = normalizeSpace(car?.stockNumber).toUpperCase();
+  const albumStock = normalizeSpace(vehicle.stockNumber).toUpperCase();
+  return Boolean(carStock && albumStock && carStock === albumStock);
 }
 
 async function ensureCarAlbum(car) {
@@ -1188,12 +1290,26 @@ async function ensureCarAlbum(car) {
   const albumId = await reusableVehicleAlbumId(car, targetAlbumId);
   const directory = albumPath(albumId);
   await fs.mkdir(directory, { recursive: true });
+  await writeCarAlbumMetadata(albumId, car);
+  const photoMetadataPath = path.join(directory, ".photos.json");
+  await fs.access(photoMetadataPath).catch(async (error) => {
+    if (error?.code !== "ENOENT") throw error;
+    await writeJson(photoMetadataPath, {});
+  });
+  return readAlbum(albumId);
+}
+
+async function writeCarAlbumMetadata(albumId, car) {
   const existing = await readAlbumMetadata(albumId);
-  const createdAt = existing.createdAt || new Date().toISOString();
-  await writeJson(path.join(directory, ".album.json"), {
+  const inventoryNumber = albumInventoryNumberFromCar(car) || albumInventoryNumberFromMetadata(existing);
+  const albumPrefix = albumObjectStoragePrefixForCar(albumId, car, existing);
+  await writeJson(path.join(albumPath(albumId), ".album.json"), {
     id: albumId,
     name: car.albumName,
-    createdAt,
+    inventoryNumber,
+    objectStoragePrefix: albumPrefix,
+    storage: albumStorageInfo(albumId, { ...existing, objectStoragePrefix: albumPrefix }),
+    createdAt: existing.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     dealership: car.dealership,
     inventoryTypeId: car.inventoryTypeId,
@@ -1222,17 +1338,11 @@ async function ensureCarAlbum(car) {
       dealershipName: car.dealership.name,
     },
   });
-  const photoMetadataPath = path.join(directory, ".photos.json");
-  await fs.access(photoMetadataPath).catch(async (error) => {
-    if (error?.code !== "ENOENT") throw error;
-    await writeJson(photoMetadataPath, {});
-  });
-  return readAlbum(albumId);
 }
 
 async function reusableVehicleAlbumId(car, targetAlbumId) {
   const candidates = await vehicleAlbumCandidates(car, targetAlbumId);
-  if (!candidates.length) return targetAlbumId;
+  if (!candidates.length) return availableVehicleAlbumId(car, targetAlbumId);
 
   candidates.sort((left, right) => {
     const mediaDelta = Number(right.mediaCount > 0) - Number(left.mediaCount > 0);
@@ -1242,6 +1352,62 @@ async function reusableVehicleAlbumId(car, targetAlbumId) {
     return new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime();
   });
   return candidates[0].id;
+}
+
+async function findExistingVehicleAlbum(car) {
+  const targetAlbumId = carAlbumId(car);
+  const candidates = await vehicleAlbumCandidates(car, targetAlbumId);
+  if (!candidates.length) return null;
+
+  candidates.sort((left, right) => {
+    const mediaDelta = Number(right.mediaCount > 0) - Number(left.mediaCount > 0);
+    if (mediaDelta) return mediaDelta;
+    const targetDelta = Number(right.id === targetAlbumId) - Number(left.id === targetAlbumId);
+    if (targetDelta) return targetDelta;
+    return new Date(right.updatedAt || 0).getTime() - new Date(left.updatedAt || 0).getTime();
+  });
+  await writeCarAlbumMetadata(candidates[0].id, car);
+  return readAlbum(candidates[0].id);
+}
+
+async function availableVehicleAlbumId(car, targetAlbumId) {
+  const targetStats = await fs.stat(albumPath(targetAlbumId)).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!targetStats?.isDirectory()) return targetAlbumId;
+
+  const targetMetadata = await readAlbumMetadata(targetAlbumId);
+  if (!targetMetadata.vehicle || await albumMatchesVehicle(targetAlbumId, car)) return targetAlbumId;
+
+  const preferred = vehicleSpecificAlbumId(car, targetAlbumId);
+  for (const candidate of uniqueAlbumIdCandidates(preferred)) {
+    const candidateStats = await fs.stat(albumPath(candidate)).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!candidateStats?.isDirectory()) return candidate;
+    if (await albumMatchesVehicle(candidate, car)) return candidate;
+  }
+
+  throw httpError(409, "A different inventory record already uses this album name. Rename or clear that album before uploading.");
+}
+
+function vehicleSpecificAlbumId(car, targetAlbumId) {
+  const key = slugify(car.inventoryKey || car.manualInventoryId || car.vin || car.stockNumber).slice(0, 18);
+  if (!key) return targetAlbumId;
+  const maxBaseLength = Math.max(1, 79 - key.length);
+  const base = targetAlbumId.slice(0, maxBaseLength).replace(/-+$/g, "") || "car";
+  return `${base}-${key}`.replace(/-+/g, "-").replace(/-+$/g, "").slice(0, 80);
+}
+
+function uniqueAlbumIdCandidates(preferred) {
+  const candidates = [preferred];
+  const base = preferred.slice(0, 76).replace(/-+$/g, "") || "car";
+  for (let index = 2; index <= 50; index += 1) {
+    candidates.push(`${base}-${index}`.slice(0, 80).replace(/-+$/g, ""));
+  }
+  return candidates;
 }
 
 async function vehicleAlbumCandidates(car, targetAlbumId) {
@@ -1261,7 +1427,7 @@ async function vehicleAlbumCandidates(car, targetAlbumId) {
     } catch {
       continue;
     }
-    if (albumId !== targetAlbumId && !await albumMatchesVehicle(albumId, car)) continue;
+    if (!await albumMatchesVehicle(albumId, car)) continue;
 
     const album = await readAlbum(albumId);
     candidates.push({
@@ -1283,11 +1449,20 @@ async function albumMatchesVehicle(albumId, car) {
 
   const carVin = normalizeSpace(car.vin).toUpperCase();
   const albumVin = normalizeSpace(vehicle.vin || vehicle.inventoryKey).toUpperCase();
-  if (carVin && albumVin && carVin === albumVin) return sameScope;
+  let sawComparableStrongIdentifier = false;
+  if (carVin && albumVin) {
+    sawComparableStrongIdentifier = true;
+    if (carVin === albumVin) return sameScope;
+  }
 
   const carInventoryKey = normalizeSpace(car.inventoryKey || car.manualInventoryId).toUpperCase();
   const albumInventoryKey = normalizeSpace(vehicle.inventoryKey || vehicle.manualInventoryId).toUpperCase();
-  if (carInventoryKey && albumInventoryKey && carInventoryKey === albumInventoryKey) return sameScope;
+  if (carInventoryKey && albumInventoryKey) {
+    sawComparableStrongIdentifier = true;
+    if (carInventoryKey === albumInventoryKey) return sameScope;
+  }
+
+  if (sawComparableStrongIdentifier) return false;
 
   const carStock = normalizeSpace(car.stockNumber).toUpperCase();
   const albumStock = normalizeSpace(vehicle.stockNumber).toUpperCase();
@@ -1327,373 +1502,6 @@ async function resolveInventoryCar(values) {
   return { dealership, inventoryTypeId, car };
 }
 
-async function resolveShortcutInventoryCar(values) {
-  const query = shortcutVehicleQuery(values);
-  if (!query) {
-    const version = normalizeSpace(firstFormValue(values?.shortcutVersion));
-    if (version !== shortcutWorkflowVersion) {
-      throw httpError(400, "Old Shortcut: delete Upload to CarPostClub, then import Upload to CarPostClub Pick Vehicle from the PWA.");
-    }
-    throw httpError(400, "Choose a vehicle from the Shortcut inventory picklist before uploading.");
-  }
-
-  const matches = await findShortcutInventoryMatches(values, query);
-  if (!matches.length) {
-    throw httpError(404, `No inventory car matched "${query}". Check the stock number or VIN, then try again.`);
-  }
-
-  const topRank = matches[0].rank;
-  const bestMatches = matches.filter((match) => match.rank === topRank);
-  if (bestMatches.length > 1) {
-    throw httpError(409, `Multiple inventory cars matched "${query}". Add dealershipId and inventoryTypeId to the Shortcut request.`);
-  }
-
-  const match = bestMatches[0];
-  return {
-    query,
-    matchedBy: match.matchedBy,
-    dealership: match.car.dealership,
-    inventoryTypeId: match.car.inventoryTypeId,
-    car: match.car,
-  };
-}
-
-async function limitAnonymousShortcutStage(req, _res, next) {
-  try {
-    trackShortcutStageRateLimit(req);
-    await cleanupExpiredPendingShortcutUploads();
-    const pendingCount = await countPendingShortcutUploads();
-    if (pendingCount >= shortcutPendingMaxJobs) {
-      throw httpError(429, "Too many pending Shortcut uploads. Try again in a few minutes.");
-    }
-    next();
-  } catch (error) {
-    next(error);
-  }
-}
-
-function trackShortcutStageRateLimit(req) {
-  const now = Date.now();
-  const key = shortcutStageRateLimitKey(req);
-  const hits = (shortcutStageRateLimitHits.get(key) || []).filter((time) => now - time < shortcutStageRateLimitWindowMs);
-  if (hits.length >= shortcutStageRateLimitMax) {
-    throw httpError(429, "Too many Shortcut uploads from this device. Try again in a few minutes.");
-  }
-  hits.push(now);
-  shortcutStageRateLimitHits.set(key, hits);
-
-  if (shortcutStageRateLimitHits.size > 1000) {
-    shortcutStageRateLimitHits = new Map([...shortcutStageRateLimitHits.entries()].filter(([, values]) => {
-      return values.some((time) => now - time < shortcutStageRateLimitWindowMs);
-    }));
-  }
-}
-
-function shortcutStageRateLimitKey(req) {
-  const forwarded = normalizeSpace((req.get("x-forwarded-for") || "").split(",")[0]);
-  return (forwarded || normalizeSpace(req.ip) || normalizeSpace(req.socket?.remoteAddress) || "unknown").slice(0, 80);
-}
-
-async function cleanupExpiredPendingShortcutUploads() {
-  const entries = await fs.readdir(shortcutPendingRoot, { withFileTypes: true }).catch(() => []);
-  const now = Date.now();
-  await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
-    const directory = path.join(shortcutPendingRoot, entry.name);
-    const pending = await readJson(path.join(directory, "pending.json"), null);
-    const createdAt = Date.parse(pending?.createdAt || "") || 0;
-    if (!pending || !createdAt || now - createdAt > shortcutPendingTtlMs) {
-      await fs.rm(directory, { recursive: true, force: true }).catch(() => {});
-    }
-  }));
-}
-
-async function countPendingShortcutUploads() {
-  const entries = await fs.readdir(shortcutPendingRoot, { withFileTypes: true }).catch(() => []);
-  return entries.filter((entry) => entry.isDirectory()).length;
-}
-
-async function createPendingShortcutUpload({ req, files, user, source = "ios-shortcut-pending" }) {
-  if (!files.length) throw httpError(400, "No media files were uploaded.");
-
-  const id = crypto.randomBytes(9).toString("base64url");
-  const secret = crypto.randomBytes(24).toString("base64url");
-  const directory = pendingShortcutDirectory(id);
-  const moved = [];
-  await fs.mkdir(directory, { recursive: true });
-
-  try {
-    const pendingFiles = [];
-    for (const [index, file] of files.entries()) {
-      const extension = extensionFor(file.originalname, file.mimetype);
-      const baseName = sanitizeFilenameBase(path.basename(file.originalname, path.extname(file.originalname))) || `media-${index + 1}`;
-      const filename = `${String(index + 1).padStart(3, "0")}-${crypto.randomUUID().slice(0, 8)}-${baseName}${extension}`;
-      const destination = path.join(directory, filename);
-      await moveFile(file.path, destination);
-      moved.push(destination);
-      file.path = "";
-      pendingFiles.push({
-        filename,
-        originalName: file.originalname,
-        fieldname: file.fieldname,
-        encoding: file.encoding,
-        mimetype: file.mimetype,
-        size: file.size,
-      });
-    }
-
-    const pending = {
-      id,
-      secretHash: shortcutPendingSecretHash(secret),
-      createdAt: new Date().toISOString(),
-      source,
-      user: user ? {
-        username: normalizeAuthUsername(user?.username),
-        displayName: normalizeDisplayName(user?.displayName) || normalizeAuthUsername(user?.username),
-        role: user?.role === "admin" ? "admin" : "user",
-        status: "approved",
-      } : null,
-      files: pendingFiles,
-    };
-    await writePendingShortcutUpload(pending);
-    return {
-      ...pending,
-      secret,
-      pickerUrl: `${requestOrigin(req)}/shortcut/complete/${encodeURIComponent(id)}?secret=${encodeURIComponent(secret)}`,
-    };
-  } catch (error) {
-    await Promise.all(moved.map((filePath) => fs.unlink(filePath).catch(() => {})));
-    await fs.rm(directory, { recursive: true, force: true }).catch(() => {});
-    throw error;
-  }
-}
-
-function sendShortcutPendingUploadResponse(req, res, pending) {
-  setPrivateNoStore(res);
-  if (shortcutPrefersPlainText(req)) {
-    res.status(202).type("text/plain").send(`${pending.pickerUrl}\n`);
-    return;
-  }
-  res.status(202).json({
-    ok: true,
-    source: pending.source || "ios-shortcut-pending",
-    message: "Open CarPostClub to finish this upload.",
-    pendingId: pending.id,
-    pickerUrl: pending.pickerUrl,
-    count: pending.files.length,
-  });
-}
-
-function shortcutPendingPickerHtml(req, pending, { user = null } = {}) {
-  const secret = normalizeSpace(req.query.secret);
-  const pendingId = pending.id;
-  const uploadedCount = pending.files.length;
-  const signedInName = normalizeDisplayName(user?.displayName) || normalizeAuthUsername(user?.username) || "CarPostClub";
-  const apiBase = `/api/shortcut/pending/${encodeURIComponent(pendingId)}`;
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Finish CarPostClub Upload</title>
-  <style>
-    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #f6f7f9; color: #171717; }
-    main { max-width: 720px; margin: 0 auto; padding: 24px 16px 40px; }
-    h1 { font-size: 1.55rem; margin: 0 0 8px; }
-    p { color: #5f646d; margin: 0 0 20px; }
-    label { display: block; font-weight: 700; margin: 18px 0 8px; }
-    select, button { box-sizing: border-box; width: 100%; min-height: 48px; border-radius: 8px; border: 1px solid #cfd4dc; background: white; color: #171717; font: inherit; padding: 10px 12px; }
-    button { margin-top: 22px; border: 0; background: #111827; color: white; font-weight: 800; }
-    button:disabled, select:disabled { opacity: .55; }
-    .status { margin-top: 16px; padding: 12px; border-radius: 8px; background: #ffffff; border: 1px solid #d9dde5; color: #394150; white-space: pre-wrap; }
-    .success { border-color: #84c79b; background: #f0fff4; color: #15572d; }
-    .error { border-color: #ef9a9a; background: #fff5f5; color: #8a1f1f; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Finish CarPostClub Upload</h1>
-    <p>${escapeHtml(String(uploadedCount))} ${uploadedCount === 1 ? "file is" : "files are"} waiting for ${escapeHtml(signedInName)}. Choose the dealership, new/used, and vehicle.</p>
-    <form id="pickerForm">
-      <label for="dealership">Dealership</label>
-      <select id="dealership" name="dealership" required></select>
-      <label for="inventoryType">Inventory type</label>
-      <select id="inventoryType" name="inventoryType" required disabled></select>
-      <label for="inventory">Vehicle</label>
-      <select id="inventory" name="inventory" required disabled></select>
-      <button id="submitButton" type="submit" disabled>Finish Upload</button>
-    </form>
-    <div id="status" class="status">Loading dealerships...</div>
-  </main>
-  <script>
-    const secret = ${JSON.stringify(secret)};
-    const apiBase = ${JSON.stringify(apiBase)};
-    const dealership = document.querySelector("#dealership");
-    const inventoryType = document.querySelector("#inventoryType");
-    const inventory = document.querySelector("#inventory");
-    const submitButton = document.querySelector("#submitButton");
-    const statusBox = document.querySelector("#status");
-    const setStatus = (message, kind = "") => {
-      statusBox.textContent = message;
-      statusBox.className = ["status", kind].filter(Boolean).join(" ");
-    };
-    const option = (value, label = value) => {
-      const node = document.createElement("option");
-      node.value = value;
-      node.textContent = label;
-      return node;
-    };
-    const resetSelect = (select, placeholder) => {
-      select.replaceChildren(option("", placeholder));
-      select.value = "";
-    };
-    const fetchJson = async (url, options = {}) => {
-      const response = await fetch(url, {
-        ...options,
-        headers: { "Accept": "application/json", ...(options.headers || {}) },
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok || body.ok === false) throw new Error(body.error || "Request failed.");
-      return body;
-    };
-    async function loadDealerships() {
-      resetSelect(dealership, "Choose dealership");
-      resetSelect(inventoryType, "Choose new or used");
-      resetSelect(inventory, "Choose vehicle");
-      const body = await fetchJson(apiBase + "/dealerships?secret=" + encodeURIComponent(secret));
-      for (const item of body.dealerships || []) dealership.append(option(item.label || item.name, item.label || item.name));
-      inventoryType.disabled = true;
-      inventory.disabled = true;
-      submitButton.disabled = true;
-      setStatus("Choose a dealership.");
-    }
-    async function loadInventoryTypes() {
-      resetSelect(inventoryType, "Choose new or used");
-      resetSelect(inventory, "Choose vehicle");
-      inventoryType.disabled = true;
-      inventory.disabled = true;
-      submitButton.disabled = true;
-      if (!dealership.value) return;
-      const params = new URLSearchParams({ secret, dealership: dealership.value });
-      const body = await fetchJson(apiBase + "/inventory-types?" + params);
-      for (const item of body.inventoryTypes || []) inventoryType.append(option(item.label || item.name, item.label || item.name));
-      inventoryType.disabled = false;
-      setStatus("Choose new or used.");
-    }
-    async function loadInventory() {
-      resetSelect(inventory, "Choose vehicle");
-      inventory.disabled = true;
-      submitButton.disabled = true;
-      if (!dealership.value || !inventoryType.value) return;
-      const params = new URLSearchParams({ secret, dealership: dealership.value, inventoryType: inventoryType.value });
-      const body = await fetchJson(apiBase + "/inventory?" + params);
-      for (const item of body.cars || []) inventory.append(option(item.label, item.label));
-      inventory.disabled = false;
-      setStatus(body.cars?.length ? "Choose a vehicle." : "No vehicles matched that dealership/type.");
-    }
-    dealership.addEventListener("change", () => loadInventoryTypes().catch((error) => setStatus(error.message, "error")));
-    inventoryType.addEventListener("change", () => loadInventory().catch((error) => setStatus(error.message, "error")));
-    inventory.addEventListener("change", () => {
-      submitButton.disabled = !inventory.value;
-      if (inventory.value) setStatus("Ready to finish upload.");
-    });
-    document.querySelector("#pickerForm").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      submitButton.disabled = true;
-      setStatus("Finishing upload...");
-      try {
-        const body = await fetchJson(apiBase + "/complete?secret=" + encodeURIComponent(secret), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ dealership: dealership.value, inventoryType: inventoryType.value, inventory: inventory.value }),
-        });
-        setStatus((body.message || "Upload complete.") + "\\nOpening CarPostClub...", "success");
-        window.setTimeout(() => {
-          window.location.href = body.appUrl || "/";
-        }, 700);
-      } catch (error) {
-        submitButton.disabled = false;
-        setStatus(error.message, "error");
-      }
-    });
-    loadDealerships().catch((error) => setStatus(error.message, "error"));
-  </script>
-</body>
-</html>`;
-}
-
-async function readPendingShortcutUpload(idValue, secretValue) {
-  const id = cleanPendingShortcutId(idValue);
-  const secret = normalizeSpace(secretValue);
-  if (!secret) throw httpError(401, "Pending upload secret is required.");
-  const pending = await readJson(pendingShortcutMetadataPath(id), null);
-  if (!pending || pending.id !== id) throw httpError(404, "Pending Shortcut upload was not found.");
-  if (!timingSafeEqual(shortcutPendingSecretHash(secret), pending.secretHash)) throw httpError(401, "Invalid pending upload secret.");
-  const createdAt = Date.parse(pending.createdAt || "") || 0;
-  if (!createdAt || Date.now() - createdAt > shortcutPendingTtlMs) {
-    await removePendingShortcutUpload(id);
-    throw httpError(410, "Pending Shortcut upload expired. Share the photos again.");
-  }
-  return {
-    id,
-    createdAt: pending.createdAt,
-    user: pending.user || {},
-    files: Array.isArray(pending.files) ? pending.files : [],
-  };
-}
-
-async function writePendingShortcutUpload(pending) {
-  await writeJson(pendingShortcutMetadataPath(pending.id), pending);
-}
-
-async function removePendingShortcutUpload(idValue) {
-  const id = cleanPendingShortcutId(idValue);
-  await fs.rm(pendingShortcutDirectory(id), { recursive: true, force: true });
-}
-
-function pendingShortcutDirectory(idValue) {
-  const id = cleanPendingShortcutId(idValue);
-  const resolved = path.resolve(shortcutPendingRoot, id);
-  if (resolved !== shortcutPendingRoot && resolved.startsWith(`${shortcutPendingRoot}${path.sep}`)) return resolved;
-  throw httpError(400, "Invalid pending upload.");
-}
-
-function pendingShortcutMetadataPath(idValue) {
-  return path.join(pendingShortcutDirectory(idValue), "pending.json");
-}
-
-function cleanPendingShortcutId(value) {
-  const id = normalizeSpace(value);
-  if (/^[A-Za-z0-9_-]{8,80}$/.test(id)) return id;
-  throw httpError(400, "Invalid pending upload.");
-}
-
-function shortcutPendingSecretHash(secret) {
-  return crypto.createHash("sha256").update(`carpostclub-shortcut-pending:${secret}`).digest("base64url");
-}
-
-function shortcutPrefersPlainText(req) {
-  return /\btext\/plain\b/i.test(req.get("accept") || "");
-}
-
-function requestOrigin(req) {
-  const proto = normalizeSpace((req.get("x-forwarded-proto") || req.protocol || "https").split(",")[0]) || "https";
-  const host = normalizeSpace((req.get("x-forwarded-host") || req.get("host") || "carpostclub.com").split(",")[0]) || "carpostclub.com";
-  return `${proto}://${host}`;
-}
-
-function shortcutCompletionAppUrl(req, car) {
-  const params = new URLSearchParams({
-    dealershipId: normalizeSpace(car?.dealership?.id),
-    inventoryTypeId: normalizeSpace(car?.inventoryTypeId),
-    inventoryKey: normalizeSpace(car?.inventoryKey || car?.manualInventoryId || car?.vin),
-    openAlbum: "1",
-    shortcutUpload: "complete",
-  });
-  if (car?.vin) params.set("vin", normalizeSpace(car.vin));
-  return `${requestOrigin(req)}/?${params}`;
-}
-
 function safeRedirectPath(value) {
   const text = normalizeSpace(value);
   if (!text || !text.startsWith("/") || text.startsWith("//")) return "";
@@ -1706,321 +1514,157 @@ function safeRedirectPath(value) {
   }
 }
 
-async function findShortcutInventoryMatches(values, query) {
-  const matches = [];
-  const seen = new Set();
-  for (const scope of shortcutInventoryScopes(values)) {
-    const cars = await fetchInventoryCars(scope);
-    for (const car of cars) {
-      const match = shortcutInventoryMatch(car, query);
-      if (!match) continue;
-      const key = `${car.dealership.id}:${car.inventoryTypeId}:${car.inventoryKey || car.vin || car.manualInventoryId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      matches.push({ ...match, car });
-    }
-  }
-
-  return matches.sort((left, right) => {
-    if (right.rank !== left.rank) return right.rank - left.rank;
-    return shortcutVehicleSortText(left.car).localeCompare(shortcutVehicleSortText(right.car));
-  });
-}
-
-async function listShortcutInventoryItems(values) {
-  const cars = [];
-  const seen = new Set();
-  for (const scope of shortcutInventoryListScopes(values)) {
-    const scopeCars = await fetchInventoryCars(scope);
-    for (const car of scopeCars) {
-      const key = `${car.dealership.id}:${car.inventoryTypeId}:${car.inventoryKey || car.vin}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      cars.push(car);
-    }
-  }
-
-  cars.sort((left, right) => shortcutVehicleSortText(left).localeCompare(shortcutVehicleSortText(right)));
-  return cars.map(shortcutInventoryItem);
-}
-
-function shortcutInventoryListScopes(values) {
-  const dealership = cleanOptionalShortcutDealership(values);
-  const inventoryTypeId = cleanOptionalShortcutInventoryTypeId(values);
-  const allDealerships = parseShortcutInventoryAllDealerships(values);
-  const defaultDealership = shortcutDefaultDealership();
-  const dealerships = dealership
-    ? [dealership]
-    : allDealerships ? shortcutDealershipSearchOrder() : [defaultDealership];
-  const inventoryTypeIds = inventoryTypeId ? [inventoryTypeId] : shortcutInventoryTypeSearchOrder();
-
-  return dealerships.flatMap((candidateDealership) =>
-    inventoryTypeIds.map((candidateInventoryTypeId) => ({
-      dealershipId: candidateDealership.id,
-      inventoryTypeId: candidateInventoryTypeId,
-    }))
-  );
-}
-
-function parseShortcutInventoryAllDealerships(values) {
-  const scope = normalizeSpace(values?.scope).toLowerCase();
-  const all = normalizeSpace(values?.all || values?.allDealerships).toLowerCase();
-  return scope === "all" || ["1", "true", "yes"].includes(all);
-}
-
-function shortcutInventoryFormat(values) {
-  const format = normalizeSpace(values?.format).toLowerCase();
-  return format === "labels" ? "labels" : "json";
-}
-
-function shortcutInventoryScopes(values) {
-  const dealership = cleanOptionalShortcutDealership(values);
-  const inventoryTypeId = cleanOptionalShortcutInventoryTypeId(values);
-  const dealerships = dealership ? [dealership] : shortcutDealershipSearchOrder();
-  const inventoryTypeIds = inventoryTypeId ? [inventoryTypeId] : shortcutInventoryTypeSearchOrder();
-
-  return dealerships.flatMap((candidateDealership) =>
-    inventoryTypeIds.map((candidateInventoryTypeId) => ({
-      dealershipId: candidateDealership.id,
-      inventoryTypeId: candidateInventoryTypeId,
-    }))
-  );
-}
-
-function shortcutRequestValues(req) {
-  return {
-    ...req.query,
-    ...req.body,
-  };
-}
-
-function sendShortcutPicklistResponse(res, values, key, items) {
-  setPrivateNoStore(res);
-  if (shortcutInventoryFormat(values) === "labels") {
-    res.type("text/plain; charset=utf-8");
-    res.send(items.map((item) => item.label).join("\n"));
-    return;
-  }
-
-  res.json({
-    ok: true,
-    source: "ios-shortcut",
-    [key]: items,
-    count: items.length,
-  });
-}
-
-function shortcutDealershipItems() {
-  return shortcutDealershipSearchOrder().map((dealership) => ({
-    label: dealership.name,
-    value: dealership.id,
-    id: dealership.id,
-    name: dealership.name,
-  }));
-}
-
-function shortcutInventoryTypeItems() {
-  return shortcutInventoryTypeSearchOrder().map((id) => {
-    const type = inventoryTypes.find((candidate) => candidate.id === id);
-    return {
-      label: type?.name || id,
-      value: id,
-      id,
-      name: type?.name || id,
-    };
-  });
-}
-
-function shortcutDealershipSearchOrder() {
-  const preferred = shortcutDefaultDealership();
-  return [
-    preferred,
-    ...oregansDealerships.filter((dealership) => dealership.id !== preferred.id),
-  ];
-}
-
-function shortcutDefaultDealership() {
-  return oregansDealerships.find((dealership) => dealership.id === shortcutDefaultDealershipId) || oregansDealerships[0];
-}
-
-function shortcutInventoryTypeSearchOrder() {
-  return [
-    defaultInventoryTypeId,
-    ...inventoryTypes.map((type) => type.id).filter((id) => id !== defaultInventoryTypeId),
-  ];
-}
-
-function cleanOptionalShortcutDealership(values) {
-  const value = firstFormValue(values?.dealershipId ?? values?.dealership ?? values?.dealershipName ?? values?.lot);
-  const text = normalizeSpace(value);
-  if (!text) return null;
-
-  const withoutPrefix = text.replace(/^\s*\d+\s*[-:]\s*/, "");
-  const idMatch = /^(\d+)\b/.exec(text);
-  if (idMatch) {
-    const dealership = oregansDealerships.find((candidate) => candidate.id === idMatch[1]);
-    if (dealership) return dealership;
-  }
-
-  const lookup = vehicleLookupToken(withoutPrefix);
-  const dealership = oregansDealerships.find((candidate) =>
-    vehicleLookupToken(candidate.id) === lookup
-    || vehicleLookupToken(candidate.name) === lookup
-    || vehicleLookupToken(shortcutDealershipLabel(candidate.name)) === lookup
-  );
-  if (dealership) return dealership;
-  throw httpError(400, "Choose a dealership from the Shortcut picklist.");
-}
-
-function cleanOptionalShortcutInventoryTypeId(values) {
-  const value = firstFormValue(values?.inventoryTypeId ?? values?.inventoryType ?? values?.inventoryKind ?? values?.condition);
-  const text = normalizeSpace(value);
-  if (!text) return "";
-
-  const withoutPrefix = text.replace(/^\s*\d+\s*[-:]\s*/, "");
-  if (inventoryTypes.some((type) => type.id === text)) return text;
-  const lookup = vehicleLookupToken(withoutPrefix);
-  const type = inventoryTypes.find((candidate) =>
-    vehicleLookupToken(candidate.id) === lookup
-    || vehicleLookupToken(candidate.name) === lookup
-    || vehicleLookupToken(shortcutInventoryTypeLabel(candidate.name)) === lookup
-  );
-  if (type) return type.id;
-  if (/^used$/i.test(withoutPrefix)) return "2";
-  if (/^new$/i.test(withoutPrefix)) return "1";
-  throw httpError(400, "Choose new or used inventory from the Shortcut picklist.");
-}
-
-function shortcutVehicleQuery(values) {
-  const fields = [
-    "inventoryKey",
-    "manualInventoryId",
-    "vin",
-    "stockNumber",
-    "stock",
-    "q",
-    "query",
-    "vehicle",
-    "inventory",
-    "Shortcut Input",
-  ];
-
-  for (const field of fields) {
-    const value = firstFormValue(values?.[field]);
-    const text = normalizeSpace(value);
-    if (text) return text.slice(0, 500);
-  }
-
-  return "";
-}
-
-function shortcutInventoryMatch(car, query) {
-  const queryText = normalizeSpace(query);
-  const queryLower = queryText.toLowerCase();
-  const queryToken = vehicleLookupToken(queryText);
-  const candidates = [
-    { value: shortcutInventoryChoiceLabel(car), matchedBy: "shortcutChoice", rank: 110 },
-    { value: car.vin, matchedBy: "vin", rank: 100 },
-    { value: car.manualInventoryId, matchedBy: "manualInventoryId", rank: 95 },
-    { value: car.inventoryKey, matchedBy: "inventoryKey", rank: 90 },
-    { value: car.stockNumber, matchedBy: "stockNumber", rank: 80 },
-  ];
-
-  for (const candidate of candidates) {
-    const valueText = normalizeSpace(candidate.value);
-    if (!valueText) continue;
-    if (queryLower && queryLower === valueText.toLowerCase()) {
-      return { matchedBy: candidate.matchedBy, rank: candidate.rank };
-    }
-    if (queryToken && queryToken === vehicleLookupToken(valueText)) {
-      return { matchedBy: candidate.matchedBy, rank: candidate.rank };
-    }
-  }
-
-  for (const candidate of [car.label, car.title]) {
-    if (queryLower && queryLower === normalizeSpace(candidate).toLowerCase()) {
-      return { matchedBy: candidate === car.label ? "label" : "title", rank: 70 };
-    }
-  }
-
-  return null;
-}
-
-function shortcutInventoryItem(car) {
-  const inventoryType = shortcutInventoryTypeForCar(car);
-  return {
-    label: shortcutInventoryChoiceLabel(car),
-    value: car.inventoryKey || car.vin || car.stockNumber,
-    inventoryKey: car.inventoryKey,
-    vin: car.vin,
-    stockNumber: car.stockNumber,
-    title: car.title,
-    dealershipId: car.dealership?.id || "",
-    dealershipName: car.dealership?.name || "",
-    inventoryTypeId: car.inventoryTypeId,
-    inventoryType,
-  };
-}
-
-function shortcutInventoryChoiceLabel(car) {
-  return [
-    car.stockNumber || car.vin || car.inventoryKey,
-    car.title,
-    shortcutDealershipLabel(car.dealership?.name),
-    shortcutInventoryTypeForCar(car),
-  ].map(normalizeSpace).filter(Boolean).join(" - ");
-}
-
-function shortcutInventoryTypeForCar(car) {
-  return shortcutInventoryTypeLabel(car.inventoryType)
-    || shortcutInventoryTypeLabel(inventoryTypes.find((type) => type.id === car.inventoryTypeId)?.name)
-    || car.inventoryTypeId;
-}
-
-function shortcutDealershipLabel(name) {
-  return normalizeSpace(name)
-    .replace(/^O'Regan's\s+/i, "")
-    .replace(/\s+Used Car Centre\b/i, " Used")
-    .slice(0, 48);
-}
-
-function shortcutInventoryTypeLabel(name) {
-  const label = normalizeSpace(name)
-    .replace(/\s+vehicles$/i, "")
-    .slice(0, 24);
-  return /^-+$/.test(label) ? "" : label;
-}
-
-function shortcutVehicleSortText(car) {
-  return [
-    car.stockNumber,
-    car.title,
-    car.dealership?.name,
-    car.inventoryTypeId,
-  ].map(normalizeSpace).join(" ");
-}
-
-function vehicleLookupToken(value) {
-  return normalizeSpace(value).replace(/[^a-z0-9]/gi, "").toUpperCase();
-}
-
-function firstFormValue(value) {
-  if (Array.isArray(value)) return value[0];
-  return value;
-}
-
 async function fetchInventoryCars({ dealershipId, inventoryTypeId }) {
+  const dealership = cleanDealershipId(dealershipId);
+  inventoryTypeId = cleanInventoryTypeId(inventoryTypeId || defaultInventoryTypeId);
+  const inventory = await fetchInventoryCarsSnapshot({ dealershipId: dealership.id, inventoryTypeId });
+  return mergeManualInventoryCars(inventory.cars, { dealership, inventoryTypeId });
+}
+
+async function shortcutInventoryAlbumPicker(query = {}) {
+  const dealership = shortcutDealershipFromQuery(query) || cleanDealershipId(shortcutDefaultDealershipId);
+  const inventoryTypeId = shortcutInventoryTypeIdFromQuery(query) || defaultInventoryTypeId;
+  const cars = await fetchInventoryCars({ dealershipId: dealership.id, inventoryTypeId });
+  const items = cars
+    .map((car) => shortcutInventoryAlbumItem(car, dealership))
+    .filter(Boolean)
+    .sort(compareShortcutInventoryAlbumItems);
+
+  return {
+    ok: true,
+    mode: "inventory",
+    generatedAt: new Date().toISOString(),
+    source: `${dealership.name} active ${inventoryTypeName(inventoryTypeId).toLowerCase()}`,
+    dealership: {
+      id: dealership.id,
+      name: dealership.name,
+      label: dealership.name,
+      value: dealership.id,
+      count: items.length,
+    },
+    inventoryTypeId,
+    count: items.length,
+    items,
+  };
+}
+
+function shortcutInventoryAlbumItem(car, dealership = null) {
+  const albumName = shortcutInventoryAlbumName(car);
+  if (!albumName) return null;
+  return {
+    albumName,
+    label: albumName,
+    value: car.inventoryKey || car.vin || car.stockNumber || albumName,
+    inventoryKey: car.inventoryKey || "",
+    vin: car.vin || "",
+    stockNumber: car.stockNumber || "",
+    title: car.title || "",
+    price: car.price || "",
+    detailUrl: car.detailUrl || "",
+    exteriorColor: car.exteriorColor || "",
+    year: car.year || "",
+    make: car.make || "",
+    model: car.model || "",
+    dealershipId: car.dealership?.id || dealership?.id || "",
+    dealershipName: car.dealership?.name || dealership?.name || "",
+    inventoryTypeId: car.inventoryTypeId || "",
+    inventoryType: inventoryTypeName(car.inventoryTypeId || defaultInventoryTypeId),
+  };
+}
+
+function shortcutInventoryAlbumName(car) {
+  const stockNumber = cleanShortcutAlbumPart(car?.stockNumber);
+  const vehicleName = [
+    car?.exteriorColor,
+    car?.year,
+    car?.make,
+    car?.model,
+  ].map(cleanShortcutAlbumPart).filter(Boolean).join(" ");
+  if (stockNumber && vehicleName) return `${stockNumber} - ${vehicleName}`;
+  return normalizeSpace(car?.albumName || vehicleAlbumName(car) || car?.label || "");
+}
+
+function compareShortcutInventoryAlbumItems(left, right) {
+  return normalizeSpace(left.albumName).localeCompare(normalizeSpace(right.albumName), "en-CA", {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function shortcutDealershipFromQuery(query = {}) {
+  const raw = firstShortcutQueryValue(query.dealership)
+    || firstShortcutQueryValue(query.dealer)
+    || firstShortcutQueryValue(query.dealershipId)
+    || firstShortcutQueryValue(query.dealerId)
+    || firstShortcutQueryValue(query.lotLocationId);
+  const value = normalizeSpace(raw);
+  if (!value) return null;
+
+  const token = shortcutLookupToken(value);
+  const dealership = oregansDealerships.find((candidate) => (
+    shortcutLookupToken(candidate.id) === token
+    || shortcutLookupToken(candidate.name) === token
+    || slugify(candidate.name) === token
+  ));
+  if (dealership) return dealership;
+  throw httpError(400, `Unknown dealership "${value}".`);
+}
+
+function shortcutInventoryTypeIdFromQuery(query = {}) {
+  const raw = firstShortcutQueryValue(query.inventoryTypeId)
+    || firstShortcutQueryValue(query.inventoryType)
+    || firstShortcutQueryValue(query.type);
+  const value = normalizeSpace(raw);
+  if (!value) return "";
+
+  const token = shortcutLookupToken(value);
+  const type = inventoryTypes.find((candidate) => (
+    shortcutLookupToken(candidate.id) === token
+    || shortcutLookupToken(candidate.name) === token
+  ));
+  if (type) return type.id;
+  throw httpError(400, `Unknown inventory type "${value}".`);
+}
+
+function firstShortcutQueryValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function shortcutLookupToken(value) {
+  return normalizeSpace(value).toLowerCase();
+}
+
+function cleanShortcutAlbumPart(value) {
+  return normalizeSpace(value).replace(/\s+/g, " ").slice(0, 80);
+}
+
+async function fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId }) {
   const dealership = cleanDealershipId(dealershipId);
   inventoryTypeId = cleanInventoryTypeId(inventoryTypeId || defaultInventoryTypeId);
 
   if (inventoryMockFile) {
-    return mergeManualInventoryCars(await fetchMockInventoryCars({ dealership, inventoryTypeId }), { dealership, inventoryTypeId });
+    const fetchedAt = Date.now();
+    return {
+      dealership,
+      inventoryTypeId,
+      fetchedAt,
+      fetchedAtIso: new Date(fetchedAt).toISOString(),
+      source: "mock",
+      cars: await fetchMockInventoryCars({ dealership, inventoryTypeId }),
+    };
   }
 
   const cacheKey = `${dealership.id}:${inventoryTypeId}`;
   const cached = inventoryCache.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < inventoryCacheTtlMs) {
-    return mergeManualInventoryCars(cached.cars, { dealership, inventoryTypeId });
+    return {
+      dealership,
+      inventoryTypeId,
+      fetchedAt: cached.fetchedAt,
+      fetchedAtIso: new Date(cached.fetchedAt).toISOString(),
+      source: "oregans",
+      cars: cached.cars,
+    };
   }
 
   const limit = 100;
@@ -2048,8 +1692,16 @@ async function fetchInventoryCars({ dealershipId, inventoryTypeId }) {
   }
 
   const normalized = cars.map((car) => normalizeInventoryCar(car, { dealership, inventoryTypeId }));
-  inventoryCache.set(cacheKey, { fetchedAt: Date.now(), cars: normalized });
-  return mergeManualInventoryCars(normalized, { dealership, inventoryTypeId });
+  const fetchedAt = Date.now();
+  inventoryCache.set(cacheKey, { fetchedAt, cars: normalized });
+  return {
+    dealership,
+    inventoryTypeId,
+    fetchedAt,
+    fetchedAtIso: new Date(fetchedAt).toISOString(),
+    source: "oregans",
+    cars: normalized,
+  };
 }
 
 async function fetchMockInventoryCars({ dealership, inventoryTypeId }) {
@@ -2272,12 +1924,12 @@ async function buildMarketplaceDraftForUser(car, user, { album = null, force = f
     car,
     fields,
     user,
-    album: album || await ensureCarAlbum(car),
+    album,
     fallbackDescription,
     force,
   });
   const description = generated.description
-    ? finalizeMarketplaceBuyerDescription(generated.description, fields, car)
+    ? finalizeMarketplaceBuyerDescription(generated.description, fields, car, user)
     : "";
   const missingFields = [
     ["Location", fields.location],
@@ -2331,10 +1983,15 @@ async function buildMarketplaceDraftForUser(car, user, { album = null, force = f
 }
 
 function buildMarketplaceFields(car) {
+  const dealershipContext = marketplaceDealershipContext(car);
   return {
     listingType: "Vehicle for sale",
     vehicleType: "Car/Truck",
-    location: marketplaceLocation,
+    location: dealershipContext.location,
+    dealershipName: dealershipContext.name,
+    dealershipCity: dealershipContext.city,
+    dealershipLabel: dealershipContext.label,
+    contactName: dealershipContext.contactName,
     year: parseNullableInteger(car.year),
     make: car.make || null,
     model: car.model || null,
@@ -2355,7 +2012,7 @@ async function prepareMarketplaceDescriptionsForUpload(car, user, { album = null
   const fields = buildMarketplaceFields(car);
   const targetUsers = await marketplaceAssignmentUsers(user);
   const targetCount = Math.max(marketplaceDescriptionVariantCount, targetUsers.length);
-  const input = buildMarketplaceDescriptionPoolInput({ car, fields, count: targetCount });
+  const input = buildMarketplaceDescriptionPoolInput({ car, fields, users: targetUsers, count: targetCount });
   const inputHash = marketplaceDescriptionInputHash(car, fields);
   const copyPath = marketplaceCopyPath(album.id);
   const promiseKey = `upload:${album.id}:${inputHash}:${targetCount}`;
@@ -2378,9 +2035,10 @@ async function prepareMarketplaceDescriptionsForUpload(car, user, { album = null
     const variants = await generateMarketplaceDescriptionVariants(input, targetCount)
       .catch((error) => {
         console.error("Facebook Marketplace upload description generation failed:", error instanceof Error ? error.message : String(error));
-        return buildMarketplaceTemplateVariants(car, fields, targetCount).map((description, index) => ({
+        return buildMarketplaceTemplateVariants(car, fields, targetCount, targetUsers).map((description, index) => ({
           id: `variant-${index + 1}`,
           description,
+          ...marketplaceVariantPostingMetadata(input.postingProfiles?.[index]),
           source: "template-upload",
           model: null,
           generatedAt: new Date().toISOString(),
@@ -2430,6 +2088,7 @@ async function getMarketplaceDescriptionForUser({ car, fields, user, album, forc
   };
 
   if (!shouldGenerateMarketplaceDescription(fields)) return fallback;
+  if (!album?.id) return fallback;
   if (!await albumHasMedia(album.id)) return fallback;
 
   const inputHash = marketplaceDescriptionInputHash(car, fields);
@@ -2464,11 +2123,14 @@ async function generateMarketplaceDescriptionVariants(input, count) {
               `Write exactly ${count} different Facebook Marketplace vehicle descriptions from the supplied JSON facts.`,
               "Use only supplied facts. Do not invent warranty, financing, accident history, ownership history, inspection status, availability, accessories, or condition details.",
               "Each one should sound like a different real local person wrote it: specific, plain-spoken, helpful, and not like AI or a dealership brochure.",
+              "Use the supplied postingProfiles in order. Let each profile subtly change rhythm and word choice, but do not mention app usernames or that the copy is assigned to a profile.",
+              "Every description must mention the vehicle year, make, model, trim when available, price, mileage, body style, exterior color, interior color when available, fuel type, transmission, and a few supplied highlights when available.",
+              "Every description must mention the dealership by name and make clear where the vehicle is located.",
               "Avoid emojis, hashtags, exclamation marks, generic hype, and phrases like 'look no further', 'turn heads', 'perfect blend', 'must-see', or 'don't miss out'.",
               "Keep all important factual information represented in every description, but vary sentence structure and word choice across the set.",
-              "For each description, write 2 short paragraphs plus one final details line. Keep each one between 75 and 130 words.",
+              "For each description, write 2 to 3 short paragraphs plus one final details line. Keep each one between 135 and 210 words.",
               "The final details line should include VIN, price, and mileage when available.",
-              "Do not include stock number, inventory number, internal inventory ID, dealership stock code, contact line, or price-disclosure fee line.",
+              "Do not include stock number, inventory number, internal inventory ID, dealership stock code, contact/footer line, or price-disclosure fee line.",
               "Return only JSON matching the schema.",
               "",
               JSON.stringify(input),
@@ -2490,12 +2152,13 @@ async function generateMarketplaceDescriptionVariants(input, count) {
       const descriptions = [];
       const seen = new Set();
       for (const value of Array.isArray(parsed.descriptions) ? parsed.descriptions : []) {
+        const profile = input.postingProfiles?.[descriptions.length];
         const fallbackDescription = fallbackDescriptions[descriptions.length] || fallbackDescriptions[0] || "";
         const description = normalizeMarketplaceGeneratedDescription(value, fallbackDescription);
         const key = normalizeSearchToken(description);
         if (!description || seen.has(key)) continue;
         seen.add(key);
-        descriptions.push(description);
+        descriptions.push({ description, profile });
         if (descriptions.length >= count) break;
       }
       for (const fallbackDescription of fallbackDescriptions) {
@@ -2503,12 +2166,16 @@ async function generateMarketplaceDescriptionVariants(input, count) {
         const key = normalizeSearchToken(fallbackDescription);
         if (!fallbackDescription || seen.has(key)) continue;
         seen.add(key);
-        descriptions.push(fallbackDescription);
+        descriptions.push({
+          description: fallbackDescription,
+          profile: input.postingProfiles?.[descriptions.length],
+        });
       }
       if (!descriptions.length) throw new Error("Generated descriptions were empty.");
-      return descriptions.slice(0, count).map((description, index) => ({
+      return descriptions.slice(0, count).map(({ description, profile }, index) => ({
         id: `variant-${index + 1}`,
         description,
+        ...marketplaceVariantPostingMetadata(profile),
         source: "openai-upload",
         model,
         generatedAt: new Date().toISOString(),
@@ -2530,8 +2197,8 @@ async function generateMarketplaceDescriptionVariants(input, count) {
 }
 
 function marketplaceDescriptionMaxOutputTokens(model, count = 1) {
-  const perDescription = /^gpt-5(?:\.|-|$)/i.test(model) ? 280 : 240;
-  return Math.max(/^gpt-5(?:\.|-|$)/i.test(model) ? 900 : 420, count * perDescription);
+  const perDescription = /^gpt-5(?:\.|-|$)/i.test(model) ? 420 : 360;
+  return Math.max(/^gpt-5(?:\.|-|$)/i.test(model) ? 1300 : 900, count * perDescription);
 }
 
 function marketplaceDescriptionReasoningOptions(model) {
@@ -2544,19 +2211,39 @@ function marketplaceDescriptionInputHash(car, fields) {
   return hashJson(buildMarketplaceDescriptionFactsInput({ car, fields }));
 }
 
-function buildMarketplaceDescriptionPoolInput({ car, fields, count = marketplaceDescriptionVariantCount }) {
-  const fallbackDescriptions = buildMarketplaceTemplateVariants(car, fields, count);
+function buildMarketplaceDescriptionPoolInput({ car, fields, users = [], count = marketplaceDescriptionVariantCount }) {
+  const postingProfiles = marketplacePostingProfiles(users, count);
+  const fallbackDescriptions = buildMarketplaceTemplateVariants(car, fields, count, users);
   return {
-    ...buildMarketplaceDescriptionFactsInput({ car, fields }),
+    ...buildMarketplaceDescriptionFactsInput({ car, fields, postingProfiles }),
     requestedVariantCount: count,
+    postingProfiles,
     fallbackDescriptions,
   };
 }
 
-function buildMarketplaceDescriptionFactsInput({ car, fields }) {
+function buildMarketplaceDescriptionFactsInput({ car, fields, postingProfiles = [] }) {
+  const dealership = marketplaceDealershipContext(car);
   return {
     promptVersion: marketplaceDescriptionPromptVersion,
-    location: marketplaceLocation,
+    location: fields.location || dealership.location,
+    dealership: {
+      id: dealership.id,
+      name: dealership.name,
+      city: dealership.city,
+      location: dealership.location,
+      label: dealership.label,
+      contactName: dealership.contactName,
+    },
+    writingGuidance: {
+      targetAudience: "local Facebook Marketplace vehicle shoppers in Nova Scotia",
+      tone: "clear, useful, confident, human, not cheesy",
+      postingProfiles: postingProfiles.map((profile) => ({
+        variantId: profile.variantId,
+        displayName: profile.displayName,
+        styleHint: profile.styleHint,
+      })),
+    },
     vehicle: {
       vin: car.vin,
       title: car.title,
@@ -2582,11 +2269,13 @@ function buildMarketplaceDescriptionFactsInput({ car, fields }) {
   };
 }
 
-function buildMarketplaceTemplateVariants(car, fields, count) {
+function buildMarketplaceTemplateVariants(car, fields, count, users = []) {
   const descriptions = [];
   const seen = new Set();
   for (let index = 0; descriptions.length < count && index < count * 4; index += 1) {
-    const description = buildMarketplaceDescription(car, fields, null, `variant-${index}`);
+    const user = users[index % Math.max(users.length, 1)] || null;
+    const seed = user ? `${marketplaceUserKey(user)}:${index}` : `variant-${index}`;
+    const description = buildMarketplaceDescription(car, fields, user, seed);
     const key = normalizeSearchToken(description);
     if (!description || seen.has(key)) continue;
     seen.add(key);
@@ -2660,11 +2349,14 @@ async function assignMarketplaceDescriptionToUser(copyPath, user, inputHash, { f
       .map(([, variantId]) => variantId));
     const currentVariantId = store.assignments[userKey] || existing?.variantId || "";
     const availableVariants = store.variants.filter((candidate) => !assignedVariantIds.has(candidate.id));
+    const targetedVariant = availableVariants.find((candidate) => candidate.targetUserKey === userKey)
+      || store.variants.find((candidate) => candidate.targetUserKey === userKey && candidate.id === currentVariantId);
     const variant = force
       ? availableVariants.find((candidate) => candidate.id !== currentVariantId)
         || store.variants.find((candidate) => candidate.id !== currentVariantId)
         || store.variants.find((candidate) => candidate.id === currentVariantId)
-      : store.variants.find((candidate) => candidate.id === currentVariantId)
+      : targetedVariant
+        || store.variants.find((candidate) => candidate.id === currentVariantId)
         || availableVariants[0];
     if (!variant) return { write: false, value: null };
 
@@ -2676,6 +2368,9 @@ async function assignMarketplaceDescriptionToUser(copyPath, user, inputHash, { f
       promptVersion: marketplaceDescriptionPromptVersion,
       variantId: variant.id,
       description: variant.description,
+      targetUserKey: variant.targetUserKey || null,
+      targetUserDisplayName: variant.targetUserDisplayName || null,
+      styleHint: variant.styleHint || null,
       generatedAt: variant.generatedAt || store.generatedAt || assignedAt,
       assignedAt,
       source: variant.source || "template-upload",
@@ -2735,6 +2430,69 @@ function marketplaceUserKey(user) {
   return normalizeAuthUsername(user?.username || authUsername || "admin") || "admin";
 }
 
+function marketplacePostingProfiles(users = [], count = marketplaceDescriptionVariantCount) {
+  const profiles = [];
+  for (let index = 0; index < count; index += 1) {
+    const user = users[index] || null;
+    const userKey = user ? marketplaceUserKey(user) : "";
+    profiles.push({
+      variantId: `variant-${index + 1}`,
+      userKey: userKey || `variant-${index + 1}`,
+      displayName: normalizeDisplayName(user?.displayName) || normalizeAuthUsername(user?.username) || `Poster ${index + 1}`,
+      styleHint: marketplacePostingStyleHint(userKey || `variant-${index + 1}`, index),
+    });
+  }
+  return profiles;
+}
+
+function marketplaceVariantPostingMetadata(profile = null) {
+  if (!profile) return {};
+  return {
+    targetUserKey: profile.userKey || null,
+    targetUserDisplayName: profile.displayName || null,
+    styleHint: profile.styleHint || null,
+  };
+}
+
+function marketplacePostingStyleHint(userKey, index = 0) {
+  const hints = [
+    "concise and practical, with the strongest facts up front",
+    "slightly warmer and conversational, still straightforward",
+    "organized and detail-first, like a quick note to a serious buyer",
+    "calm and confident, with short sentences and no salesy wording",
+    "friendly but restrained, focused on value and condition-related facts",
+    "matter-of-fact, with a local dealership tone instead of ad copy",
+    "helpful and direct, with a little more context around features",
+    "simple and clean, written for someone comparing a few vehicles",
+  ];
+  return hints[marketplaceVariantIndex(userKey || `style-${index}`, hints.length, String(index))];
+}
+
+function marketplaceDealershipContext(car = {}) {
+  const dealership = car.dealership
+    || oregansDealerships.find((candidate) => candidate.id === normalizeSpace(car.dealershipId))
+    || null;
+  const name = normalizeSpace(dealership?.name || car.dealershipName || car.ownerLocation) || "O'Regan's";
+  const city = marketplaceDealershipCity(name) || marketplaceLocation.split(",")[0].trim() || "Halifax";
+  const region = marketplaceLocation.includes(",") ? marketplaceLocation.split(",").slice(1).join(",").trim() : "";
+  const location = normalizeSpace([city, region].filter(Boolean).join(", ")) || marketplaceLocation;
+  return {
+    id: dealership?.id || normalizeSpace(car.dealershipId),
+    name,
+    city,
+    location,
+    label: name,
+    contactName: marketplaceContactPerson,
+  };
+}
+
+function marketplaceDealershipCity(dealershipName = "") {
+  const text = normalizeSearchToken(dealershipName);
+  if (text.includes("dartmouth")) return "Dartmouth";
+  if (text.includes("halifax")) return "Halifax";
+  return "";
+}
+
 function buildMarketplaceTitle(car) {
   return [car.year, car.make, car.model].filter(Boolean).join(" ").trim() || car.title || "Vehicle for sale";
 }
@@ -2745,30 +2503,67 @@ function buildMarketplaceDescription(car, fields, user, variantSeed = "") {
     title,
     car.trim && car.trim !== car.model ? car.trim : null,
   ].filter(Boolean).join(" - ");
+  const dealership = marketplaceDealershipContext(car);
+  const dealershipName = fields.dealershipName || dealership.name;
+  const dealershipLocation = fields.location || dealership.location;
+  const posterKey = marketplaceUserKey(user);
   const openers = [
-    `${lead} available in Halifax, Nova Scotia.`,
-    `Posting this ${lead} in Halifax, Nova Scotia.`,
-    `This ${lead} is available in Halifax, Nova Scotia.`,
-    `${lead} ready for a closer look in Halifax, Nova Scotia.`,
-    `Sharing the details on this ${lead} in Halifax, Nova Scotia.`,
-    `Available now in Halifax, Nova Scotia: ${lead}.`,
-    `Listing this ${lead} out of Halifax, Nova Scotia.`,
-    `Here's the basic info for this ${lead} in Halifax, Nova Scotia.`,
+    `${lead} available at ${dealershipName} in ${dealershipLocation}.`,
+    `Posting this ${lead} from ${dealershipName} in ${dealershipLocation}.`,
+    `This ${lead} is at ${dealershipName} and ready for a closer look in ${dealershipLocation}.`,
+    `Sharing the details on this ${lead}, located at ${dealershipName} in ${dealershipLocation}.`,
+    `Available now through ${dealershipName}: ${lead}.`,
+    `Here are the useful details on this ${lead} at ${dealershipName}.`,
+    `Listing this ${lead} from ${dealershipName}, with the key specs below.`,
+    `${dealershipName} has this ${lead} available in ${dealershipLocation}.`,
   ];
-  const openerIndex = marketplaceVariantIndex(variantSeed, openers.length, car.vin);
-  const lines = [openers[openerIndex]];
+  const openerIndex = marketplaceVariantIndex(variantSeed, openers.length, `${car.vin}:${posterKey}`);
 
   const facts = [
-    car.odometer && `${car.odometer}`,
-    car.exteriorColor && `${car.exteriorColor} exterior`,
+    fields.mileage ? `${fields.mileage.toLocaleString("en-CA")} km` : car.odometer,
+    fields.bodyStyle,
+    fields.exteriorColor && `${fields.exteriorColor} exterior`,
     fields.interiorColor && fields.interiorColor !== "Other" && `${fields.interiorColor} interior`,
-    fields.transmission && fields.transmission.replace(" transmission", ""),
+    fields.transmission,
     fields.fuelType,
   ].filter(Boolean);
-  if (facts.length) lines.push(facts.join(" | "));
+
+  const priceText = fields.price ? `$${fields.price.toLocaleString("en-CA")}` : car.price;
+  const detailSentences = [];
+  if (priceText || facts.length) {
+    detailSentences.push([
+      priceText ? `Listed at ${priceText}` : "",
+      facts.length ? `with ${naturalList(facts)}` : "",
+    ].filter(Boolean).join(", ").replace(/,\s*with/, " with"));
+  }
 
   const highlights = featureHighlights(car);
-  if (highlights.length) lines.push(`Highlights: ${highlights.join(", ")}.`);
+  if (highlights.length) {
+    const highlightIntro = [
+      "The equipment notes call out",
+      "A few useful highlights include",
+      "Notable features listed for it include",
+      "From the inventory notes, highlights include",
+    ][marketplaceVariantIndex(`${variantSeed}:highlights`, 4, posterKey)];
+    detailSentences.push(`${highlightIntro} ${naturalList(highlights.slice(0, 5))}.`);
+  }
+
+  if (car.detailUrl) {
+    detailSentences.push("Photos and the current inventory record are tied to this exact vehicle.");
+  }
+
+  const dealershipSentences = [
+    `The vehicle is located at ${dealershipName}, so it is easy to line up a look in ${dealership.city || dealershipLocation}.`,
+    `It is sitting at ${dealershipName}; the location on the listing should match ${dealershipLocation}.`,
+    `You can use ${dealershipName} as the pickup/viewing point for anyone who wants to see it in person.`,
+    `For local shoppers, the important bit is that this one is at ${dealershipName}.`,
+  ];
+
+  const lines = [
+    openers[openerIndex],
+    detailSentences.filter(Boolean).join(" "),
+    dealershipSentences[marketplaceVariantIndex(`${variantSeed}:dealer`, dealershipSentences.length, posterKey)],
+  ].filter(Boolean);
 
   const detailLine = [
     car.vin && `VIN ${car.vin}`,
@@ -2777,7 +2572,7 @@ function buildMarketplaceDescription(car, fields, user, variantSeed = "") {
   ].filter(Boolean).join(" | ");
   if (detailLine) lines.push(detailLine);
 
-  return finalizeMarketplaceBuyerDescription(lines.join("\n\n"), fields, car);
+  return finalizeMarketplaceBuyerDescription(lines.join("\n\n"), fields, car, user);
 }
 
 function marketplaceVariantIndex(variantSeed, count, salt = "") {
@@ -2791,6 +2586,8 @@ function buildMarketplaceCopyText({ title, fields, description, car }) {
     ["Title", title],
     ["Vehicle type", fields.vehicleType],
     ["Location", fields.location],
+    ["Dealership", fields.dealershipName],
+    ["Ask for", fields.contactName],
     ["Year", fields.year],
     ["Make", fields.make],
     ["Model", fields.model],
@@ -2812,9 +2609,9 @@ function buildMarketplaceCopyText({ title, fields, description, car }) {
   ].join("\n");
 }
 
-function finalizeMarketplaceBuyerDescription(description, fields, car = null) {
+function finalizeMarketplaceBuyerDescription(description, fields, car = null, user = null) {
   return stripMarketplaceInventoryNumbers(
-    appendMarketplaceContactLine(appendMarketplacePriceDisclosure(description, fields, car)),
+    appendMarketplaceContactLine(appendMarketplacePriceDisclosure(description, fields, car), fields, car, user),
     car,
   );
 }
@@ -2837,20 +2634,38 @@ function buildMarketplacePriceDisclosure(fields, car = null) {
   })} Tire Road Hazard, Documentation Fee, Security Etch, and ${marketplacePriceDisclosureHst}% HST.`;
 }
 
-function appendMarketplaceContactLine(description) {
+function appendMarketplaceContactLine(description, fields = {}, car = null, user = null) {
   const text = String(description || "").trim();
-  if (!text) return marketplaceContactLine;
+  const contactLine = buildMarketplaceContactLine(fields, car, user);
+  if (!text) return contactLine;
   if (hasMarketplaceContactLine(text)) return text;
   const paragraphs = text.split(/\n{2,}/);
   const finalParagraph = paragraphs[paragraphs.length - 1] || "";
   if (hasMarketplacePriceDisclosure(finalParagraph)) {
     return [
       ...paragraphs.slice(0, -1),
-      marketplaceContactLine,
+      contactLine,
       finalParagraph,
     ].join("\n\n").trim();
   }
-  return `${text}\n\n${marketplaceContactLine}`;
+  return `${text}\n\n${contactLine}`;
+}
+
+function buildMarketplaceContactLine(fields = {}, car = null, user = null) {
+  const dealership = marketplaceDealershipContext(car || {});
+  const dealershipName = fields.dealershipName || dealership.name;
+  const city = fields.dealershipCity || dealership.city;
+  const contactName = fields.contactName || dealership.contactName || marketplaceContactPerson;
+  const seed = `${marketplaceUserKey(user)}:${car?.vin || car?.stockNumber || dealershipName}`;
+  const lines = [
+    `Message me if you'd like more details. If you stop by ${dealershipName}, ask for ${contactName}.`,
+    `Send me a message with any questions. If you come by ${dealershipName}${city ? ` in ${city}` : ""}, ask for ${contactName}.`,
+    `Message me and I can help with the next step. For an in-person look at ${dealershipName}, ask for ${contactName}.`,
+    `Reach out if you want to take a closer look. If you're stopping into ${dealershipName}, ask for ${contactName}.`,
+    `Message me for the details that matter to you. If you visit ${dealershipName}, ask for ${contactName}.`,
+    `Send me a note if you want to see it. At ${dealershipName}, ask for ${contactName} when you arrive.`,
+  ];
+  return lines[marketplaceVariantIndex(seed, lines.length, fields.location || "")];
 }
 
 function stripMarketplaceInventoryNumbers(description, car = null) {
@@ -2892,7 +2707,8 @@ function isMarketplaceInventoryNumberSegment(value, stockNumberPattern) {
 
 function hasMarketplaceContactLine(description) {
   const text = String(description || "");
-  return /\bmessage me for more details\b/i.test(text) && /\bCarPostClub\b/i.test(text);
+  return /\b(?:message me|send me a message|reach out|send me a note)\b/i.test(text)
+    && new RegExp(`\\bask for\\s+${escapeRegExp(marketplaceContactPerson)}\\b`, "i").test(text);
 }
 
 function hasMarketplacePriceDisclosure(description) {
@@ -3037,6 +2853,13 @@ function normalizeSearchToken(value) {
   return normalizeSpace(value).toLowerCase().replace(/[^a-z0-9 +.-]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function naturalList(items) {
+  const values = items.map((item) => normalizeSpace(item)).filter(Boolean);
+  if (values.length <= 1) return values[0] || "";
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join(", ")}, and ${values[values.length - 1]}`;
+}
+
 function extractResponseText(response) {
   if (typeof response.output_text === "string") return response.output_text;
   const parts = [];
@@ -3132,6 +2955,8 @@ async function listAlbumPhotos(albumId) {
   albumId = cleanAlbumId(albumId);
   const directory = albumPath(albumId);
   const metadata = await readPhotoMetadata(albumId);
+  if (s3MediaStorageEnabled) return photosFromMetadata(albumId, metadata);
+
   const entries = await fs.readdir(directory, { withFileTypes: true }).catch((error) => {
     if (error?.code === "ENOENT") return [];
     throw error;
@@ -3156,7 +2981,28 @@ async function listAlbumPhotos(albumId) {
   return photos.sort((left, right) => new Date(right.uploadedAt).getTime() - new Date(left.uploadedAt).getTime());
 }
 
+function photosFromMetadata(albumId, metadata) {
+  const photos = [];
+  for (const [filename, meta] of Object.entries(metadata || {})) {
+    if (!isMediaFilename(filename)) continue;
+    const bytes = Number(meta?.bytes || 0);
+    photos.push(photoResponse(albumId, filename, {
+      originalName: meta?.originalName || filename,
+      bytes: Number.isFinite(bytes) && bytes >= 0 ? bytes : 0,
+      uploadedAt: meta?.uploadedAt || new Date(0).toISOString(),
+      contentType: meta?.contentType || contentTypeFor(filename),
+      uploadedBy: meta?.uploadedBy,
+    }));
+  }
+  return photos.sort((left, right) => new Date(right.uploadedAt).getTime() - new Date(left.uploadedAt).getTime());
+}
+
 async function saveUploadedPhoto(albumId, file, user) {
+  if (s3MediaStorageEnabled) return saveUploadedPhotoToObjectStorage(albumId, file, user);
+  return saveUploadedPhotoToLocalStorage(albumId, file, user);
+}
+
+async function saveUploadedPhotoToLocalStorage(albumId, file, user) {
   const directory = albumPath(albumId);
   const extension = extensionFor(file.originalname, file.mimetype);
   const baseName = sanitizeFilenameBase(path.basename(file.originalname, path.extname(file.originalname)));
@@ -3196,6 +3042,331 @@ async function saveUploadedPhoto(albumId, file, user) {
     uploadedAt,
     uploadedBy,
   });
+}
+
+async function saveUploadedPhotoToObjectStorage(albumId, file, user) {
+  albumId = cleanAlbumId(albumId);
+  const extension = extensionFor(file.originalname, file.mimetype);
+  const baseName = sanitizeFilenameBase(path.basename(file.originalname, path.extname(file.originalname)));
+  const filename = `${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID().slice(0, 8)}-${baseName}${extension}`;
+  const albumMetadata = await readAlbumMetadata(albumId);
+  const objectKey = mediaObjectKey(albumId, filename, albumMetadata);
+  const stats = await fs.stat(file.path);
+  const uploadedAt = new Date().toISOString();
+  const contentType = contentTypeFor(filename);
+  const uploadedBy = publicUploader(user);
+
+  let uploaded = false;
+  try {
+    await putMediaObject(objectKey, file.path, contentType);
+    uploaded = true;
+    await updatePhotoMetadata(albumId, (metadata) => {
+      metadata[filename] = {
+        originalName: file.originalname,
+        contentType,
+        bytes: stats.size,
+        uploadedAt,
+        uploadedBy,
+        storage: "s3",
+        bucket: objectStorageBucket,
+        objectKey,
+      };
+    });
+    await fs.unlink(file.path).catch(() => {});
+  } catch (error) {
+    if (uploaded) await deleteMediaObject(objectKey).catch(() => {});
+    throw error;
+  }
+
+  return photoResponse(albumId, filename, {
+    originalName: file.originalname,
+    contentType,
+    bytes: stats.size,
+    uploadedAt,
+    uploadedBy,
+  });
+}
+
+async function storedMediaInfo(albumId, filename, metadata = null) {
+  albumId = cleanAlbumId(albumId);
+  filename = cleanFilename(filename);
+
+  if (s3MediaStorageEnabled) {
+    const loadedMetadata = metadata || await readPhotoMetadata(albumId);
+    const meta = loadedMetadata?.[filename];
+    if (meta?.storage === "s3" || meta?.objectKey) {
+      return storedMediaInfoFromObjectStorage(albumId, filename, loadedMetadata);
+    }
+
+    return await storedMediaInfoFromLocalStorage(albumId, filename)
+      || storedMediaInfoFromObjectStorage(albumId, filename, loadedMetadata);
+  }
+
+  return storedMediaInfoFromLocalStorage(albumId, filename);
+}
+
+async function storedMediaInfoFromLocalStorage(albumId, filename) {
+  const filePath = photoPath(albumId, filename);
+  const stats = await fs.stat(filePath).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stats?.isFile()) return null;
+
+  return {
+    mode: "local",
+    albumId,
+    filename,
+    filePath,
+    stats,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+    contentType: contentTypeFor(filename),
+  };
+}
+
+async function storedMediaInfoFromObjectStorage(albumId, filename, metadata) {
+  const meta = metadata?.[filename];
+  if (!meta) return null;
+
+  const objectKey = meta.objectKey || mediaObjectKey(albumId, filename);
+  let size = Number(meta.bytes);
+  let contentType = meta.contentType || contentTypeFor(filename);
+  let mtimeMs = new Date(meta.uploadedAt || 0).getTime();
+
+  if (!Number.isFinite(size) || size < 0 || !Number.isFinite(mtimeMs) || mtimeMs <= 0) {
+    const head = await headMediaObject(objectKey).catch((error) => {
+      if (isS3NotFoundError(error)) return null;
+      throw error;
+    });
+    if (!head) return null;
+    size = Number(head.ContentLength || 0);
+    contentType = head.ContentType || contentType;
+    mtimeMs = new Date(head.LastModified || Date.now()).getTime();
+  }
+
+  return {
+    mode: "s3",
+    albumId,
+    filename,
+    objectKey,
+    size: Number.isFinite(size) && size >= 0 ? size : 0,
+    mtimeMs: Number.isFinite(mtimeMs) && mtimeMs > 0 ? mtimeMs : Date.now(),
+    contentType,
+    metadata: meta,
+  };
+}
+
+async function sendStoredMedia(req, res, media, options = {}) {
+  if (media.mode === "s3") {
+    await sendMediaObject(req, res, media, options);
+    return;
+  }
+  sendMediaFile(req, res, media.filePath, media.filename, media.stats, options);
+}
+
+async function sendMediaObject(req, res, media, { downloadName = "" } = {}) {
+  const range = parseByteRange(req.headers.range, media.size);
+  if (downloadName) {
+    res.attachment(downloadName);
+    res.setHeader("Content-Type", media.contentType || contentTypeFor(media.filename));
+  } else {
+    res.setHeader("Content-Type", media.contentType || contentTypeFor(media.filename));
+  }
+  res.setHeader("Accept-Ranges", "bytes");
+  res.setHeader("Cache-Control", "private, max-age=3600");
+
+  if (range?.unsatisfiable) {
+    res.status(416);
+    res.setHeader("Content-Range", `bytes */${media.size}`);
+    res.end();
+    return;
+  }
+
+  const object = await getMediaObject(media.objectKey, {
+    range: range ? `bytes=${range.start}-${range.end}` : "",
+  }).catch((error) => {
+    if (isS3NotFoundError(error)) throw httpError(404, "Media not found.");
+    throw error;
+  });
+
+  if (range) {
+    const length = range.end - range.start + 1;
+    res.status(206);
+    res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${media.size}`);
+    res.setHeader("Content-Length", String(length));
+  } else {
+    res.setHeader("Content-Length", String(media.size));
+  }
+
+  readableFromAwsBody(object.Body).pipe(res);
+}
+
+async function appendStoredMediaToArchive(archive, albumId, filename, archiveName) {
+  if (!s3MediaStorageEnabled) {
+    archive.file(photoPath(albumId, filename), { name: archiveName });
+    return;
+  }
+
+  const media = await storedMediaInfo(albumId, filename);
+  if (!media) throw httpError(404, "Media not found.");
+  const object = await getMediaObject(media.objectKey).catch((error) => {
+    if (isS3NotFoundError(error)) throw httpError(404, "Media not found.");
+    throw error;
+  });
+  archive.append(readableFromAwsBody(object.Body), { name: archiveName });
+}
+
+async function deleteStoredMedia(albumId, filename) {
+  albumId = cleanAlbumId(albumId);
+  filename = cleanFilename(filename);
+
+  if (s3MediaStorageEnabled) {
+    const metadata = await readPhotoMetadata(albumId);
+    const meta = metadata?.[filename];
+    if (meta?.storage === "s3" || meta?.objectKey) {
+      await deleteMediaObject(meta?.objectKey || mediaObjectKey(albumId, filename));
+    }
+  }
+
+  await fs.unlink(photoPath(albumId, filename)).catch((error) => {
+    if (error?.code !== "ENOENT") throw error;
+  });
+  await fs.unlink(thumbnailPath(albumId, filename)).catch((error) => {
+    if (error?.code !== "ENOENT") throw error;
+  });
+}
+
+async function ensureStoredMediaThumbnail(media) {
+  if (media.mode !== "s3") return ensureImageThumbnail(media.albumId, media.filename, media.filePath, media.stats);
+
+  const thumbnailsDirectory = thumbnailDirectoryPath(media.albumId);
+  const destination = thumbnailPath(media.albumId, media.filename);
+  const existingStats = await fs.stat(destination).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (existingStats?.size > 0 && existingStats.mtimeMs >= media.mtimeMs) return destination;
+
+  await fs.mkdir(thumbnailsDirectory, { recursive: true });
+  const extension = path.extname(media.filename) || ".bin";
+  const tmpSourcePath = path.join(thumbnailsDirectory, `${crypto.randomUUID()}.source${extension}`);
+  try {
+    await downloadMediaObjectToFile(media.objectKey, tmpSourcePath);
+    return await ensureImageThumbnail(media.albumId, media.filename, tmpSourcePath, { mtimeMs: media.mtimeMs });
+  } finally {
+    await fs.unlink(tmpSourcePath).catch(() => {});
+  }
+}
+
+async function putMediaObject(objectKey, filePath, contentType) {
+  await s3MediaClient.send(new PutObjectCommand({
+    Bucket: objectStorageBucket,
+    Key: objectKey,
+    Body: createReadStream(filePath),
+    ContentType: contentType,
+  }));
+}
+
+async function getMediaObject(objectKey, { range = "" } = {}) {
+  return s3MediaClient.send(new GetObjectCommand({
+    Bucket: objectStorageBucket,
+    Key: objectKey,
+    ...(range ? { Range: range } : {}),
+  }));
+}
+
+async function headMediaObject(objectKey) {
+  return s3MediaClient.send(new HeadObjectCommand({
+    Bucket: objectStorageBucket,
+    Key: objectKey,
+  }));
+}
+
+async function deleteMediaObject(objectKey) {
+  await s3MediaClient.send(new DeleteObjectCommand({
+    Bucket: objectStorageBucket,
+    Key: objectKey,
+  }));
+}
+
+async function downloadMediaObjectToFile(objectKey, destination) {
+  const object = await getMediaObject(objectKey);
+  await pipeline(readableFromAwsBody(object.Body), createWriteStream(destination));
+}
+
+function mediaObjectKey(albumId, filename, albumMetadata = null) {
+  const parts = [
+    objectStoragePrefix,
+    albumObjectStoragePrefix(albumId, albumMetadata),
+    cleanFilename(filename),
+  ].filter(Boolean);
+  return parts.join("/");
+}
+
+function albumStorageInfo(albumId, metadata = null) {
+  const prefix = albumObjectStoragePrefix(albumId, metadata);
+  const storage = {
+    driver: mediaStorageDriver,
+    prefix,
+  };
+  if (s3MediaStorageEnabled) {
+    storage.bucket = objectStorageBucket;
+    storage.endpoint = objectStorageEndpoint;
+    storage.region = objectStorageRegion;
+  }
+  return storage;
+}
+
+function albumObjectStoragePrefix(albumId, metadata = null) {
+  const persisted = normalizeObjectStoragePrefix(metadata?.objectStoragePrefix || metadata?.storage?.prefix || "");
+  return persisted || cleanAlbumId(albumId);
+}
+
+function albumObjectStoragePrefixForCar(albumId, car, existing = {}) {
+  const persisted = normalizeObjectStoragePrefix(existing?.objectStoragePrefix || existing?.storage?.prefix || "");
+  if (persisted) return persisted;
+
+  const inventoryNumber = albumInventoryNumberFromCar(car);
+  const stableKey = normalizeSpace(car?.manualInventoryId || car?.vin || car?.inventoryKey || car?.stockNumber || albumId);
+  const inventorySlug = slugify(inventoryNumber || stableKey || albumId).slice(0, 64);
+  const stableSlug = slugify(stableKey || inventoryNumber || albumId).slice(0, 64);
+  const folderSlug = stableSlug && stableSlug !== inventorySlug
+    ? `${inventorySlug}-${stableSlug}`.slice(0, 96).replace(/-+$/g, "")
+    : inventorySlug;
+  const dealershipSlug = slugify(car?.dealership?.id || car?.dealershipId || "dealership").slice(0, 32);
+  const inventoryTypeSlug = slugify(inventoryTypeName(car?.inventoryTypeId) || car?.inventoryTypeId || "inventory").slice(0, 32);
+  return normalizeObjectStoragePrefix(["inventory", dealershipSlug, inventoryTypeSlug, folderSlug || cleanAlbumId(albumId)].join("/"));
+}
+
+function albumInventoryNumberFromCar(car) {
+  return normalizeSpace(car?.stockNumber || car?.manualInventoryId || car?.inventoryKey || car?.vin || "").slice(0, 120);
+}
+
+function albumInventoryNumberFromMetadata(metadata = {}) {
+  const vehicle = metadata?.vehicle || {};
+  return normalizeSpace(metadata?.inventoryNumber || vehicle.stockNumber || vehicle.manualInventoryId || vehicle.inventoryKey || vehicle.vin || "").slice(0, 120);
+}
+
+function inventoryTypeName(inventoryTypeId) {
+  const id = normalizeSpace(inventoryTypeId);
+  return inventoryTypes.find((type) => type.id === id)?.name || "";
+}
+
+function readableFromAwsBody(body) {
+  if (body && typeof body.pipe === "function") return body;
+  if (body && typeof body.getReader === "function") return Readable.fromWeb(body);
+  if (body && typeof body.transformToWebStream === "function") return Readable.fromWeb(body.transformToWebStream());
+  if (body instanceof Uint8Array || typeof body === "string") return Readable.from([body]);
+  throw new Error("S3 object response did not include a readable body.");
+}
+
+function isS3NotFoundError(error) {
+  return error?.$metadata?.httpStatusCode === 404
+    || error?.name === "NoSuchKey"
+    || error?.name === "NotFound"
+    || error?.Code === "NoSuchKey"
+    || error?.Code === "NotFound";
 }
 
 async function ensureImageThumbnail(albumId, filename, sourcePath, sourceStats) {
@@ -3717,7 +3888,7 @@ function uploadPushPayload(car, mediaCount) {
     title: "Media uploaded",
     body: `${mediaCount} ${mediaCount === 1 ? "file" : "files"} added for ${label}.`,
     tag: `carpostclub-upload-${carInventoryNotificationKey(car)}`,
-    url: "/",
+    url: vehicleDeepLink(car, { openAlbum: true }),
   };
 }
 
@@ -3727,6 +3898,19 @@ function carInventoryNotificationKey(car) {
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80) || "vehicle";
+}
+
+function vehicleDeepLink(car, { openAlbum = false } = {}) {
+  const params = new URLSearchParams();
+  const dealershipId = normalizeSpace(car?.dealership?.id || car?.dealershipId);
+  const inventoryTypeId = normalizeSpace(car?.inventoryTypeId || defaultInventoryTypeId);
+  const inventoryKey = normalizeSpace(car?.inventoryKey || car?.manualInventoryId || car?.vin);
+  if (dealershipId) params.set("dealershipId", dealershipId);
+  if (inventoryTypeId) params.set("inventoryTypeId", inventoryTypeId);
+  if (inventoryKey) params.set("inventoryKey", inventoryKey);
+  if (openAlbum) params.set("openAlbum", "1");
+  const query = params.toString();
+  return query ? `/?${query}` : "/";
 }
 
 function publicPushSubscriptionRecord(record) {
@@ -3879,8 +4063,7 @@ async function cleanupSavedUploads(photos) {
     }
     if (!filenamesByAlbum.has(albumId)) filenamesByAlbum.set(albumId, new Set());
     filenamesByAlbum.get(albumId).add(filename);
-    await fs.unlink(photoPath(albumId, filename)).catch(() => {});
-    await fs.unlink(thumbnailPath(albumId, filename)).catch(() => {});
+    await deleteStoredMedia(albumId, filename).catch(() => {});
   }
 
   await Promise.all([...filenamesByAlbum].map(async ([albumId, filenames]) => {
@@ -3901,14 +4084,16 @@ async function saveUploadedMediaForCar({ files, car, user }) {
       saved.push(await saveUploadedPhoto(album.id, file, user));
     }
 
+    let updatedAlbum = await readAlbum(album.id) || album;
     const marketplaceGeneration = await prepareMarketplaceDescriptionsForUpload(car, user, {
-      album,
+      album: updatedAlbum,
       uploadedMediaCount: saved.length,
     });
-    const marketplaceDraft = await buildMarketplaceDraftForUser(car, user, { album });
+    updatedAlbum = await readAlbum(album.id) || updatedAlbum;
+    const marketplaceDraft = await buildMarketplaceDraftForUser(car, user, { album: updatedAlbum });
 
     return {
-      album,
+      album: updatedAlbum,
       photos: saved,
       marketplaceGeneration,
       marketplaceDraft,
@@ -4001,7 +4186,11 @@ function cleanVin(value) {
 function cleanOptionalVin(value) {
   const text = String(value || "").trim();
   if (!text) return "";
-  return cleanVin(text);
+  try {
+    return cleanVin(text);
+  } catch {
+    throw httpError(400, "VIN must be 11 to 17 characters and cannot include I, O, or Q.");
+  }
 }
 
 function cleanManualText(value, label, { maxLength = 80 } = {}) {
@@ -4051,6 +4240,16 @@ function cleanFilename(value) {
     return filename;
   }
   throw httpError(400, "Invalid media file.");
+}
+
+function normalizeObjectStoragePrefix(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .split("/")
+    .map((part) => part.trim())
+    .filter((part) => part && part !== "." && part !== "..")
+    .join("/");
 }
 
 function carAlbumId(car) {
@@ -4274,42 +4473,6 @@ async function requireAuth(req, res, next) {
   }
 }
 
-async function requireShortcutAuth(req, res, next) {
-  try {
-    if (!authEnabled) {
-      req.authUser = bootstrapAdminUser();
-      next();
-      return;
-    }
-
-    const sessionUser = await identifyRequestUser(req);
-    if (sessionUser) {
-      req.authUser = sessionUser;
-      next();
-      return;
-    }
-
-    const bearerUser = await identifyShortcutBearerUser(req);
-    if (bearerUser) {
-      req.authUser = bearerUser;
-      next();
-      return;
-    }
-
-    const basicUser = await identifyBasicAuthUser(req);
-    if (basicUser) {
-      req.authUser = basicUser;
-      next();
-      return;
-    }
-
-    res.setHeader("WWW-Authenticate", 'Basic realm="CarPostClub Shortcut", charset="UTF-8"');
-    res.status(401).json({ ok: false, error: "Authentication required." });
-  } catch (error) {
-    next(error);
-  }
-}
-
 async function requireAdmin(req, res, next) {
   await requireAuth(req, res, (error) => {
     if (error) {
@@ -4321,13 +4484,13 @@ async function requireAdmin(req, res, next) {
       return;
     }
     if (req.path.startsWith("/api/")) {
-      res.status(403).json({ ok: false, error: "Admin approval required." });
+      res.status(403).json({ ok: false, error: "Admin access required." });
       return;
     }
     res.status(403).send(renderAuthPage({
       title: "Admin access required",
       heading: "Admin access required",
-      body: '<p class="auth-note">Only a CarPostClub admin can approve account requests.</p><p class="auth-actions"><a href="/">Back to app</a></p>',
+      body: '<p class="auth-note">Only a CarPostClub admin can manage users and invite links.</p><p class="auth-actions"><a href="/">Back to app</a></p>',
     }));
   });
 }
@@ -4385,116 +4548,14 @@ async function authenticateCredentials(usernameValue, password) {
   }
 
   if (account.status === "pending") {
-    return { ok: false, message: "Your account is waiting for a CarPostClub admin to approve it." };
+    return { ok: false, message: "This account is not active. Ask Konner for a current invite link." };
   }
 
   if (account.status === "rejected") {
-    return { ok: false, message: "This account request was not approved." };
+    return { ok: false, message: "This account is not active." };
   }
 
   return { ok: true, user: authUserFromAccount(account) };
-}
-
-async function identifyBasicAuthUser(req) {
-  const credentials = parseBasicAuthHeader(req.headers.authorization || "");
-  if (!credentials) return null;
-  const authResult = await authenticateCredentials(credentials.username, credentials.password);
-  if (!authResult.ok) throw httpError(401, "Invalid shortcut username or password.");
-  return authResult.user;
-}
-
-async function identifyShortcutBearerUser(req) {
-  const parsed = parseShortcutBearerHeader(req.headers.authorization || "");
-  if (!parsed) return null;
-
-  if (parsed.credentials) {
-    const authResult = await authenticateCredentials(parsed.credentials.username, parsed.credentials.password);
-    if (!authResult.ok) throw httpError(401, "Invalid shortcut username or password.");
-    return authResult.user;
-  }
-
-  const tokenHash = shortcutTokenHash(parsed.token);
-  const store = await readShortcutTokens();
-  const record = store.tokens.find((candidate) => {
-    return candidate.scope === shortcutTokenScope
-      && !candidate.revokedAt
-      && candidate.tokenHash === tokenHash
-      && (!parsed.id || candidate.id === parsed.id);
-  });
-  if (!record) throw httpError(401, "Invalid shortcut token.");
-
-  const user = await authUserForShortcutToken(record);
-  if (!user) throw httpError(401, "Shortcut token is no longer valid.");
-
-  await markShortcutTokenUsed(record.id, req.get("user-agent") || "");
-  return user;
-}
-
-async function authUserForShortcutToken(record) {
-  const username = normalizeAuthUsername(record?.username);
-  if (!username) return null;
-
-  const bootstrap = bootstrapAdminUser();
-  if (username === bootstrap.username) {
-    if (record.passwordVersion && record.passwordVersion !== bootstrap.passwordVersion) return null;
-    return bootstrap;
-  }
-
-  const account = (await readAuthUsers()).users.find((user) => user.username === username);
-  if (!account || account.status !== "approved") return null;
-  if (record.passwordVersion && record.passwordVersion !== account.passwordVersion) return null;
-  return authUserFromAccount(account);
-}
-
-function parseShortcutBearerHeader(header) {
-  const trimmed = String(header || "").trim();
-  if (!/^Bearer\s+/i.test(trimmed)) return null;
-  const rawToken = trimmed.replace(/^Bearer\s+/i, "").trim();
-  const credentials = parseShortcutBearerCredentials(rawToken);
-  if (credentials) return { credentials };
-  if (!new RegExp(`^${shortcutTokenPrefix}_[A-Za-z0-9_-]{40,220}$`, "i").test(rawToken)) {
-    throw httpError(401, "Invalid shortcut token.");
-  }
-  const token = rawToken.replace(new RegExp(`^${shortcutTokenPrefix}_`, "i"), `${shortcutTokenPrefix}_`);
-  return {
-    token,
-    id: "",
-  };
-}
-
-function parseShortcutBearerCredentials(value) {
-  const text = String(value || "").trim();
-  if (!text || text.length > 500) return null;
-
-  const separatorIndexes = [text.indexOf(":"), text.indexOf(",")]
-    .filter((index) => index > 0)
-    .sort((left, right) => left - right);
-  const separatorIndex = separatorIndexes[0];
-  if (!Number.isInteger(separatorIndex)) return null;
-
-  const username = normalizeAuthUsername(text.slice(0, separatorIndex));
-  const password = text.slice(separatorIndex + 1).trim();
-  if (!username || !password) return null;
-  return { username, password };
-}
-
-function parseBasicAuthHeader(header) {
-  const match = /^Basic\s+([A-Za-z0-9+/=_-]+)$/i.exec(String(header || "").trim());
-  if (!match) return null;
-
-  let decoded;
-  try {
-    decoded = Buffer.from(match[1], "base64").toString("utf8");
-  } catch {
-    return null;
-  }
-
-  const separator = decoded.indexOf(":");
-  if (separator <= 0) return null;
-  return {
-    username: decoded.slice(0, separator),
-    password: decoded.slice(separator + 1),
-  };
 }
 
 async function verifyBootstrapPassword(password) {
@@ -4562,175 +4623,6 @@ function publicAuthUser(user) {
   };
 }
 
-async function readShortcutTokens() {
-  const store = await readJson(shortcutTokensPath, { tokens: [] });
-  const rawTokens = Array.isArray(store) ? store : store.tokens;
-  const tokens = Array.isArray(rawTokens)
-    ? rawTokens.map(normalizeStoredShortcutToken).filter(Boolean)
-    : [];
-  return { tokens };
-}
-
-async function updateShortcutTokens(mutator) {
-  shortcutTokensWritePromise = shortcutTokensWritePromise.catch(() => {}).then(async () => {
-    const store = await readShortcutTokens();
-    const result = await mutator(store);
-    store.tokens.sort((left, right) => {
-      const rightDate = Date.parse(right.createdAt || "") || 0;
-      const leftDate = Date.parse(left.createdAt || "") || 0;
-      return rightDate - leftDate || left.id.localeCompare(right.id);
-    });
-    await writeJson(shortcutTokensPath, { tokens: store.tokens });
-    return result;
-  });
-  return shortcutTokensWritePromise;
-}
-
-async function listShortcutTokensForUser(user) {
-  const username = normalizeAuthUsername(user?.username);
-  const tokens = (await readShortcutTokens()).tokens
-    .filter((token) => token.username === username && !token.revokedAt)
-    .map(publicShortcutTokenRecord);
-  return tokens;
-}
-
-async function createShortcutTokenForUser(user, { name, userAgent = "" } = {}) {
-  const username = normalizeAuthUsername(user?.username);
-  if (!username) throw httpError(401, "Authentication required.");
-
-  const id = crypto.randomBytes(12).toString("base64url");
-  const secret = crypto.randomBytes(32).toString("base64url");
-  const token = `${shortcutTokenPrefix}_${id}_${secret}`;
-  const now = new Date().toISOString();
-  const record = {
-    id,
-    name: name || "Photos Shortcut",
-    username,
-    displayName: normalizeDisplayName(user?.displayName) || username,
-    role: user?.role === "admin" ? "admin" : "user",
-    passwordVersion: normalizeSpace(user?.passwordVersion).slice(0, 120),
-    scope: shortcutTokenScope,
-    tokenHash: shortcutTokenHash(token),
-    createdAt: now,
-    createdUserAgent: normalizeUserAgent(userAgent),
-    lastUsedAt: undefined,
-    lastUsedUserAgent: undefined,
-    revokedAt: undefined,
-    revokedBy: undefined,
-  };
-
-  const stored = await updateShortcutTokens((store) => {
-    store.tokens.push(record);
-    return record;
-  });
-
-  return { token, record: stored };
-}
-
-async function revokeShortcutTokenForUser(tokenIdValue, user) {
-  const tokenId = cleanShortcutTokenId(tokenIdValue);
-  const username = normalizeAuthUsername(user?.username);
-  let revoked = false;
-  await updateShortcutTokens((store) => {
-    const token = store.tokens.find((candidate) => candidate.id === tokenId && candidate.username === username);
-    if (!token) return false;
-    revoked = true;
-    if (!token.revokedAt) {
-      token.revokedAt = new Date().toISOString();
-      token.revokedBy = username;
-    }
-    return true;
-  });
-  return revoked;
-}
-
-async function revokeShortcutTokensForUser(usernameValue, actorUsername) {
-  const username = normalizeAuthUsername(usernameValue);
-  if (!username) return 0;
-  const actor = normalizeAuthUsername(actorUsername) || username;
-  const now = new Date().toISOString();
-  return updateShortcutTokens((store) => {
-    let count = 0;
-    for (const token of store.tokens) {
-      if (token.username !== username || token.revokedAt) continue;
-      token.revokedAt = now;
-      token.revokedBy = actor;
-      count += 1;
-    }
-    return count;
-  });
-}
-
-async function markShortcutTokenUsed(tokenIdValue, userAgent) {
-  const tokenId = cleanShortcutTokenId(tokenIdValue);
-  await updateShortcutTokens((store) => {
-    const token = store.tokens.find((candidate) => candidate.id === tokenId);
-    if (!token || token.revokedAt) return false;
-    token.lastUsedAt = new Date().toISOString();
-    token.lastUsedUserAgent = normalizeUserAgent(userAgent);
-    return true;
-  });
-}
-
-function publicShortcutTokenRecord(record) {
-  return {
-    id: record.id,
-    name: record.name,
-    scope: record.scope,
-    status: record.revokedAt ? "revoked" : "active",
-    username: record.username,
-    displayName: record.displayName,
-    createdAt: record.createdAt,
-    lastUsedAt: record.lastUsedAt,
-    revokedAt: record.revokedAt,
-    revokedBy: record.revokedBy,
-  };
-}
-
-function normalizeStoredShortcutToken(value) {
-  if (!value || typeof value !== "object") return null;
-  const id = normalizeSpace(value.id).slice(0, 80);
-  const username = normalizeAuthUsername(value.username);
-  const tokenHash = normalizeSpace(value.tokenHash).slice(0, 120);
-  if (!id || !username || !tokenHash) return null;
-  return {
-    id,
-    name: cleanShortcutTokenName(value.name) || "Photos Shortcut",
-    username,
-    displayName: normalizeDisplayName(value.displayName) || username,
-    role: value.role === "admin" ? "admin" : "user",
-    passwordVersion: normalizeSpace(value.passwordVersion).slice(0, 120),
-    scope: normalizeSpace(value.scope).slice(0, 40) || shortcutTokenScope,
-    tokenHash,
-    createdAt: normalizeIsoDate(value.createdAt) || new Date(0).toISOString(),
-    createdUserAgent: normalizeUserAgent(value.createdUserAgent),
-    lastUsedAt: normalizeIsoDate(value.lastUsedAt),
-    lastUsedUserAgent: normalizeUserAgent(value.lastUsedUserAgent),
-    revokedAt: normalizeIsoDate(value.revokedAt),
-    revokedBy: normalizeAuthUsername(value.revokedBy),
-  };
-}
-
-function cleanShortcutTokenName(value) {
-  return normalizeSpace(value).slice(0, 60);
-}
-
-function cleanShortcutTokenId(value) {
-  const tokenId = normalizeSpace(value);
-  if (!/^[A-Za-z0-9_-]{8,80}$/.test(tokenId)) throw httpError(400, "Invalid shortcut token.");
-  return tokenId;
-}
-
-function normalizeUserAgent(value) {
-  return normalizeSpace(value).slice(0, 240);
-}
-
-function shortcutTokenHash(token) {
-  return crypto.createHash("sha256")
-    .update(`carpostclub-shortcut-token:${token}`)
-    .digest("base64url");
-}
-
 async function readAuthUsers() {
   const store = await readJson(authUsersPath, { users: [] });
   const rawUsers = Array.isArray(store) ? store : store.users;
@@ -4749,6 +4641,177 @@ async function updateAuthUsers(mutator) {
     return result;
   });
   return authUsersWritePromise;
+}
+
+async function readAuthInvites() {
+  const store = await readJson(authInvitesPath, { invites: [] });
+  const rawInvites = Array.isArray(store) ? store : store.invites;
+  const invites = Array.isArray(rawInvites)
+    ? rawInvites.map(normalizeStoredAuthInvite).filter(Boolean)
+    : [];
+  return { invites };
+}
+
+async function updateAuthInvites(mutator) {
+  authInvitesWritePromise = authInvitesWritePromise.catch(() => {}).then(async () => {
+    const store = await readAuthInvites();
+    const result = await mutator(store);
+    store.invites.sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime());
+    await writeJson(authInvitesPath, { invites: store.invites });
+    return result;
+  });
+  return authInvitesWritePromise;
+}
+
+async function createAuthInvite(user) {
+  return updateAuthInvites((store) => {
+    const now = new Date();
+    const existingIds = new Set(store.invites.map((invite) => invite.id));
+    let id = "";
+    do {
+      id = crypto.randomBytes(24).toString("base64url");
+    } while (existingIds.has(id));
+
+    const invite = {
+      id,
+      createdAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + authInviteLifetimeMs).toISOString(),
+      createdBy: publicAuthUser(user),
+      useCount: 0,
+      lastUsedAt: "",
+      acceptedUsers: [],
+    };
+    store.invites.unshift(invite);
+    return invite;
+  });
+}
+
+async function listAuthInvitesForAdmin() {
+  const { invites } = await readAuthInvites();
+  return invites.map((invite) => publicAuthInvite(invite));
+}
+
+async function authInviteForAdmin(value, req) {
+  const token = normalizeAuthInviteToken(value);
+  if (!token) return null;
+  const invite = (await readAuthInvites()).invites.find((candidate) => candidate.id === token);
+  return invite ? publicAuthInvite(invite, req) : null;
+}
+
+async function authInviteState(value) {
+  const token = normalizeAuthInviteToken(value);
+  if (!token) {
+    return {
+      status: "missing",
+      token: "",
+      invite: null,
+      message: "Ask Konner for a current invite link. Invite links expire after 24 hours.",
+    };
+  }
+
+  const invite = (await readAuthInvites()).invites.find((candidate) => candidate.id === token);
+  if (!invite) {
+    return {
+      status: "invalid",
+      token,
+      invite: null,
+      message: "This invite link is not valid. Ask Konner for a new invite link.",
+    };
+  }
+
+  if (Date.parse(invite.expiresAt || "") <= Date.now()) {
+    return {
+      status: "expired",
+      token,
+      invite,
+      message: "This invite link expired. Ask Konner for a new invite link.",
+    };
+  }
+
+  return {
+    status: "valid",
+    token,
+    invite,
+    message: "",
+  };
+}
+
+async function markAuthInviteUsed(inviteId, user) {
+  const id = normalizeAuthInviteToken(inviteId);
+  if (!id) return null;
+  return updateAuthInvites((store) => {
+    const invite = store.invites.find((candidate) => candidate.id === id);
+    if (!invite) return null;
+    const now = new Date().toISOString();
+    invite.useCount = Math.max(0, Number(invite.useCount) || 0) + 1;
+    invite.lastUsedAt = now;
+    invite.acceptedUsers = Array.isArray(invite.acceptedUsers) ? invite.acceptedUsers : [];
+    invite.acceptedUsers.unshift({
+      username: user.username,
+      displayName: user.displayName || user.username,
+      acceptedAt: now,
+    });
+    invite.acceptedUsers = invite.acceptedUsers.slice(0, 25);
+    return invite;
+  });
+}
+
+function normalizeStoredAuthInvite(value) {
+  if (!value || typeof value !== "object") return null;
+  const id = normalizeAuthInviteToken(value.id);
+  const createdAt = normalizeIsoDate(value.createdAt);
+  const expiresAt = normalizeIsoDate(value.expiresAt);
+  if (!id || !expiresAt) return null;
+
+  const acceptedUsers = Array.isArray(value.acceptedUsers)
+    ? value.acceptedUsers.map((acceptedUser) => ({
+      username: normalizeAuthUsername(acceptedUser?.username),
+      displayName: normalizeDisplayName(acceptedUser?.displayName) || normalizeAuthUsername(acceptedUser?.username),
+      acceptedAt: normalizeIsoDate(acceptedUser?.acceptedAt),
+    })).filter((acceptedUser) => acceptedUser.username)
+    : [];
+
+  return {
+    id,
+    createdAt: createdAt || new Date(0).toISOString(),
+    expiresAt,
+    createdBy: publicAuthUser(value.createdBy || {}),
+    useCount: Math.max(0, Number(value.useCount) || acceptedUsers.length || 0),
+    lastUsedAt: normalizeIsoDate(value.lastUsedAt),
+    acceptedUsers,
+  };
+}
+
+function publicAuthInvite(invite, req = null) {
+  const active = Date.parse(invite.expiresAt || "") > Date.now();
+  return {
+    id: invite.id,
+    signupUrl: req ? authInviteSignupUrl(invite, req) : "",
+    status: active ? "active" : "expired",
+    active,
+    createdAt: invite.createdAt,
+    expiresAt: invite.expiresAt,
+    createdBy: invite.createdBy || null,
+    useCount: Math.max(0, Number(invite.useCount) || 0),
+    lastUsedAt: invite.lastUsedAt || "",
+    acceptedUsers: invite.acceptedUsers || [],
+  };
+}
+
+function authInviteSignupUrl(invite, req) {
+  return new URL(`/signup?invite=${encodeURIComponent(invite.id)}`, requestOrigin(req)).toString();
+}
+
+function requestOrigin(req) {
+  const host = req.get?.("host") || "127.0.0.1";
+  const protocol = req.protocol || (authCookieSecure ? "https" : "http");
+  return `${protocol}://${host}`;
+}
+
+function normalizeAuthInviteToken(value) {
+  const token = String(value || "").trim();
+  if (/^[A-Za-z0-9_-]{16,120}$/.test(token)) return token;
+  return "";
 }
 
 async function setAuthUserStatus(usernameValue, status, actorUsername) {
@@ -4777,7 +4840,6 @@ async function setAuthUserStatus(usernameValue, status, actorUsername) {
   if (!updated) throw httpError(404, "User not found.");
   if (status === "rejected") {
     await removePushSubscriptionsForUser(username);
-    await revokeShortcutTokensForUser(username, actorUsername);
   }
   return updated;
 }
@@ -4805,9 +4867,8 @@ async function setStoredUserPassword(usernameValue, password, actorUsername) {
     return user;
   });
   if (updated) {
-    // Session cookies are versioned, but push endpoints and Shortcut tokens are not. Clear them on password reset.
+    // Session cookies are versioned, but push endpoints are not. Clear them on password reset.
     await removePushSubscriptionsForUser(username);
-    await revokeShortcutTokensForUser(username, actorUsername);
   }
   return updated;
 }
@@ -4935,7 +4996,7 @@ function sendLoginPage(res, options = {}) {
       <button type="submit">Sign in</button>
     </form>
     <p class="auth-note">Need a password reset? Ask an admin to set a temporary password.</p>
-    <p class="auth-actions"><a href="/signup">Request access</a></p>`,
+    <p class="auth-actions"><a href="/signup">Need an invite?</a></p>`,
   }));
 }
 
@@ -4969,14 +5030,16 @@ function sendChangePasswordPage(res, { user, error = "", success = "" }) {
   }));
 }
 
-function sendSignupPage(res, { error = "", success = "", values = {} } = {}) {
-  setPrivateNoStore(res);
-  res.status(error ? 400 : 200).send(renderAuthPage({
-    title: `Request ${appName} Access`,
-    heading: "Request access",
-    error,
-    success,
-    body: `<form method="post" action="/signup" class="login-form">
+function sendSignupPage(res, { error = "", success = "", values = {}, invite = null, inviteToken = "", inviteMessage = "" } = {}) {
+  const inviteActive = Boolean(invite && Date.parse(invite.expiresAt || "") > Date.now());
+  const inviteHidden = inviteToken ? `<input type="hidden" name="invite" value="${escapeHtml(inviteToken)}">` : "";
+  const inviteNote = success
+    ? ""
+    : inviteActive
+      ? `<p class="auth-note">This invite expires ${escapeHtml(formatAuthDate(invite.expiresAt))}; anyone with the link can create an account before then.</p>`
+      : `<p class="auth-note">${escapeHtml(inviteMessage || "Ask Konner for a current invite link. Invite links expire after 24 hours.")}</p>`;
+  const form = inviteActive ? `<form method="post" action="/signup" class="login-form">
+      ${inviteHidden}
       <label>
         <span>Name</span>
         <input name="displayName" autocomplete="name" value="${escapeHtml(values.displayName || "")}" required>
@@ -4993,22 +5056,34 @@ function sendSignupPage(res, { error = "", success = "", values = {} } = {}) {
         <span>Confirm password</span>
         <input name="confirmPassword" type="password" autocomplete="new-password" minlength="8" required>
       </label>
-      <button type="submit">Send request</button>
-    </form>
-    <p class="auth-note">A CarPostClub admin must approve new accounts before they can open the app.</p>
+      <button type="submit">Create account</button>
+    </form>`
+    : "";
+
+  setPrivateNoStore(res);
+  res.status(error ? 400 : 200).send(renderAuthPage({
+    title: `Join ${appName}`,
+    heading: "Join CarPostClub",
+    error,
+    success,
+    body: `${inviteNote}
+    ${form}
     <p class="auth-actions"><a href="/login">Back to sign in</a></p>`,
   }));
 }
 
-function sendAdminUsersPage(res, { currentUser, users, error = "", success = "" }) {
+function sendAdminUsersPage(res, { currentUser, users, invites = [], generatedInvite = null, error = "", success = "" }) {
   const sortedUsers = [...users].sort((left, right) => {
-    const statusOrder = { pending: 0, approved: 1, rejected: 2 };
+    const statusOrder = { approved: 0, pending: 1, rejected: 2 };
     return (statusOrder[left.status] - statusOrder[right.status])
       || left.username.localeCompare(right.username);
   });
   const userRows = sortedUsers.length
     ? sortedUsers.map(renderAdminUserCard).join("")
-    : '<p class="auth-note">No account requests yet.</p>';
+    : '<p class="auth-note">No invited accounts yet.</p>';
+  const inviteRows = invites.length
+    ? invites.slice(0, 8).map(renderAuthInviteCard).join("")
+    : '<p class="auth-note">No invite links generated yet.</p>';
 
   setPrivateNoStore(res);
   res.send(renderAuthPage({
@@ -5017,7 +5092,18 @@ function sendAdminUsersPage(res, { currentUser, users, error = "", success = "" 
     wide: true,
     error,
     success,
-    body: `<p class="auth-note">Signed in as ${escapeHtml(currentUser.displayName)}. The bootstrap admin approves new accounts here.</p>
+    body: `<p class="auth-note">Signed in as ${escapeHtml(currentUser.displayName)}. Generate a 24-hour invite link and send it to the people who should join.</p>
+    <section class="admin-user-card is-bootstrap">
+      <div>
+        <strong>Invite link</strong>
+        <span>Anyone with the latest link can sign up for 24 hours.</span>
+      </div>
+      <form method="post" action="/admin/invites">
+        <button type="submit">Generate invite link</button>
+      </form>
+    </section>
+    ${generatedInvite ? renderGeneratedInvite(generatedInvite) : ""}
+    <div class="admin-user-list">${inviteRows}</div>
     <section class="admin-user-card is-bootstrap">
       <div>
         <strong>${escapeHtml(bootstrapAdminUser().displayName)}</strong>
@@ -5025,7 +5111,7 @@ function sendAdminUsersPage(res, { currentUser, users, error = "", success = "" 
       </div>
       <em>Bootstrap admin</em>
     </section>
-    <p class="auth-note">Use password reset to set a temporary password for a user. They can change it after signing in.</p>
+    <p class="auth-note">Invited users are active immediately. Use deactivate if an account should no longer have access.</p>
     <div class="admin-user-list">${userRows}</div>
     <p class="auth-actions"><a href="/">Back to app</a></p>`,
   }));
@@ -5035,7 +5121,9 @@ function renderAdminUserCard(user) {
   const approved = user.status === "approved";
   const rejected = user.status === "rejected";
   const statusText = `${user.role} · ${user.status}`;
-  const createdText = user.createdAt ? `Requested ${formatAuthDate(user.createdAt)}` : "Request date unknown";
+  const createdText = user.createdAt ? `Joined ${formatAuthDate(user.createdAt)}` : "Join date unknown";
+  const reactivateDisabled = approved ? "disabled" : "";
+  const deactivateDisabled = rejected ? "disabled" : "";
   return `<section class="admin-user-card">
     <div>
       <strong>${escapeHtml(user.displayName)}</strong>
@@ -5044,10 +5132,10 @@ function renderAdminUserCard(user) {
     </div>
     <div class="admin-user-actions">
       <form method="post" action="/admin/users/${encodeURIComponent(user.username)}/approve">
-        <button type="submit" ${approved ? "disabled" : ""}>Approve</button>
+        <button type="submit" ${reactivateDisabled}>Reactivate</button>
       </form>
       <form method="post" action="/admin/users/${encodeURIComponent(user.username)}/reject">
-        <button class="danger" type="submit" ${rejected ? "disabled" : ""}>Reject</button>
+        <button class="danger" type="submit" ${deactivateDisabled}>Deactivate</button>
       </form>
     </div>
     <form class="admin-password-form" method="post" action="/admin/users/${encodeURIComponent(user.username)}/password">
@@ -5061,6 +5149,33 @@ function renderAdminUserCard(user) {
       </label>
       <button type="submit">Reset</button>
     </form>
+  </section>`;
+}
+
+function renderGeneratedInvite(invite) {
+  return `<section class="admin-user-card is-bootstrap">
+    <div>
+      <strong>New invite link</strong>
+      <span>Copy this link and send it to the group chat. It expires ${escapeHtml(formatAuthDate(invite.expiresAt))}</span>
+    </div>
+    <label class="admin-invite-link">
+      <span>Invite URL</span>
+      <input value="${escapeHtml(invite.signupUrl)}" readonly onclick="this.select()">
+    </label>
+  </section>`;
+}
+
+function renderAuthInviteCard(invite) {
+  const statusText = invite.active ? `Active until ${formatAuthDate(invite.expiresAt)}` : `Expired ${formatAuthDate(invite.expiresAt)}`;
+  const createdBy = invite.createdBy?.displayName || invite.createdBy?.username || "admin";
+  const usageText = `${invite.useCount} ${invite.useCount === 1 ? "signup" : "signups"}`;
+  return `<section class="admin-user-card">
+    <div>
+      <strong>${escapeHtml(statusText)}</strong>
+      <span>${escapeHtml(usageText)} · created by ${escapeHtml(createdBy)}</span>
+      <small>${escapeHtml(invite.createdAt ? `Created ${formatAuthDate(invite.createdAt)}` : "Creation date unknown")}</small>
+    </div>
+    <em>${invite.active ? "Active invite" : "Expired"}</em>
   </section>`;
 }
 
@@ -5081,7 +5196,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260530-auth-pwa">
+  <link rel="stylesheet" href="/styles.css?v=20260602-pwa-upload-v22">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">
@@ -5102,10 +5217,11 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
 </html>`;
 }
 
-function adminUsersUrl({ error = "", success = "" } = {}) {
+function adminUsersUrl({ error = "", success = "", invite = "" } = {}) {
   const params = new URLSearchParams();
   if (error) params.set("error", error);
   if (success) params.set("success", success);
+  if (invite) params.set("invite", invite);
   const query = params.toString();
   return query ? `/admin/users?${query}` : "/admin/users";
 }
@@ -5194,11 +5310,6 @@ function setPrivateNoStore(res) {
   res.setHeader("Cache-Control", "private, no-store");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
-}
-
-function wantsShortcutPlainTextError(req) {
-  return req.path.startsWith("/api/shortcut/")
-    && /\btext\/plain\b/i.test(req.get("accept") || "");
 }
 
 function escapeHtml(value) {

@@ -13,8 +13,8 @@ const offlineHtmlPath = fileURLToPath(new URL("../public/offline.html", import.m
 const serverPath = fileURLToPath(new URL("../server.js", import.meta.url));
 const serviceWorkerPath = fileURLToPath(new URL("../public/sw.js", import.meta.url));
 const smokeTestPath = fileURLToPath(new URL("../scripts/smoke_test.mjs", import.meta.url));
-const shortcutPlistPath = fileURLToPath(new URL("../shortcuts/Upload to CarPostClub.unsigned.plist", import.meta.url));
 const shareCardPath = fileURLToPath(new URL("../public/share-card.png", import.meta.url));
+const uploadMonkeyPath = fileURLToPath(new URL("../public/upload-monkey.svg", import.meta.url));
 const faviconPath = fileURLToPath(new URL("../public/favicon.png", import.meta.url));
 const generatedIconPath = fileURLToPath(new URL("../public/icons/app-icon-ai.png", import.meta.url));
 
@@ -28,6 +28,12 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /\/icons\/carpostclub-icon-192\.png/);
   assert.match(html, /name="twitter:card" content="summary_large_image"/);
   assert.match(html, /CarPostClub \/ Media/);
+  assert.match(html, /id="pageEyebrow"/);
+  assert.match(html, /id="pageTitle"/);
+  assert.match(html, /id="galleryPageLink"[^>]*href="\/gallery"/);
+  assert.match(html, /Open media gallery/);
+  assert.match(html, /id="uploadPageLink"[^>]*href="\/"[^>]*hidden/);
+  assert.match(html, /Open upload page/);
   assert.match(html, /id="inventoryTypeSelect"/);
   assert.match(html, /id="dealershipSelect"/);
   assert.match(html, /id="makeFilterSelect"/);
@@ -55,33 +61,24 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /Back to dashboard/);
   assert.match(html, /O'Regan's inventory/);
   assert.match(html, /id="videoButton"/);
-  assert.match(html, /id="downloadAllButton"/);
-  assert.match(html, /id="deleteAllButton"/);
+  assert.match(html, /id="albumList"/);
+  assert.match(html, /Album tiles/);
   assert.match(html, /id="logoutForm"/);
   assert.match(html, /id="installButton"/);
   assert.match(html, /id="notificationButton"/);
-  assert.match(html, /id="shortcutButton"/);
-  assert.match(html, /id="shortcutPanel"/);
-  assert.match(html, /id="shortcutTokenForm"/);
-  assert.match(html, /id="shortcutCopyButton"/);
-  assert.match(html, /class="shortcut-download"/);
-  assert.match(html, /href="\/shortcuts\/upload-to-carpostclub-pick-vehicle\.shortcut"/);
-  assert.match(html, /download="Upload to CarPostClub Pick Vehicle\.shortcut"/);
-  assert.match(html, /Download Shortcut/);
-  assert.match(html, /Photos Shortcut/);
-  assert.match(html, /Konner iPhone or Mac/);
-  assert.match(html, /Device tokens/);
+  assert.doesNotMatch(html, /id="shortcutButton"/i);
+  assert.doesNotMatch(html, /id="shortcutPanel"/i);
+  assert.doesNotMatch(html, /Photos Shortcut/i);
+  assert.doesNotMatch(html, /Install iOS Shortcut/i);
+  assert.doesNotMatch(html, /Device tokens/i);
   assert.match(html, /Open Inventory on oregans\.com/);
   assert.match(html, /href="\/account\/password"/);
   assert.match(html, /Change password/);
-  assert.match(html, /id="marketplacePanel"/);
-  assert.match(html, /id="marketplaceDescription"/);
-  assert.match(html, /id="marketplaceRegenerateButton"/);
-  assert.match(html, /Refresh Marketplace draft/);
-  assert.match(html, /id="marketplaceCopyButton"/);
-  assert.match(html, /data-action="download"/);
-  assert.match(html, /data-action="delete"/);
-  assert.match(html, /class="media-uploader"/);
+  assert.doesNotMatch(html, /id="marketplacePanel"/);
+  assert.doesNotMatch(html, /id="marketplaceDescription"/);
+  assert.doesNotMatch(html, /Refresh Marketplace draft/);
+  assert.doesNotMatch(html, /id="gallery"/);
+  assert.doesNotMatch(html, /id="galleryToggleButton"/);
   assert.match(html, /accept="image\/\*,video\/\*/);
   assert.match(html, /id="cameraInput"[^>]*accept="image\/\*,\.heic,\.heif"/);
   assert.match(html, /accept="video\/\*/);
@@ -89,50 +86,21 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="uploadRecovery"/);
   assert.match(html, /id="retryUploadButton"/);
   assert.match(html, /id="clearUploadButton"/);
+  assert.match(html, /id="fileInput"[^>]*type="file"[^>]*hidden/);
+  assert.match(html, /id="cameraInput"[^>]*type="file"[^>]*hidden/);
+  assert.match(html, /id="videoInput"[^>]*type="file"[^>]*hidden/);
+  assert.match(html, /class="upload-panel"/);
+  assert.match(html, /class="album-section"/);
   assert.match(html, /class="upload-progress-marker"/);
+  assert.match(html, /class="upload-monkey"/);
+  assert.match(html, /src="\/upload-monkey\.svg"/);
   assert.match(html, /class="progress-confetti"/);
   assert.doesNotMatch(html, /&#128018;/);
-  assert.match(html, /id="galleryToggleButton"/);
-  assert.match(html, /id="gallerySummary"/);
-  assert.match(html, /\/app\.js\?v=20260601-shortcut-stage-pwa-v9/);
-  assert.match(html, /\/styles\.css\?v=20260530-auth-pwa/);
+  assert.match(html, /\/app\.js\?v=20260603-gallery-page-v27/);
+  assert.match(html, /\/styles\.css\?v=20260603-gallery-page-v27/);
+  assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
-});
-
-test("Apple Shortcut opens the pending vehicle picker and supports macOS Quick Actions", async () => {
-  const plist = await fs.readFile(shortcutPlistPath, "utf8");
-
-  assert.doesNotMatch(plist, /is\.workflow\.actions\.ask/);
-  assert.doesNotMatch(plist, /CarPostClub username/);
-  assert.doesNotMatch(plist, /CarPostClub password/);
-  assert.doesNotMatch(plist, /<string>Shortcut Username<\/string>/);
-  assert.doesNotMatch(plist, /<string>Shortcut Password<\/string>/);
-  assert.match(plist, /<string>Upload to CarPostClub Pick Vehicle<\/string>/);
-  assert.match(plist, /<string>shortcutVersion<\/string>/);
-  assert.match(plist, /<string>pick-vehicle-v8<\/string>/);
-  assert.match(plist, /Vehicle Picker URL/);
-  assert.doesNotMatch(plist, /Paste CarPostClub shortcut token here/);
-  assert.doesNotMatch(plist, /WFTextActionText/);
-  assert.match(plist, /https:\/\/carpostclub\.com\/api\/shortcut\/stage/);
-  assert.match(plist, /is\.workflow\.actions\.openurl/);
-  assert.doesNotMatch(plist, /<string>Authorization<\/string>/);
-  assert.doesNotMatch(plist, /Bearer/);
-  assert.match(plist, /<string>photos<\/string>/);
-  assert.match(plist, /<key>WFItemType<\/key>\s*<integer>5<\/integer>[\s\S]*?<string>photos<\/string>/);
-  assert.match(plist, /<string>photos<\/string>[\s\S]*?<string>WFTokenAttachmentParameterState<\/string>/);
-  assert.match(plist, /<string>Accept<\/string>/);
-  assert.match(plist, /<string>text\/plain<\/string>/);
-  assert.doesNotMatch(plist, /is\.workflow\.actions\.choosefromlist/);
-  assert.doesNotMatch(plist, /is\.workflow\.actions\.text\.split/);
-  assert.doesNotMatch(plist, /<string>dealership<\/string>/);
-  assert.doesNotMatch(plist, /<string>inventoryType<\/string>/);
-  assert.doesNotMatch(plist, /<string>inventory<\/string>/);
-  assert.match(plist, /<string>ActionExtension<\/string>/);
-  assert.match(plist, /<string>QuickActions<\/string>/);
-  assert.match(plist, /Finder Quick Action on macOS files/);
-  assert.doesNotMatch(plist, /Choose O'Regan's vehicle/);
-  assert.doesNotMatch(plist, /Stock number or VIN/);
 });
 
 test("frontend sends dealership, inventory filter, and vin with uploads", async () => {
@@ -147,22 +115,38 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /aria-pressed/);
   assert.match(source, /Enter the vehicle details before uploading media/);
   assert.match(source, /\/api\/vehicle-album/);
-  assert.match(source, /\/api\/marketplace-draft/);
-  assert.match(source, /regenerateMarketplaceDraft/);
-  assert.match(source, /requestMarketplaceDraft/);
-  assert.match(source, /\/api\/marketplace-draft\/regenerate/);
-  assert.match(source, /Marketplace draft refreshed/);
+  assert.match(source, /\/api\/albums/);
+  assert.match(source, /\/description\.txt/);
+  assert.match(source, /\/package/);
+  assert.match(source, /renderAlbumList/);
+  assert.match(source, /albumTiles/);
+  assert.match(source, /selectedAlbumTile/);
+  assert.match(source, /pageModeFromPath/);
+  assert.match(source, /state\.page === "gallery"/);
+  assert.match(source, /is-gallery-page/);
+  assert.match(source, /is-upload-page/);
+  assert.match(source, /galleryPageLink/);
+  assert.match(source, /uploadPageLink/);
+  assert.match(source, /uploadPageUrlForAlbum/);
+  assert.match(source, /window\.location\.href = uploadPageUrlForAlbum\(album\)/);
+  assert.match(source, /inventoryStatusBadge/);
+  assert.match(source, /triggerFileDownload/);
+  assert.match(source, /state\.activeAlbum = response\.album \|\| null/);
+  assert.match(source, /deleteAlbumMedia/);
+  assert.doesNotMatch(source, /renderMarketplaceDraft/);
+  assert.doesNotMatch(source, /requestMarketplaceDraft/);
+  assert.doesNotMatch(source, /\/api\/marketplace-draft/);
   assert.match(source, /els\.carSelect\.addEventListener\("change"/);
   assert.match(source, /inventoryKey/);
   assert.match(source, /carRequestPayload/);
-  assert.match(source, /finally \{\n    if \(state\.marketplaceRequestId === requestId\) \{/);
-  assert.match(source, /state\.marketplaceLoading = false;\n      renderMarketplaceDraft\(\);/);
   assert.match(source, /filteredCars/);
   assert.match(source, /carSearchText/);
   assert.match(source, /carpostclub\.carSearch/);
   assert.match(source, /safeStorageGet\("carpostclub\.selectedDealershipId", "15"\)/);
   assert.match(source, /safeStorageSet\("carpostclub\.carSearch", state\.carSearch\)/);
   assert.match(source, /safeStorageRemove\("carpostclub\.selectedVin"\)/);
+  assert.match(source, /els\.inventoryTypeSelect\.value = state\.selectedInventoryTypeId/);
+  assert.match(source, /els\.dealershipSelect\.value = state\.selectedDealershipId/);
   assert.match(source, /Storage can be unavailable in restricted\/private browser modes/);
   const stateInitializer = source.slice(source.indexOf("const state = {"), source.indexOf("const hapticPatterns"));
   const persistSelectionBlock = source.slice(source.indexOf("function persistSelection"), source.indexOf("function safeStorageGet"));
@@ -176,7 +160,7 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /els\.videoButton\.addEventListener\("click"/);
   assert.match(source, /heic\|heif/);
   assert.match(source, /isVideoMedia/);
-  assert.match(source, /video\.preload = "metadata"/);
+  assert.match(source, /renderAlbumMediaThumb/);
   assert.match(source, /els\.dropZone\.disabled = !unlocked/);
   assert.match(source, /\/api\/chat\/messages/);
   assert.match(source, /\/api\/chat\/stream/);
@@ -187,15 +171,13 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /\/api\/push\/config/);
   assert.match(source, /\/api\/push\/subscriptions/);
   assert.match(source, /\/api\/push\/test/);
-  assert.match(source, /\/api\/shortcut\/tokens/);
-  assert.match(source, /setShortcutPanelOpen/);
-  assert.match(source, /createShortcutToken/);
-  assert.match(source, /copyShortcutToken/);
-  assert.match(source, /revokeShortcutToken/);
-  assert.match(source, /shortcutDownloadUrl/);
-  assert.match(source, /\/shortcuts\/upload-to-carpostclub-pick-vehicle\.shortcut/);
+  assert.doesNotMatch(source, /\/api\/shortcut/i);
+  assert.doesNotMatch(source, /setShortcutPanelOpen/i);
+  assert.doesNotMatch(source, /shortcutImportUrl/i);
+  assert.doesNotMatch(source, /shortcuts:\/\//i);
+  assert.doesNotMatch(source, /shortcutDownload/i);
   assert.match(source, /applyInitialSelectionFromUrl/);
-  assert.match(source, /shortcutUpload/);
+  assert.doesNotMatch(source, /shortcutUpload/i);
   assert.match(source, /openAlbum/);
   assert.match(source, /handleLogoutSubmit/);
   assert.match(source, /currentPushSubscription/);
@@ -227,6 +209,9 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /classList\.toggle\("is-open", state\.chatOpen\)/);
   assert.match(source, /chat-view-active/);
   assert.match(source, /setAttribute\("aria-hidden", String\(!state\.chatOpen\)\)/);
+  assert.match(source, /els\.appShell\.inert = state\.chatOpen/);
+  assert.match(source, /els\.appShell\.toggleAttribute\("inert", state\.chatOpen\)/);
+  assert.match(source, /els\.appShell\.setAttribute\("aria-hidden", String\(state\.chatOpen\)\)/);
   assert.match(source, /chatColorForAuthor/);
   assert.match(source, /chatIdentityKey/);
   assert.match(source, /authorUsername/);
@@ -251,24 +236,19 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /failedUploadFiles/);
   assert.match(source, /retryUploadButton/);
   assert.match(source, /clearUploadButton/);
+  assert.match(source, /state\.selectedMake = "";\n    state\.selectedModel = "";\n    state\.carSearch = "";\n    clearSelectedCarSelection\(\);/);
   assert.match(source, /thumbnailUrl/);
   assert.match(source, /loading = "lazy"/);
-  assert.match(source, /media-uploader-badge/);
   assert.match(source, /photoUploaderLabel/);
-  assert.match(source, /Uploaded by \$\{photoUploaderLabel\(photo\)\}/);
-  assert.match(source, /galleryExpanded/);
-  assert.match(source, /galleryToggleButton/);
-  assert.match(source, /downloadAllButton/);
+  assert.match(source, /renderAlbumMediaThumb/);
+  assert.doesNotMatch(source, /galleryExpanded/);
+  assert.doesNotMatch(source, /galleryToggleButton/);
+  assert.doesNotMatch(source, /downloadAllButton/);
   assert.match(source, /downloadName/);
-  assert.match(source, /deleteAllPhotos/);
-  assert.match(source, /renderMarketplaceDraft/);
-  assert.match(source, /copyMarketplaceDraft/);
-  assert.match(source, /copyTextToClipboard/);
-  assert.match(source, /navigator\.clipboard\?\.writeText/);
-  assert.match(source, /document\.execCommand\?\.\("copy"\)/);
-  assert.match(source, /selection-based copy path/);
+  assert.doesNotMatch(source, /deleteAllPhotos/);
+  assert.doesNotMatch(source, /copyMarketplaceDraft/);
   assert.match(source, /Saving media and generating Marketplace copy/);
-  assert.match(source, /\/api\/albums\/\$\{encodeURIComponent\(state\.activeAlbum\.id\)\}\/download/);
+  assert.match(source, /\/api\/albums\/\$\{encodeURIComponent\(album\.id\)\}\/package/);
   assert.match(source, /Are you sure you want to delete/);
   assert.match(source, /Are you sure you want to sign out/);
   assert.doesNotMatch(source, /form\.append\("albumId"/);
@@ -287,19 +267,20 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.ok(manifest.icons.some((icon) => icon.src === "/icons/carpostclub-icon-192.png"));
   assert.ok(manifest.icons.some((icon) => icon.src === "/favicon.png" && icon.type === "image/png"));
   assert.ok(manifest.screenshots.some((screenshot) => screenshot.src === "/share-card.png"));
-  assert.ok(manifest.shortcuts.some((shortcut) => shortcut.url.includes("openChat=1")));
+  assert.equal(Object.hasOwn(manifest, "shortcuts"), false);
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v25/);
+  assert.match(serviceWorker, /carpostclub-pwa-v33/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
+  assert.match(serviceWorker, /upload-monkey\.svg/);
   assert.doesNotMatch(serviceWorker, /Konner Photos/);
   assert.match(serviceWorker, /self\.addEventListener\("fetch"/);
   assert.match(serviceWorker, /networkFirstNavigation/);
   assert.match(serviceWorker, /staleWhileRevalidate/);
   assert.match(serviceWorker, /networkFirstVersionedStaticAsset/);
-  assert.match(serviceWorker, /isShortcutDownloadPath/);
+  assert.doesNotMatch(serviceWorker, /isShortcutDownloadPath/);
   assert.match(serviceWorker, /url\.search && isStaticAsset\(url\.pathname\)/);
   assert.match(serviceWorker, /cache\.put\(pathname, networkResponse\.clone\(\)\)/);
   assert.match(serviceWorker, /cachedStaticResponse/);
@@ -365,10 +346,6 @@ test("service worker offline fallback handles page navigations but not API reque
   assert.equal(accountNavigation.responded, true);
   assert.equal(await accountNavigation.response, offlineResponse);
 
-  const shortcutDownload = fetchEventFor("https://carpostclub.test/shortcuts/upload-to-carpostclub-pick-vehicle.shortcut", "navigate");
-  fetchHandler(shortcutDownload);
-  assert.equal(shortcutDownload.responded, false);
-
   const apiRequest = fetchEventFor("https://carpostclub.test/api/me", "same-origin");
   fetchHandler(apiRequest);
   assert.equal(apiRequest.responded, false);
@@ -382,6 +359,7 @@ test("brand assets include favicon, PWA icons, and social share image", async ()
   const icon1024 = await sharp(`${iconsRoot}/carpostclub-icon-1024.png`).metadata();
   const appleTouchIcon = await sharp(`${iconsRoot}/carpostclub-apple-touch-icon.png`).metadata();
   const shareCard = await sharp(shareCardPath).metadata();
+  const uploadMonkey = await sharp(uploadMonkeyPath).metadata();
 
   assert.ok(generatedIcon.width >= 1024);
   assert.ok(generatedIcon.height >= 1024);
@@ -397,6 +375,10 @@ test("brand assets include favicon, PWA icons, and social share image", async ()
   assert.equal(appleTouchIcon.height, 180);
   assert.equal(shareCard.width, 1200);
   assert.equal(shareCard.height, 630);
+  assert.equal(uploadMonkey.format, "svg");
+  assert.equal(uploadMonkey.width, 512);
+  assert.equal(uploadMonkey.height, 512);
+  assert.equal(uploadMonkey.hasAlpha, true);
 });
 
 test("mobile chat view and chat messages have distinct author accents", async () => {
@@ -416,10 +398,8 @@ test("mobile chat view and chat messages have distinct author accents", async ()
   assert.match(styles, /justify-self: end/);
   assert.match(styles, /border-right: 6px solid var\(--chat-user-color\)/);
   assert.match(styles, /\.chat-message-meta strong::before/);
-  assert.match(styles, /\.shortcut-panel/);
-  assert.match(styles, /\.shortcut-download/);
-  assert.match(styles, /\.shortcut-token-item/);
-  assert.match(styles, /body\.shortcut-view-active/);
+  assert.doesNotMatch(styles, /\.shortcut-/i);
+  assert.doesNotMatch(styles, /body\.shortcut-view-active/i);
   assert.match(source, /palette = \[/);
   assert.match(source, /chatIdentityKey\(message\)/);
   assert.match(source, /message\?\.authorUsername/);
@@ -461,6 +441,7 @@ test("pwa haptics provide tactile feedback on mobile interaction paths", async (
   assert.match(styles, /\.is-haptic-pressing/);
   assert.match(styles, /\.upload-progress-marker/);
   assert.match(styles, /@keyframes uploadMarkerPulse/);
+  assert.match(styles, /@keyframes uploadMascotDance/);
   assert.doesNotMatch(styles, /Apple Color Emoji/);
   assert.doesNotMatch(styles, /monkeyDance/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.is-haptic-pressing/);
@@ -479,12 +460,41 @@ test("inventory source paths visually separate O'Regan's cars from manual detail
   assert.match(styles, /grid-template-columns: 1fr/);
 });
 
-test("gallery media cards show the uploading user", async () => {
+test("album media thumbs keep media inside album tiles", async () => {
+  const styles = await fs.readFile(fileURLToPath(new URL("../public/styles.css", import.meta.url)), "utf8");
+  const source = await fs.readFile(appJsPath, "utf8");
+
+  assert.match(styles, /\.album-media-strip/);
+  assert.match(styles, /\.album-media-thumb/);
+  assert.match(source, /renderAlbumMediaThumb/);
+  assert.match(source, /photoUploaderLabel/);
+  assert.doesNotMatch(styles, /\.gallery-grid/);
+  assert.doesNotMatch(styles, /\.photo-card/);
+});
+
+test("uploaded package albums show inventory status and mobile download controls", async () => {
   const styles = await fs.readFile(fileURLToPath(new URL("../public/styles.css", import.meta.url)), "utf8");
 
-  assert.match(styles, /\.photo-meta \.media-uploader/);
-  assert.match(styles, /\.media-uploader-badge/);
-  assert.match(styles, /font-weight: var\(--font-weight-semibold\)/);
+  assert.match(styles, /\.album-section/);
+  assert.match(styles, /\.app-shell\.is-upload-page \.album-section/);
+  assert.match(styles, /\.app-shell\.is-gallery-page \.picker-panel/);
+  assert.match(styles, /\.app-shell\.is-gallery-page \.upload-panel/);
+  assert.match(styles, /\.album-summary-button/);
+  assert.match(styles, /\.album-media-strip/);
+  assert.match(styles, /\.album-card\.is-selected/);
+  assert.match(styles, /\.album-detail-actions \.icon-text-button\.danger/);
+  assert.match(styles, /\.inventory-status-badge\.is-active/);
+  assert.match(styles, /\.inventory-status-badge\.is-missing/);
+  assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.album-detail-actions\s*\{[\s\S]*grid-template-columns: 1fr 1fr/);
+  assert.doesNotMatch(styles, /\.album-marketplace/);
+});
+
+test("gallery page is an authenticated app route separate from upload", async () => {
+  const source = await fs.readFile(serverPath, "utf8");
+
+  assert.match(source, /app\.get\("\/", requireAuth/);
+  assert.match(source, /app\.get\("\/gallery", requireAuth/);
+  assert.match(source, /res\.sendFile\(path\.join\(publicRoot, "index\.html"\)\)/);
 });
 
 test("disabled auth controls are visibly unavailable", async () => {
@@ -508,9 +518,25 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260530-auth-pwa/);
+  assert.match(source, /\/styles\.css\?v=20260602-pwa-upload-v22/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
+});
+
+test("auth pages use 24-hour invite links instead of approval requests", async () => {
+  const source = await fs.readFile(serverPath, "utf8");
+  const styles = await fs.readFile(fileURLToPath(new URL("../public/styles.css", import.meta.url)), "utf8");
+
+  assert.match(source, /authInvitesPath/);
+  assert.match(source, /authInviteLifetimeHours/);
+  assert.match(source, /app\.post\(\"\/admin\/invites\"/);
+  assert.match(source, /Generate invite link/);
+  assert.match(source, /anyone with the link can create an account/i);
+  assert.match(source, /Account created\. You can sign in now\./);
+  assert.match(source, /This invite link expired/);
+  assert.doesNotMatch(source, /Account request sent/);
+  assert.doesNotMatch(source, /Send request/);
+  assert.match(styles, /\.admin-invite-link/);
 });
 
 test("production smoke helper mints versioned bootstrap admin sessions", async () => {

@@ -40,17 +40,8 @@ const TEST_CAR = {
   transmission: "Automatic",
   detailUrl: "https://www.oregans.com/inventory/Used-2026-Kia-Seltos-U6247A/",
 };
-const LONG_TITLE_CAR = {
-  ...TEST_CAR,
-  dealershipId: "15",
-  inventoryTypeId: "1",
-  vin: "KNDPYDDH1T7000012",
-  stockNumber: "A10012",
-  title: "New 2026 Kia Sportage Plug-In Hybrid EX Eligible for up to a $2500 federal government incentive",
-  inventoryType: "-",
-  detailUrl: "https://www.oregans.com/inventory/New-2026-Kia-Sportage-A10012/",
-};
 const TEST_ALBUM_ID = "car-used-2026-kia-seltos-x-line-awd-u6247a";
+const TEST_OBJECT_STORAGE_PREFIX = `inventory/15/used-vehicles/u6247a-${TEST_CAR.vin.toLowerCase()}`;
 const MANUAL_CAR = {
   dealershipId: "15",
   inventoryTypeId: "2",
@@ -88,20 +79,19 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(loginPage.status, 200);
     assertNoStoreHeaders(loginPage);
 
-    const signup = await requestSignup(harness.baseUrl, {
+    const signupPageWithoutInvite = await fetch(`${harness.baseUrl}/signup`, { redirect: "manual" });
+    assert.equal(signupPageWithoutInvite.status, 200);
+    assert.match(await signupPageWithoutInvite.text(), /Ask Konner for a current invite link/i);
+
+    const blockedSignup = await requestSignup(harness.baseUrl, {
       displayName: NEW_DISPLAY_NAME,
       username: NEW_USERNAME,
       password: NEW_PASSWORD,
       confirmPassword: NEW_PASSWORD,
     });
-    assert.equal(signup.status, 200);
-    assertNoStoreHeaders(signup);
-    assert.match(signup.body, /CarPostClub admin needs to approve/i);
-
-    const pendingLogin = await loginAttempt(harness.baseUrl, NEW_USERNAME, NEW_PASSWORD);
-    assert.equal(pendingLogin.status, 401);
-    assert.match(pendingLogin.body, /waiting for a CarPostClub admin to approve/i);
-    assert.equal(pendingLogin.cookie, null);
+    assert.equal(blockedSignup.status, 400);
+    assertNoStoreHeaders(blockedSignup);
+    assert.match(blockedSignup.body, /current invite link/i);
 
     harness.cookie = await login(harness.baseUrl);
     const adminSession = sessionPayloadFromCookie(harness.cookie);
@@ -175,16 +165,46 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(adminPage.status, 200);
     assertNoStoreHeaders(adminPage);
     const adminPageText = await adminPage.text();
-    assert.match(adminPageText, new RegExp(NEW_USERNAME.replace(".", "\\.")));
-    assert.match(adminPageText, /Reset password/);
+    assert.match(adminPageText, /Generate invite link/);
+    assert.doesNotMatch(adminPageText, /Approve/);
+    assert.doesNotMatch(adminPageText, new RegExp(NEW_USERNAME.replace(".", "\\.")));
 
-    const approved = await fetch(`${harness.baseUrl}/admin/users/${encodeURIComponent(NEW_USERNAME)}/approve`, {
-      method: "POST",
-      headers: { Cookie: harness.cookie },
-      redirect: "manual",
+    const invite = await createInvite(harness);
+    assert.match(invite.token, /^[A-Za-z0-9_-]{24,}$/);
+    assert.match(invite.body, /New invite link/);
+    assert.match(invite.body, /valid for 24 hours/i);
+
+    const signup = await requestSignup(harness.baseUrl, {
+      invite: invite.token,
+      displayName: NEW_DISPLAY_NAME,
+      username: NEW_USERNAME,
+      password: NEW_PASSWORD,
+      confirmPassword: NEW_PASSWORD,
     });
-    assert.equal(approved.status, 303);
+    assert.equal(signup.status, 200);
+    assertNoStoreHeaders(signup);
+    assert.match(signup.body, /Account created\. You can sign in now/i);
 
+    const invitedUserLogin = await loginAttempt(harness.baseUrl, NEW_USERNAME, NEW_PASSWORD);
+    assert.equal(invitedUserLogin.status, 303);
+    assert.match(invitedUserLogin.cookie || "", /^carpostclub_session=/);
+
+    const adminPageAfterSignup = await fetch(`${harness.baseUrl}/admin/users`, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(adminPageAfterSignup.status, 200);
+    assertNoStoreHeaders(adminPageAfterSignup);
+    const adminPageAfterSignupText = await adminPageAfterSignup.text();
+    assert.match(adminPageAfterSignupText, new RegExp(NEW_USERNAME.replace(".", "\\.")));
+    assert.match(adminPageAfterSignupText, /Reset password/);
+    assert.match(adminPageAfterSignupText, /Deactivate/);
+    assert.match(adminPageAfterSignupText, /1 signup/);
+    const storedInvites = JSON.parse(await fs.readFile(path.join(harness.tempRoot, "auth-invites.json"), "utf8"));
+    assert.equal(storedInvites.invites[0].useCount, 1);
+    assert.equal(storedInvites.invites[0].acceptedUsers[0].username, NEW_USERNAME);
+
+    const adminPageTextAfterInvite = adminPageAfterSignupText;
+    assert.match(adminPageTextAfterInvite, /Reset password/);
     let approvedCookie = await login(harness.baseUrl, NEW_USERNAME, NEW_PASSWORD);
     const approvedAccess = await fetchJson(`${harness.baseUrl}/api/inventory/dealerships`, {
       headers: { Cookie: approvedCookie },
@@ -209,7 +229,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260530-auth-pwa/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260602-pwa-upload-v22/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -430,14 +450,20 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(carsWithManual.count, 2);
     assert.ok(carsWithManual.cars.some((car) => car.inventoryKey === manualCreated.body.car.inventoryKey));
 
+    const invalidManualVin = await postJson(harness, "/api/manual-inventory/cars", {
+      ...MANUAL_CAR,
+      stockNumber: "BADVIN",
+      vin: "AUDITVIN000000001",
+    });
+    assert.equal(invalidManualVin.status, 400);
+    assert.match(invalidManualVin.body.error, /VIN must be 11 to 17 characters/i);
+
     const manualAlbum = await getJson(
       harness,
       `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&inventoryKey=${manualCreated.body.car.inventoryKey}`,
     );
-    assert.equal(manualAlbum.album.vehicle.source, "manual");
-    assert.equal(manualAlbum.album.vehicle.stockNumber, MANUAL_CAR.stockNumber);
-    assert.equal(manualAlbum.album.vehicle.year, MANUAL_CAR.year);
-    assert.equal(manualAlbum.album.vehicle.make, MANUAL_CAR.make);
+    assert.equal(manualAlbum.album, null);
+    assert.deepEqual(manualAlbum.photos, []);
 
     const manualUpload = await uploadPhotos(harness, {
       dealershipId: "15",
@@ -447,6 +473,10 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     });
     assert.equal(manualUpload.status, 201);
     assert.equal(manualUpload.body.album.vehicle.source, "manual");
+    assert.equal(manualUpload.body.album.inventoryNumber, MANUAL_CAR.stockNumber);
+    assert.match(manualUpload.body.album.storage.prefix, /^inventory\/15\/used-vehicles\/mnl123-manual-/);
+    assert.equal(manualUpload.body.album.mediaCount, 1);
+    assert.equal(manualUpload.body.album.photoCount, 1);
     assert.equal(manualUpload.body.marketplaceGeneration.variantCount, 6);
 
     const blockedUpload = await uploadPhotos(harness, {
@@ -462,9 +492,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       harness,
       `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
     );
-    assert.equal(selectedAlbum.album.id, TEST_ALBUM_ID);
-    assert.equal(selectedAlbum.album.name, `${TEST_CAR.title} - ${TEST_CAR.stockNumber}`);
-    assert.equal(selectedAlbum.album.vehicle.stockNumber, TEST_CAR.stockNumber);
+    assert.equal(selectedAlbum.album, null);
     assert.deepEqual(selectedAlbum.photos, []);
 
     const marketplaceDraft = await getJson(
@@ -480,6 +508,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(marketplaceDraft.draft.description, "");
     assert.equal(marketplaceDraft.draft.copyText, "");
     assert.ok(marketplaceDraft.draft.missingFields.includes("Description"));
+    const albumsBeforeTestCarUpload = await getJson(harness, "/api/albums");
+    assert.ok(!albumsBeforeTestCarUpload.albums.some((album) => album.vehicle?.vin === TEST_CAR.vin));
 
     const marketplaceCopyConflictPath = path.join(harness.uploadRoot, TEST_ALBUM_ID, ".marketplace-copy.json");
     await fs.mkdir(marketplaceCopyConflictPath, { recursive: true });
@@ -520,17 +550,29 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(uploaded.status, 201);
     assert.equal(uploaded.body.ok, true);
     assert.equal(uploaded.body.album.vehicle.vin, TEST_CAR.vin);
+    assert.equal(uploaded.body.album.inventoryNumber, TEST_CAR.stockNumber);
+    assert.equal(uploaded.body.album.storage.prefix, TEST_OBJECT_STORAGE_PREFIX);
     assert.equal(uploaded.body.count, 4);
+    assert.equal(uploaded.body.album.photoCount, 3);
+    assert.equal(uploaded.body.album.videoCount, 1);
+    assert.equal(uploaded.body.album.mediaCount, 4);
     assert.ok(uploaded.body.photos.every((photo) => photo.uploadedBy?.username === TEST_USERNAME));
     assert.ok(uploaded.body.photos.every((photo) => photo.uploadedBy?.displayName === TEST_USERNAME));
     assert.equal(uploaded.body.marketplaceGeneration.source, "template-upload");
     assert.equal(uploaded.body.marketplaceGeneration.variantCount, 6);
     assert.equal(uploaded.body.marketplaceGeneration.assignedCount, 2);
     assert.equal(uploaded.body.marketplaceDraft.descriptionSource, "template-upload");
-    assert.match(uploaded.body.marketplaceDraft.description, /Message me for more details/);
+    assert.match(uploaded.body.marketplaceDraft.description, /O'Regan's Kia Halifax/);
+    assert.match(uploaded.body.marketplaceDraft.description, /ask for Konner/i);
+    assert.match(uploaded.body.marketplaceDraft.description, /2026 Kia Seltos/);
+    assert.match(uploaded.body.marketplaceDraft.description, /X-Line AWD/);
+    assert.match(uploaded.body.marketplaceDraft.description, /White exterior/);
+    assert.match(uploaded.body.marketplaceDraft.description, /Black interior/);
     assert.match(uploaded.body.marketplaceDraft.description, /Tire Road Hazard/);
     assert.doesNotMatch(uploaded.body.marketplaceDraft.description, new RegExp(TEST_CAR.stockNumber));
     assert.match(uploaded.body.marketplaceDraft.copyText, /Mileage: 1234 km/);
+    assert.match(uploaded.body.marketplaceDraft.copyText, /Dealership: O'Regan's Kia Halifax/);
+    assert.match(uploaded.body.marketplaceDraft.copyText, /Ask for: Konner/);
 
     const uploadedMarketplaceDraft = await getJson(
       harness,
@@ -543,6 +585,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(uploadedMarketplaceDraft.draft.descriptionSource, "template-upload");
     assert.equal(photoTechMarketplaceDraft.body.draft.descriptionSource, "template-upload");
     assert.notEqual(uploadedMarketplaceDraft.draft.description, photoTechMarketplaceDraft.body.draft.description);
+    assert.match(photoTechMarketplaceDraft.body.draft.description, /O'Regan's Kia Halifax/);
+    assert.match(photoTechMarketplaceDraft.body.draft.description, /ask for Konner/i);
 
     const regeneratedMarketplaceDraft = await postJson(harness, "/api/marketplace-draft/regenerate", {
       dealershipId: "15",
@@ -571,6 +615,10 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       assert.equal(stats.isFile(), true);
       assert.ok(stats.size > 0);
     }
+    const savedAlbumMetadata = JSON.parse(await fs.readFile(path.join(harness.uploadRoot, TEST_ALBUM_ID, ".album.json"), "utf8"));
+    assert.equal(savedAlbumMetadata.inventoryNumber, TEST_CAR.stockNumber);
+    assert.equal(savedAlbumMetadata.objectStoragePrefix, TEST_OBJECT_STORAGE_PREFIX);
+    assert.equal(savedAlbumMetadata.storage.prefix, TEST_OBJECT_STORAGE_PREFIX);
 
     const afterUpload = await getJson(
       harness,
@@ -664,6 +712,32 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(testAlbum.photoCount, 3);
     assert.equal(testAlbum.videoCount, 1);
     assert.equal(testAlbum.mediaCount, 4);
+    assert.equal(testAlbum.inventoryStatus.active, true);
+    assert.match(testAlbum.inventoryStatus.label, /Active in O'Regan's inventory as of/);
+    assert.equal(savedManualAlbum.inventoryStatus.status, "manual");
+
+    const albumMarketplaceDraft = await getJson(harness, `/api/albums/${afterUpload.album.id}/marketplace-draft`);
+    assert.equal(albumMarketplaceDraft.draft.descriptionSource, "template-upload");
+    assert.equal(albumMarketplaceDraft.draft.descriptionOwner.username, TEST_USERNAME);
+
+    const descriptionDownload = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/description.txt`, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(descriptionDownload.status, 200);
+    assert.match(descriptionDownload.headers.get("content-disposition") || "", /marketplace-description\.txt/);
+    const descriptionText = await descriptionDownload.text();
+    assert.match(descriptionText, /CarPostClub Marketplace Package/);
+    assert.match(descriptionText, /Prepared for: admin/);
+    assert.match(descriptionText, /Ready to post: Yes/);
+    assert.match(descriptionText, /Inventory status: Active in O'Regan's inventory as of/);
+
+    const photoTechDescriptionDownload = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/description.txt`, {
+      headers: { Cookie: approvedCookie },
+    });
+    assert.equal(photoTechDescriptionDownload.status, 200);
+    const photoTechDescriptionText = await photoTechDescriptionDownload.text();
+    assert.match(photoTechDescriptionText, /Prepared for: Photo Tech/);
+    assert.notEqual(descriptionText, photoTechDescriptionText);
 
     const albumDownload = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/download`, {
       headers: { Cookie: harness.cookie },
@@ -674,6 +748,17 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     const albumDownloadBytes = Buffer.from(await albumDownload.arrayBuffer());
     assert.ok(albumDownloadBytes.includes(Buffer.from("lot-tag.heic")));
     assert.ok(!albumDownloadBytes.includes(Buffer.from("lot-tag.jpg")));
+
+    const packageDownload = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/package`, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(packageDownload.status, 200);
+    assert.match(packageDownload.headers.get("content-type") || "", /zip/);
+    const packageDownloadBytes = Buffer.from(await packageDownload.arrayBuffer());
+    assert.ok(packageDownloadBytes.includes(Buffer.from("media/lot-tag.heic")));
+    assert.ok(packageDownloadBytes.includes(Buffer.from("facebook-marketplace-description.txt")));
+    assert.ok(packageDownloadBytes.includes(Buffer.from("facebook-marketplace-fields.json")));
+    assert.ok(packageDownloadBytes.includes(Buffer.from("package-manifest.json")));
 
     const deleted = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/photos/${encodeURIComponent(firstPhoto.filename)}`, {
       method: "DELETE",
@@ -767,368 +852,140 @@ test("vehicle album lookup reuses existing media when live inventory titles drif
   }
 });
 
-test("iOS Shortcut endpoints upload shared Photos media by stock number", async () => {
-  const harness = await startTestServer();
+test("album inventory status marks O'Regan's vehicles that disappear from the feed", async () => {
+  const harness = await startTestServer({ inventoryCars: [] });
 
   try {
-    const unauthenticated = await fetch(`${harness.baseUrl}/api/shortcut/vehicle?stockNumber=${encodeURIComponent(TEST_CAR.stockNumber)}`, {
-      headers: { Accept: "application/json" },
-    });
-    assert.equal(unauthenticated.status, 401);
-    assert.match(unauthenticated.headers.get("www-authenticate") || "", /CarPostClub Shortcut/);
-
-    const unauthenticatedTokens = await fetchJson(`${harness.baseUrl}/api/shortcut/tokens`, {
-      redirect: "manual",
-    });
-    assert.equal(unauthenticatedTokens.status, 401);
-
-    const shortcutDownload = await fetch(`${harness.baseUrl}/shortcuts/upload-to-carpostclub-pick-vehicle.shortcut`);
-    assert.equal(shortcutDownload.status, 200);
-    assertNoStoreHeaders(shortcutDownload);
-    assert.match(shortcutDownload.headers.get("content-type") || "", /application\/octet-stream/);
-    assert.match(shortcutDownload.headers.get("content-disposition") || "", /Upload to CarPostClub Pick Vehicle\.shortcut/);
-    assert.ok((await shortcutDownload.arrayBuffer()).byteLength > 1000);
-
-    const legacyShortcutDownload = await fetch(`${harness.baseUrl}/shortcuts/upload-to-carpostclub.shortcut`);
-    assert.equal(legacyShortcutDownload.status, 200);
-    assert.match(legacyShortcutDownload.headers.get("content-disposition") || "", /Upload to CarPostClub Pick Vehicle\.shortcut/);
-
-    const v2ShortcutDownload = await fetch(`${harness.baseUrl}/shortcuts/upload-to-carpostclub-v2.shortcut`);
-    assert.equal(v2ShortcutDownload.status, 200);
-    assert.match(v2ShortcutDownload.headers.get("content-disposition") || "", /Upload to CarPostClub Pick Vehicle\.shortcut/);
-
     harness.cookie = await login(harness.baseUrl);
-
-    const createdToken = await postJson(harness, "/api/shortcut/tokens", { name: "Konner iPhone" });
-    assert.equal(createdToken.status, 201);
-    assert.equal(createdToken.body.ok, true);
-    assert.match(createdToken.body.token, /^cpcst_[A-Za-z0-9_-]+_[A-Za-z0-9_-]+$/);
-    assert.equal(createdToken.body.authorizationHeader, `Bearer ${createdToken.body.token}`);
-    assert.equal(createdToken.body.record.name, "Konner iPhone");
-    assert.equal(createdToken.body.record.username, TEST_USERNAME);
-    assert.equal(createdToken.body.record.status, "active");
-    assert.equal(createdToken.body.record.tokenHash, undefined);
-    assert.equal(createdToken.body.shortcutDownloadUrl, "/shortcuts/upload-to-carpostclub-pick-vehicle.shortcut");
-    assert.equal(createdToken.body.shortcutWorkflowVersion, "pick-vehicle-v8");
-
-    const listedTokens = await getJson(harness, "/api/shortcut/tokens");
-    assert.equal(listedTokens.shortcutDownloadUrl, "/shortcuts/upload-to-carpostclub-pick-vehicle.shortcut");
-    assert.equal(listedTokens.shortcutWorkflowVersion, "pick-vehicle-v8");
-    assert.equal(listedTokens.tokens.length, 1);
-    assert.equal(listedTokens.tokens[0].id, createdToken.body.record.id);
-    assert.equal(listedTokens.tokens[0].name, "Konner iPhone");
-    assert.equal(JSON.stringify(listedTokens).includes(createdToken.body.token), false);
-    const storedTokens = await readShortcutTokens(harness);
-    assert.equal(storedTokens.length, 1);
-    assert.equal(storedTokens[0].tokenHash?.length > 20, true);
-    assert.equal(JSON.stringify(storedTokens).includes(createdToken.body.token), false);
-
-    const bearerLookup = await fetchJson(
-      `${harness.baseUrl}/api/shortcut/vehicle?stockNumber=${encodeURIComponent(TEST_CAR.stockNumber)}`,
-      { headers: shortcutBearerHeaders(createdToken.body.token) },
-    );
-    assert.equal(bearerLookup.status, 200);
-    assert.equal(bearerLookup.body.source, "ios-shortcut");
-    assert.equal(bearerLookup.body.matchedBy, "stockNumber");
-    assert.equal(bearerLookup.body.car.vin, TEST_CAR.vin);
-
-    const dealershipPicklist = await fetch(`${harness.baseUrl}/api/shortcut/dealerships?format=labels`, {
-      headers: shortcutBearerHeaders(createdToken.body.token),
-    });
-    assert.equal(dealershipPicklist.status, 200);
-    assertNoStoreHeaders(dealershipPicklist);
-    assert.match(dealershipPicklist.headers.get("content-type") || "", /text\/plain/);
-    const dealershipPicklistText = await dealershipPicklist.text();
-    assert.ok(dealershipPicklistText.split("\n").includes("O'Regan's Kia Halifax"));
-    assert.doesNotMatch(dealershipPicklistText, /\n$/);
-
-    const dealershipJson = await fetchJson(`${harness.baseUrl}/api/shortcut/dealerships`, {
-      headers: shortcutBearerHeaders(createdToken.body.token),
-    });
-    assert.equal(dealershipJson.status, 200);
-    assert.equal(dealershipJson.body.dealerships[0].name, "O'Regan's Kia Halifax");
-
-    const inventoryTypeForm = new URLSearchParams();
-    inventoryTypeForm.set("dealership", "O'Regan's Kia Halifax");
-    const inventoryTypePicklist = await fetch(`${harness.baseUrl}/api/shortcut/inventory-types?format=labels`, {
-      method: "POST",
-      headers: {
-        ...shortcutBearerHeaders(createdToken.body.token),
-        "Content-Type": "application/x-www-form-urlencoded",
+    const albumPath = path.join(harness.uploadRoot, TEST_ALBUM_ID);
+    const missingInventoryFilename = "2026-06-01T10-00-00-000Z-missing-front.jpg";
+    await fs.mkdir(albumPath, { recursive: true });
+    await fs.writeFile(path.join(albumPath, missingInventoryFilename), jpegBytes("missing-front"));
+    await fs.writeFile(path.join(albumPath, ".album.json"), `${JSON.stringify({
+      id: TEST_ALBUM_ID,
+      name: `${TEST_CAR.title} - ${TEST_CAR.stockNumber}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      dealership: { id: "15", name: "O'Regan's Kia Halifax" },
+      inventoryTypeId: "2",
+      sourceUrl: TEST_CAR.detailUrl,
+      vehicle: {
+        source: "oregans",
+        inventoryKey: TEST_CAR.vin,
+        vin: TEST_CAR.vin,
+        stockNumber: TEST_CAR.stockNumber,
+        title: TEST_CAR.title,
+        year: TEST_CAR.year,
+        make: TEST_CAR.make,
+        model: TEST_CAR.model,
+        trim: TEST_CAR.trim,
+        price: TEST_CAR.price,
+        odometer: TEST_CAR.odometer,
+        exteriorColor: TEST_CAR.exteriorColor,
+        interiorColor: TEST_CAR.interiorColor,
+        bodyStyle: TEST_CAR.bodyStyle,
+        fuelType: TEST_CAR.fuelType,
+        transmission: TEST_CAR.transmission,
+        detailUrl: TEST_CAR.detailUrl,
+        dealershipId: "15",
+        dealershipName: "O'Regan's Kia Halifax",
       },
-      body: inventoryTypeForm,
-    });
-    assert.equal(inventoryTypePicklist.status, 200);
-    assert.equal(await inventoryTypePicklist.text(), "Used vehicles\nNew vehicles");
-
-    const inventoryForm = new URLSearchParams();
-    inventoryForm.set("dealership", "O'Regan's Kia Halifax");
-    inventoryForm.set("inventoryType", "Used vehicles");
-    const shortcutChoiceLabel = "U6247A - Used 2026 Kia Seltos X-Line AWD - Kia Halifax - Used";
-    const shortcutInventoryList = await fetch(`${harness.baseUrl}/api/shortcut/inventory?format=labels`, {
-      method: "POST",
-      headers: {
-        ...shortcutBearerHeaders(createdToken.body.token),
-        "Content-Type": "application/x-www-form-urlencoded",
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(albumPath, ".photos.json"), `${JSON.stringify({
+      [missingInventoryFilename]: {
+        originalName: "missing-front.jpg",
+        contentType: "image/jpeg",
+        bytes: Buffer.byteLength(jpegBytes("missing-front")),
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: { username: TEST_USERNAME, displayName: TEST_USERNAME },
       },
-      body: inventoryForm,
-    });
-    assert.equal(shortcutInventoryList.status, 200);
-    assertNoStoreHeaders(shortcutInventoryList);
-    assert.match(shortcutInventoryList.headers.get("content-type") || "", /text\/plain/);
-    const shortcutInventoryText = await shortcutInventoryList.text();
-    assert.equal(shortcutInventoryText, shortcutChoiceLabel);
+    }, null, 2)}\n`);
 
-    const shortcutInventoryJson = await fetchJson(`${harness.baseUrl}/api/shortcut/inventory?dealership=${encodeURIComponent("O'Regan's Kia Halifax")}&inventoryType=Used%20vehicles`, {
-      headers: shortcutBearerHeaders(createdToken.body.token),
-    });
-    assert.equal(shortcutInventoryJson.status, 200);
-    assert.equal(shortcutInventoryJson.body.ok, true);
-    assert.equal(shortcutInventoryJson.body.count, 1);
-    assert.equal(shortcutInventoryJson.body.cars[0].label, shortcutChoiceLabel);
-    assert.equal(shortcutInventoryJson.body.cars[0].vin, TEST_CAR.vin);
-    assert.equal(shortcutInventoryJson.body.cars[0].dealershipName, "O'Regan's Kia Halifax");
-
-    const choiceLookup = await fetchJson(
-      `${harness.baseUrl}/api/shortcut/vehicle?dealership=${encodeURIComponent("O'Regan's Kia Halifax")}&inventoryType=Used%20vehicles&inventory=${encodeURIComponent(shortcutChoiceLabel)}`,
-      { headers: shortcutBearerHeaders(createdToken.body.token) },
-    );
-    assert.equal(choiceLookup.status, 200);
-    assert.equal(choiceLookup.body.matchedBy, "shortcutChoice");
-    assert.equal(choiceLookup.body.car.vin, TEST_CAR.vin);
-
-    const ambiguousToken = "cpcst_ADMIN_ID_WITH_UNDERSCORE_secret_PART_with_under_scores_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
-    const adminSession = sessionPayloadFromCookie(harness.cookie);
-    await writeShortcutTokens(harness, [
-      ...await readShortcutTokens(harness),
-      {
-        id: "ADMIN_ID_WITH_UNDERSCORE",
-        name: "Ambiguous delimiter token",
-        username: TEST_USERNAME,
-        displayName: TEST_USERNAME,
-        role: "admin",
-        passwordVersion: adminSession.pv,
-        scope: "shortcut_upload",
-        tokenHash: shortcutTokenHash(ambiguousToken),
-        createdAt: new Date().toISOString(),
-      },
-    ]);
-    const ambiguousLookup = await fetchJson(
-      `${harness.baseUrl}/api/shortcut/vehicle?stockNumber=${encodeURIComponent(TEST_CAR.stockNumber)}`,
-      { headers: shortcutBearerHeaders(ambiguousToken) },
-    );
-    assert.equal(ambiguousLookup.status, 200);
-    assert.equal(ambiguousLookup.body.car.vin, TEST_CAR.vin);
-
-    const capitalizedPrefixLookup = await fetchJson(
-      `${harness.baseUrl}/api/shortcut/vehicle?stockNumber=${encodeURIComponent(TEST_CAR.stockNumber)}`,
-      { headers: shortcutBearerHeaders(createdToken.body.token.replace(/^cpcst_/, "Cpcst_")) },
-    );
-    assert.equal(capitalizedPrefixLookup.status, 200);
-    assert.equal(capitalizedPrefixLookup.body.car.vin, TEST_CAR.vin);
-
-    const lookup = await fetchJson(
-      `${harness.baseUrl}/api/shortcut/vehicle?stockNumber=${encodeURIComponent(TEST_CAR.stockNumber)}`,
-      { headers: shortcutAuthHeaders() },
-    );
-    assert.equal(lookup.status, 200);
-    assert.equal(lookup.body.source, "ios-shortcut");
-    assert.equal(lookup.body.matchedBy, "stockNumber");
-    assert.equal(lookup.body.car.vin, TEST_CAR.vin);
-    assert.equal(lookup.body.car.stockNumber, TEST_CAR.stockNumber);
-
-    const bearerColonCredentialsLookup = await fetchJson(
-      `${harness.baseUrl}/api/shortcut/vehicle?stockNumber=${encodeURIComponent(TEST_CAR.stockNumber)}`,
-      { headers: shortcutBearerCredentialHeaders(`${TEST_USERNAME}:${TEST_PASSWORD}`) },
-    );
-    assert.equal(bearerColonCredentialsLookup.status, 200);
-    assert.equal(bearerColonCredentialsLookup.body.car.vin, TEST_CAR.vin);
-
-    const bearerCommaCredentialsLookup = await fetchJson(
-      `${harness.baseUrl}/api/shortcut/vehicle?stockNumber=${encodeURIComponent(TEST_CAR.stockNumber)}`,
-      { headers: shortcutBearerCredentialHeaders(`${TEST_USERNAME}, ${TEST_PASSWORD}`) },
-    );
-    assert.equal(bearerCommaCredentialsLookup.status, 200);
-    assert.equal(bearerCommaCredentialsLookup.body.car.vin, TEST_CAR.vin);
-
-    const form = new FormData();
-    form.set("dealership", "O'Regan's Kia Halifax");
-    form.set("inventoryType", "Used vehicles");
-    form.set("inventory", shortcutChoiceLabel);
-    form.set("shortcutVersion", "pick-vehicle-v8");
-    form.append("media", new Blob([jpegBytes("shortcut-front")], { type: "image/jpeg" }), "iphone-front.jpg");
-    form.append("Shortcut Input", new Blob([pngBytes("shortcut-interior")], { type: "image/png" }), "iphone-interior.png");
-    const uploaded = await fetch(`${harness.baseUrl}/api/shortcut/upload`, {
-      method: "POST",
-      headers: shortcutBearerHeaders(createdToken.body.token),
-      body: form,
-    });
-    const uploadedBody = await uploaded.json();
-    assert.equal(uploaded.status, 201);
-    assert.equal(uploadedBody.ok, true);
-    assert.equal(uploadedBody.source, "ios-shortcut");
-    assert.equal(uploadedBody.album.id, TEST_ALBUM_ID);
-    assert.equal(uploadedBody.count, 2);
-    assert.equal(uploadedBody.car.vin, TEST_CAR.vin);
-    assert.ok(uploadedBody.photos.every((photo) => photo.uploadedBy?.username === TEST_USERNAME));
-    assert.deepEqual(uploadedBody.photos.map((photo) => photo.originalName).sort(), ["iphone-front.jpg", "iphone-interior.png"]);
-
-    const savedMetadata = JSON.parse(await fs.readFile(path.join(harness.uploadRoot, TEST_ALBUM_ID, ".photos.json"), "utf8"));
-    assert.equal(Object.keys(savedMetadata).length, 2);
-    assert.ok(Object.values(savedMetadata).every((photo) => photo.uploadedBy?.username === TEST_USERNAME));
-    assert.deepEqual(await fs.readdir(harness.tmpRoot), []);
-
-    const tokensAfterUse = await getJson(harness, "/api/shortcut/tokens");
-    const createdTokenAfterUse = tokensAfterUse.tokens.find((token) => token.id === createdToken.body.record.id);
-    assert.ok(createdTokenAfterUse);
-    assert.match(createdTokenAfterUse.lastUsedAt, /^\d{4}-\d{2}-\d{2}T/);
-
-    const skippedPickerForm = new FormData();
-    skippedPickerForm.append("photos", new Blob([jpegBytes("skipped-picker")], { type: "image/jpeg" }), "skipped-picker.jpg");
-    const skippedPicker = await fetch(`${harness.baseUrl}/api/shortcut/upload`, {
-      method: "POST",
-      headers: shortcutAuthHeaders(),
-      body: skippedPickerForm,
-    });
-    const skippedPickerBody = await skippedPicker.json();
-    assert.equal(skippedPicker.status, 400);
-    assert.match(skippedPickerBody.error, /Old Shortcut/);
-    assert.match(skippedPickerBody.error, /Upload to CarPostClub Pick Vehicle/);
-    assert.deepEqual(await fs.readdir(harness.tmpRoot), []);
-
-    const currentButSkippedPickerForm = new FormData();
-    currentButSkippedPickerForm.set("shortcutVersion", "pick-vehicle-v8");
-    currentButSkippedPickerForm.append("photos", new Blob([jpegBytes("current-skipped-picker")], { type: "image/jpeg" }), "current-skipped-picker.jpg");
-    const currentButSkippedPicker = await fetch(`${harness.baseUrl}/api/shortcut/stage`, {
-      method: "POST",
-      headers: {
-        Accept: "text/plain",
-      },
-      body: currentButSkippedPickerForm,
-    });
-    const pickerUrlText = await currentButSkippedPicker.text();
-    assert.equal(currentButSkippedPicker.status, 202);
-    assert.match(pickerUrlText, /\/shortcut\/complete\//);
-    const pickerUrl = new URL(pickerUrlText.trim());
-    const unauthenticatedPickerPage = await fetch(pickerUrl, { redirect: "manual" });
-    assert.equal(unauthenticatedPickerPage.status, 302);
-    assert.match(unauthenticatedPickerPage.headers.get("location") || "", /^\/login\?next=/);
-
-    const pickerPage = await fetch(pickerUrl, {
-      headers: { Cookie: harness.cookie },
-    });
-    assert.equal(pickerPage.status, 200);
-    assert.match(await pickerPage.text(), /Finish CarPostClub Upload/);
-
-    const unauthenticatedPendingDealerships = await fetchJson(`${harness.baseUrl}/api/shortcut/pending/${encodeURIComponent(pickerUrl.pathname.split("/").pop())}/dealerships?secret=${encodeURIComponent(pickerUrl.searchParams.get("secret"))}`, {
-      redirect: "manual",
-    });
-    assert.equal(unauthenticatedPendingDealerships.status, 401);
-
-    const pendingDealerships = await fetchJson(`${harness.baseUrl}/api/shortcut/pending/${encodeURIComponent(pickerUrl.pathname.split("/").pop())}/dealerships?secret=${encodeURIComponent(pickerUrl.searchParams.get("secret"))}`, {
-      headers: { Cookie: harness.cookie },
-    });
-    assert.equal(pendingDealerships.status, 200);
-    assert.ok(pendingDealerships.body.dealerships.some((item) => item.label === "O'Regan's Kia Halifax"));
-
-    const unauthenticatedPendingComplete = await fetch(`${harness.baseUrl}/api/shortcut/pending/${encodeURIComponent(pickerUrl.pathname.split("/").pop())}/complete?secret=${encodeURIComponent(pickerUrl.searchParams.get("secret"))}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({
-        dealership: "O'Regan's Kia Halifax",
-        inventoryType: "Used vehicles",
-        inventory: shortcutChoiceLabel,
-      }),
-    });
-    assert.equal(unauthenticatedPendingComplete.status, 401);
-
-    const pendingComplete = await fetch(`${harness.baseUrl}/api/shortcut/pending/${encodeURIComponent(pickerUrl.pathname.split("/").pop())}/complete?secret=${encodeURIComponent(pickerUrl.searchParams.get("secret"))}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Cookie: harness.cookie },
-      body: JSON.stringify({
-        dealership: "O'Regan's Kia Halifax",
-        inventoryType: "Used vehicles",
-        inventory: shortcutChoiceLabel,
-      }),
-    });
-    const pendingCompleteBody = await pendingComplete.json();
-    assert.equal(pendingComplete.status, 200);
-    assert.equal(pendingCompleteBody.ok, true);
-    assert.equal(pendingCompleteBody.source, "ios-shortcut-pending");
-    assert.equal(pendingCompleteBody.count, 1);
-    assert.equal(pendingCompleteBody.car.vin, TEST_CAR.vin);
-    assert.match(pendingCompleteBody.appUrl, /\/\?dealershipId=15&inventoryTypeId=2&inventoryKey=/);
-    assert.match(pendingCompleteBody.appUrl, /openAlbum=1/);
-    assert.match(pendingCompleteBody.appUrl, /shortcutUpload=complete/);
-    assert.ok(pendingCompleteBody.photos.every((photo) => photo.uploadedBy?.username === TEST_USERNAME));
-    assert.deepEqual(await fs.readdir(harness.tmpRoot), []);
-
-    const missingForm = new FormData();
-    missingForm.set("stockNumber", "NOPE123");
-    missingForm.append("photos", new Blob([jpegBytes("missing")], { type: "image/jpeg" }), "missing.jpg");
-    const missing = await fetch(`${harness.baseUrl}/api/shortcut/upload`, {
-      method: "POST",
-      headers: shortcutAuthHeaders(),
-      body: missingForm,
-    });
-    const missingBody = await missing.json();
-    assert.equal(missing.status, 404);
-    assert.match(missingBody.error, /No inventory car matched/);
-    assert.deepEqual(await fs.readdir(harness.tmpRoot), []);
-
-    const revokedToken = await fetch(`${harness.baseUrl}/api/shortcut/tokens/${encodeURIComponent(createdToken.body.record.id)}`, {
-      method: "DELETE",
-      headers: { Cookie: harness.cookie, Accept: "application/json" },
-    });
-    assert.equal(revokedToken.status, 200);
-    assert.equal((await revokedToken.json()).revoked, true);
-    const rejectedBearerLookup = await fetchJson(
-      `${harness.baseUrl}/api/shortcut/vehicle?stockNumber=${encodeURIComponent(TEST_CAR.stockNumber)}`,
-      { headers: shortcutBearerHeaders(createdToken.body.token) },
-    );
-    assert.equal(rejectedBearerLookup.status, 401);
-    assert.match(rejectedBearerLookup.body.error, /Invalid shortcut token/);
-
-    const rejectedTextLookup = await fetch(`${harness.baseUrl}/api/shortcut/vehicle?stockNumber=${encodeURIComponent(TEST_CAR.stockNumber)}`, {
-      headers: {
-        Accept: "text/plain",
-        Authorization: `Bearer ${createdToken.body.token}`,
-      },
-    });
-    assert.equal(rejectedTextLookup.status, 401);
-    assertNoStoreHeaders(rejectedTextLookup);
-    assert.match(rejectedTextLookup.headers.get("content-type") || "", /text\/plain/);
-    const rejectedTextBody = await rejectedTextLookup.text();
-    assert.equal(rejectedTextBody, "Error: Invalid shortcut token.\n");
-    assert.doesNotMatch(rejectedTextBody, /"ok"|false/);
+    const albums = await getJson(harness, "/api/albums");
+    const album = albums.albums.find((candidate) => candidate.id === TEST_ALBUM_ID);
+    assert.ok(album);
+    assert.equal(album.inventoryStatus.active, false);
+    assert.equal(album.inventoryStatus.status, "missing");
+    assert.match(album.inventoryStatus.label, /No longer active in O'Regan's inventory as of/);
   } finally {
     await stopTestServer(harness);
   }
 });
 
-test("iOS Shortcut picklist labels resolve when live O'Regan's titles are long", async () => {
-  const harness = await startTestServer({ inventoryCars: [LONG_TITLE_CAR] });
+test("signup invite links expire and block account creation after 24 hours", async () => {
+  const harness = await startTestServer();
+
+  try {
+    const expiredToken = "expired_invite_token_1234567890";
+    const now = Date.now();
+    await fs.writeFile(path.join(harness.tempRoot, "auth-invites.json"), `${JSON.stringify({
+      invites: [{
+        id: expiredToken,
+        createdAt: new Date(now - 48 * 60 * 60 * 1000).toISOString(),
+        expiresAt: new Date(now - 24 * 60 * 60 * 1000).toISOString(),
+        createdBy: { username: TEST_USERNAME, displayName: TEST_USERNAME, role: "admin", status: "approved" },
+        useCount: 0,
+        acceptedUsers: [],
+      }],
+    }, null, 2)}\n`);
+
+    const expiredPage = await fetch(`${harness.baseUrl}/signup?invite=${encodeURIComponent(expiredToken)}`);
+    assert.equal(expiredPage.status, 400);
+    assert.match(await expiredPage.text(), /invite link expired/i);
+
+    const expiredSignup = await requestSignup(harness.baseUrl, {
+      invite: expiredToken,
+      displayName: "Late User",
+      username: "late.user",
+      password: "late-user-123",
+      confirmPassword: "late-user-123",
+    });
+    assert.equal(expiredSignup.status, 400);
+    assert.match(expiredSignup.body, /invite link expired/i);
+
+    const lateLogin = await loginAttempt(harness.baseUrl, "late.user", "late-user-123");
+    assert.equal(lateLogin.status, 401);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("one active invite link can sign up multiple people before it expires", async () => {
+  const harness = await startTestServer();
 
   try {
     harness.cookie = await login(harness.baseUrl);
-    const createdToken = await postJson(harness, "/api/shortcut/tokens", { name: "Long title iPhone" });
-    assert.equal(createdToken.status, 201);
+    const invite = await createInvite(harness);
+    const accounts = [
+      { displayName: "Group One", username: "group.one", password: "group-one-123" },
+      { displayName: "Group Two", username: "group.two", password: "group-two-123" },
+    ];
 
-    const expectedLabel = "A10012 - New 2026 Kia Sportage Plug-In Hybrid EX Eligible for up to a $2500 federal government incentive - Kia Halifax - New";
-    assert.equal(expectedLabel.length > 120, true);
-    const picklist = await fetch(`${harness.baseUrl}/api/shortcut/inventory?format=labels`, {
-      headers: shortcutBearerHeaders(createdToken.body.token),
-    });
-    assert.equal(picklist.status, 200);
-    assert.equal(await picklist.text(), expectedLabel);
+    for (const account of accounts) {
+      const signup = await requestSignup(harness.baseUrl, {
+        invite: invite.token,
+        displayName: account.displayName,
+        username: account.username,
+        password: account.password,
+        confirmPassword: account.password,
+      });
+      assert.equal(signup.status, 200);
+      assert.match(signup.body, /Account created\. You can sign in now/i);
+      const cookie = await login(harness.baseUrl, account.username, account.password);
+      const me = await fetchJson(`${harness.baseUrl}/api/me`, {
+        headers: { Cookie: cookie },
+      });
+      assert.equal(me.status, 200);
+      assert.equal(me.body.user.username, account.username);
+    }
 
-    const lookup = await fetchJson(
-      `${harness.baseUrl}/api/shortcut/vehicle?inventory=${encodeURIComponent(expectedLabel)}`,
-      { headers: shortcutBearerHeaders(createdToken.body.token) },
+    const storedInvites = JSON.parse(await fs.readFile(path.join(harness.tempRoot, "auth-invites.json"), "utf8"));
+    assert.equal(storedInvites.invites[0].id, invite.token);
+    assert.equal(storedInvites.invites[0].useCount, 2);
+    assert.deepEqual(
+      storedInvites.invites[0].acceptedUsers.map((user) => user.username).sort(),
+      accounts.map((account) => account.username).sort(),
     );
-    assert.equal(lookup.status, 200);
-    assert.equal(lookup.body.matchedBy, "shortcutChoice");
-    assert.equal(lookup.body.car.vin, LONG_TITLE_CAR.vin);
   } finally {
     await stopTestServer(harness);
   }
@@ -1410,22 +1267,34 @@ async function requestSignup(baseUrl, body) {
   };
 }
 
+async function createInvite(harness) {
+  const response = await fetch(`${harness.baseUrl}/admin/invites`, {
+    method: "POST",
+    headers: { Cookie: harness.cookie },
+  });
+  const body = await response.text();
+  assert.equal(response.status, 200);
+  assert.match(response.url, /\/admin\/users\?/);
+  assertNoStoreHeaders(response);
+  const token = body.match(/\/signup\?invite=([A-Za-z0-9_-]+)/)?.[1] || "";
+  assert.ok(token, body);
+  return {
+    token,
+    body,
+  };
+}
+
 async function createApprovedAccount(harness, account) {
+  const invite = await createInvite(harness);
   const signup = await requestSignup(harness.baseUrl, {
+    invite: invite.token,
     displayName: account.displayName,
     username: account.username,
     password: account.password,
     confirmPassword: account.password,
   });
   assert.equal(signup.status, 200);
-  assert.match(signup.body, /CarPostClub admin needs to approve/i);
-
-  const approved = await fetch(`${harness.baseUrl}/admin/users/${encodeURIComponent(account.username)}/approve`, {
-    method: "POST",
-    headers: { Cookie: harness.cookie },
-    redirect: "manual",
-  });
-  assert.equal(approved.status, 303);
+  assert.match(signup.body, /Account created\. You can sign in now/i);
 
   return {
     ...account,
@@ -1577,25 +1446,6 @@ async function writePushSubscriptions(harness, subscriptions) {
   await fs.writeFile(storePath, `${JSON.stringify({ subscriptions }, null, 2)}\n`);
 }
 
-async function readShortcutTokens(harness) {
-  const storePath = path.join(harness.tempRoot, "shortcut-tokens.json");
-  const raw = await fs.readFile(storePath, "utf8").catch(() => "{\"tokens\":[]}");
-  const store = JSON.parse(raw);
-  const tokens = Array.isArray(store) ? store : store.tokens;
-  return Array.isArray(tokens) ? tokens : [];
-}
-
-async function writeShortcutTokens(harness, tokens) {
-  const storePath = path.join(harness.tempRoot, "shortcut-tokens.json");
-  await fs.writeFile(storePath, `${JSON.stringify({ tokens }, null, 2)}\n`);
-}
-
-function shortcutTokenHash(token) {
-  return crypto.createHash("sha256")
-    .update(`carpostclub-shortcut-token:${token}`)
-    .digest("base64url");
-}
-
 function assertNoStoreHeaders(response) {
   assert.equal(response.headers.get("cache-control"), "private, no-store");
   assert.equal(response.headers.get("pragma"), "no-cache");
@@ -1622,27 +1472,6 @@ async function fetchJson(url, options = {}) {
   return {
     status: response.status,
     body: await response.json(),
-  };
-}
-
-function shortcutAuthHeaders(username = TEST_USERNAME, password = TEST_PASSWORD) {
-  return {
-    Accept: "application/json",
-    Authorization: `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`,
-  };
-}
-
-function shortcutBearerHeaders(token) {
-  return {
-    Accept: "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-}
-
-function shortcutBearerCredentialHeaders(value) {
-  return {
-    Accept: "application/json",
-    Authorization: `Bearer ${value}`,
   };
 }
 

@@ -1,12 +1,14 @@
+const initialPageMode = pageModeFromPath(window.location.pathname);
+
 const state = {
+  page: initialPageMode,
   dealerships: [],
   inventoryTypes: [],
   cars: [],
   photos: [],
+  albums: [],
+  albumDetails: {},
   activeAlbum: null,
-  marketplaceDraft: null,
-  marketplaceLoading: false,
-  marketplaceRequestId: 0,
   chatMessages: [],
   chatOpen: false,
   chatUnread: 0,
@@ -18,12 +20,6 @@ const state = {
   pushPublicKey: "",
   pushSubscription: null,
   pushBusy: false,
-  shortcutPanelOpen: false,
-  shortcutTokens: [],
-  shortcutLoading: false,
-  shortcutBusy: false,
-  shortcutSecret: "",
-  shortcutDownloadUrl: "/shortcuts/upload-to-carpostclub-pick-vehicle.shortcut",
   selectedDealershipId: safeStorageGet("carpostclub.selectedDealershipId", "15"),
   selectedInventoryTypeId: safeStorageGet("carpostclub.selectedInventoryTypeId", "2"),
   selectedMake: safeStorageGet("carpostclub.selectedMake"),
@@ -31,8 +27,9 @@ const state = {
   selectedVin: safeStorageGet("carpostclub.selectedVin"),
   carSearch: safeStorageGet("carpostclub.carSearch"),
   initialOpenAlbum: false,
-  initialShortcutUploadComplete: false,
-  galleryExpanded: false,
+  expandedAlbumId: "",
+  albumsLoading: false,
+  inventoryFetchedAt: "",
   failedUploadFiles: [],
   failedUploadMessage: "",
   manualFormOpen: false,
@@ -71,7 +68,6 @@ const hapticSelector = [
   "input[type='file']:not(:disabled)",
   ".source-mode-card:not(:disabled)",
   ".drop-zone:not([aria-disabled='true'])",
-  ".gallery-summary:not([hidden])",
 ].join(",");
 const hapticThrottleMs = 60;
 const hapticCssResetMs = 140;
@@ -80,11 +76,12 @@ let lastHapticAt = 0;
 let hapticCssTimer = 0;
 
 const els = {
-  activeCarLink: document.querySelector("#activeCarLink"),
-  activeCarMeta: document.querySelector("#activeCarMeta"),
-  activeCarName: document.querySelector("#activeCarName"),
   addManualCarButton: document.querySelector("#addManualCarButton"),
+  albumCount: document.querySelector("#albumCount"),
+  albumEmpty: document.querySelector("#albumEmpty"),
+  albumList: document.querySelector("#albumList"),
   adminUsersLink: document.querySelector("#adminUsersLink"),
+  appShell: document.querySelector(".app-shell"),
   cameraButton: document.querySelector("#cameraButton"),
   cameraInput: document.querySelector("#cameraInput"),
   carCount: document.querySelector("#carCount"),
@@ -100,23 +97,11 @@ const els = {
   chatToggle: document.querySelector("#chatToggle"),
   chatUnread: document.querySelector("#chatUnread"),
   dealershipSelect: document.querySelector("#dealershipSelect"),
-  deleteAllButton: document.querySelector("#deleteAllButton"),
-  downloadAllButton: document.querySelector("#downloadAllButton"),
   dropZone: document.querySelector("#dropZone"),
-  emptyGallery: document.querySelector("#emptyGallery"),
   fileInput: document.querySelector("#fileInput"),
-  gallery: document.querySelector("#gallery"),
-  gallerySummary: document.querySelector("#gallerySummary"),
-  galleryToggleButton: document.querySelector("#galleryToggleButton"),
   installButton: document.querySelector("#installButton"),
   inventoryTypeSelect: document.querySelector("#inventoryTypeSelect"),
   logoutForm: document.querySelector("#logoutForm"),
-  marketplaceCopyButton: document.querySelector("#marketplaceCopyButton"),
-  marketplaceDescription: document.querySelector("#marketplaceDescription"),
-  marketplaceFields: document.querySelector("#marketplaceFields"),
-  marketplacePanel: document.querySelector("#marketplacePanel"),
-  marketplaceRegenerateButton: document.querySelector("#marketplaceRegenerateButton"),
-  marketplaceStatus: document.querySelector("#marketplaceStatus"),
   makeFilterSelect: document.querySelector("#makeFilterSelect"),
   manualBodyStyle: document.querySelector("#manualBodyStyle"),
   manualCarForm: document.querySelector("#manualCarForm"),
@@ -139,22 +124,12 @@ const els = {
   oregansSourceButton: document.querySelector("#oregansSourceButton"),
   pickerPanel: document.querySelector(".picker-panel"),
   cancelManualCarButton: document.querySelector("#cancelManualCarButton"),
-  photoCount: document.querySelector("#photoCount"),
   pickerSubhead: document.querySelector("#pickerSubhead"),
   notificationButton: document.querySelector("#notificationButton"),
+  galleryPageLink: document.querySelector("#galleryPageLink"),
+  pageEyebrow: document.querySelector("#pageEyebrow"),
+  pageTitle: document.querySelector("#pageTitle"),
   refreshButton: document.querySelector("#refreshButton"),
-  shortcutButton: document.querySelector("#shortcutButton"),
-  shortcutClose: document.querySelector("#shortcutClose"),
-  shortcutCopyButton: document.querySelector("#shortcutCopyButton"),
-  shortcutCreateButton: document.querySelector("#shortcutCreateButton"),
-  shortcutDownloadLink: document.querySelector("#shortcutDownloadLink"),
-  shortcutPanel: document.querySelector("#shortcutPanel"),
-  shortcutRefreshButton: document.querySelector("#shortcutRefreshButton"),
-  shortcutSecret: document.querySelector("#shortcutSecret"),
-  shortcutTokenForm: document.querySelector("#shortcutTokenForm"),
-  shortcutTokenList: document.querySelector("#shortcutTokenList"),
-  shortcutTokenName: document.querySelector("#shortcutTokenName"),
-  shortcutTokenValue: document.querySelector("#shortcutTokenValue"),
   sourceLink: document.querySelector("#sourceLink"),
   statusBar: document.querySelector("#statusBar"),
   uploadHint: document.querySelector("#uploadHint"),
@@ -162,17 +137,18 @@ const els = {
   uploadProgressShell: document.querySelector("#uploadProgressShell"),
   uploadRecovery: document.querySelector("#uploadRecovery"),
   uploadRecoveryMessage: document.querySelector("#uploadRecoveryMessage"),
+  uploadPageLink: document.querySelector("#uploadPageLink"),
   uploadState: document.querySelector("#uploadState"),
   retryUploadButton: document.querySelector("#retryUploadButton"),
   clearUploadButton: document.querySelector("#clearUploadButton"),
   videoButton: document.querySelector("#videoButton"),
   videoInput: document.querySelector("#videoInput"),
-  photoTemplate: document.querySelector("#photoTemplate"),
 };
 
 init().catch((error) => showError(error));
 
 async function init() {
+  applyPageMode();
   bindEvents();
   loadCurrentUser().catch(() => {});
   initChat().catch((error) => showError(error));
@@ -184,6 +160,27 @@ async function init() {
   applyInitialSelectionFromUrl();
   await loadInventoryFilters();
   await loadCars({ keepSelectedCar: true });
+  await loadAlbums();
+}
+
+function pageModeFromPath(pathname) {
+  return normalizePathname(pathname) === "/gallery" ? "gallery" : "upload";
+}
+
+function normalizePathname(pathname) {
+  const normalized = String(pathname || "/").replace(/\/+$/, "");
+  return normalized || "/";
+}
+
+function applyPageMode() {
+  const galleryPage = state.page === "gallery";
+  els.appShell.classList.toggle("is-gallery-page", galleryPage);
+  els.appShell.classList.toggle("is-upload-page", !galleryPage);
+  if (els.galleryPageLink) els.galleryPageLink.hidden = galleryPage;
+  if (els.uploadPageLink) els.uploadPageLink.hidden = !galleryPage;
+  if (els.pageEyebrow) els.pageEyebrow.textContent = galleryPage ? "CarPostClub / Gallery" : "CarPostClub / Media";
+  if (els.pageTitle) els.pageTitle.textContent = galleryPage ? "Media gallery" : "Vehicle media intake";
+  document.title = galleryPage ? "Media Gallery | CarPostClub" : "CarPostClub";
 }
 
 async function loadCurrentUser() {
@@ -246,7 +243,6 @@ function bindEvents() {
     persistSelection();
     renderCarOptions();
     renderActiveCar();
-    renderGallery();
   });
 
   els.modelFilterSelect.addEventListener("change", () => {
@@ -256,7 +252,6 @@ function bindEvents() {
     persistSelection();
     renderCarOptions();
     renderActiveCar();
-    renderGallery();
   });
 
   els.carSelect.addEventListener("change", () => {
@@ -266,7 +261,6 @@ function bindEvents() {
       clearSelectedCarSelection();
       persistSelection();
       renderActiveCar();
-      renderGallery();
       return;
     }
     selectCar(vin).catch((error) => showError(error));
@@ -280,7 +274,7 @@ function bindEvents() {
 
   els.refreshButton.addEventListener("click", () => {
     haptic("tap");
-    loadCars({ keepSelectedCar: true, forceAlbumRefresh: true }).catch((error) => showError(error));
+    refreshInventoryAndAlbums().catch((error) => showError(error));
   });
 
   els.addManualCarButton.addEventListener("click", () => {
@@ -300,25 +294,7 @@ function bindEvents() {
     createManualCar(event).catch((error) => showError(error));
   });
 
-  els.downloadAllButton.addEventListener("click", (event) => {
-    if (!state.activeAlbum?.id || !state.photos.length) event.preventDefault();
-    else haptic("tap");
-  });
-
-  els.deleteAllButton.addEventListener("click", () => {
-    haptic("warning");
-    deleteAllPhotos().catch((error) => showError(error));
-  });
-
-  els.galleryToggleButton.addEventListener("click", () => {
-    haptic("tap");
-    setGalleryExpanded(!state.galleryExpanded);
-  });
-
-  els.gallerySummary.addEventListener("click", () => {
-    haptic("tap");
-    setGalleryExpanded(true);
-  });
+  els.albumList.addEventListener("click", handleAlbumListClick);
 
   els.retryUploadButton.addEventListener("click", () => {
     uploadFiles(state.failedUploadFiles).catch((error) => showError(error));
@@ -335,38 +311,10 @@ function bindEvents() {
     renderActiveCar();
   });
 
-  els.marketplaceCopyButton.addEventListener("click", () => {
-    haptic("tap");
-    copyMarketplaceDraft().catch((error) => showError(error));
-  });
-
-  els.marketplaceRegenerateButton.addEventListener("click", () => {
-    haptic("tap");
-    regenerateMarketplaceDraft().catch((error) => showError(error));
-  });
-
   els.logoutForm?.addEventListener("submit", handleLogoutSubmit);
 
   els.installButton?.addEventListener("click", installPwa);
   els.notificationButton?.addEventListener("click", togglePushNotifications);
-  els.shortcutButton?.addEventListener("click", () => setShortcutPanelOpen(!state.shortcutPanelOpen, { feedback: true }));
-  els.shortcutClose?.addEventListener("click", () => setShortcutPanelOpen(false, { feedback: true }));
-  els.shortcutRefreshButton?.addEventListener("click", () => {
-    haptic("tap");
-    loadShortcutTokens().catch((error) => showError(error));
-  });
-  els.shortcutTokenForm?.addEventListener("submit", (event) => {
-    createShortcutToken(event).catch((error) => showError(error));
-  });
-  els.shortcutCopyButton?.addEventListener("click", () => {
-    haptic("tap");
-    copyShortcutToken().catch((error) => showError(error));
-  });
-  els.shortcutTokenList?.addEventListener("click", (event) => {
-    const button = event.target.closest?.("button[data-shortcut-token-id]");
-    if (!button) return;
-    revokeShortcutToken(button.dataset.shortcutTokenId).catch((error) => showError(error));
-  });
 
   window.addEventListener("popstate", () => {
     const shouldOpenChat = new URLSearchParams(window.location.search).get("openChat") === "1";
@@ -689,194 +637,7 @@ function applyInitialSelectionFromUrl() {
     state.carSearch = "";
     safeStorageRemove("carpostclub.carSearch");
   }
-  state.initialOpenAlbum = params.get("openAlbum") === "1" || params.get("shortcutUpload") === "complete";
-  state.initialShortcutUploadComplete = params.get("shortcutUpload") === "complete";
-}
-
-function setShortcutPanelOpen(isOpen, { feedback = false } = {}) {
-  if (!els.shortcutPanel) return;
-  if (feedback && Boolean(isOpen) !== state.shortcutPanelOpen) haptic("select");
-  if (isOpen && state.chatOpen) setChatOpen(false);
-  state.shortcutPanelOpen = Boolean(isOpen);
-  els.shortcutPanel.hidden = !state.shortcutPanelOpen;
-  els.shortcutPanel.classList.toggle("is-open", state.shortcutPanelOpen);
-  document.body.classList.toggle("shortcut-view-active", state.shortcutPanelOpen);
-  els.shortcutPanel.setAttribute("aria-hidden", String(!state.shortcutPanelOpen));
-  els.shortcutButton?.setAttribute("aria-expanded", String(state.shortcutPanelOpen));
-  if (state.shortcutPanelOpen) {
-    renderShortcutPanel();
-    loadShortcutTokens().catch((error) => showError(error));
-    window.setTimeout(() => els.shortcutDownloadLink?.focus(), 0);
-  }
-}
-
-async function loadShortcutTokens() {
-  if (state.shortcutLoading) return;
-  state.shortcutLoading = true;
-  renderShortcutPanel();
-  try {
-    const response = await apiJson("/api/shortcut/tokens");
-    state.shortcutTokens = Array.isArray(response.tokens) ? response.tokens : [];
-    state.shortcutDownloadUrl = response.shortcutDownloadUrl || state.shortcutDownloadUrl;
-  } finally {
-    state.shortcutLoading = false;
-    renderShortcutPanel();
-  }
-}
-
-async function createShortcutToken(event) {
-  event.preventDefault();
-  if (state.shortcutBusy) return;
-  haptic("start");
-  state.shortcutBusy = true;
-  state.shortcutSecret = "";
-  renderShortcutPanel();
-
-  try {
-    const response = await apiJson("/api/shortcut/tokens", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: els.shortcutTokenName?.value || "" }),
-    });
-    state.shortcutSecret = response.token || "";
-    if (response.record) {
-      state.shortcutTokens = [
-        response.record,
-        ...state.shortcutTokens.filter((token) => token.id !== response.record.id),
-      ];
-    }
-    state.shortcutDownloadUrl = response.shortcutDownloadUrl || state.shortcutDownloadUrl;
-    if (els.shortcutTokenName) els.shortcutTokenName.value = "";
-    renderShortcutPanel();
-    haptic("success");
-    showStatus("Shortcut token created.");
-  } finally {
-    state.shortcutBusy = false;
-    renderShortcutPanel();
-  }
-}
-
-async function copyShortcutToken() {
-  const token = state.shortcutSecret || els.shortcutTokenValue?.value || "";
-  if (!token) return;
-  await copyTextToClipboard(token);
-  haptic("success");
-  showStatus("Shortcut token copied.");
-}
-
-async function revokeShortcutToken(tokenId) {
-  if (!tokenId || state.shortcutBusy) return;
-  const token = state.shortcutTokens.find((candidate) => candidate.id === tokenId);
-  const label = token?.name || "this token";
-  const confirmed = window.confirm(`Revoke ${label}?`);
-  if (!confirmed) return;
-
-  haptic("warning");
-  state.shortcutBusy = true;
-  renderShortcutPanel();
-  try {
-    await apiJson(`/api/shortcut/tokens/${encodeURIComponent(tokenId)}`, {
-      method: "DELETE",
-    });
-    await loadShortcutTokens();
-    haptic("success");
-    showStatus("Shortcut token revoked.");
-  } finally {
-    state.shortcutBusy = false;
-    renderShortcutPanel();
-  }
-}
-
-function renderShortcutPanel() {
-  if (!els.shortcutPanel) return;
-  if (els.shortcutCreateButton) {
-    els.shortcutCreateButton.disabled = state.shortcutBusy;
-  }
-  if (els.shortcutRefreshButton) {
-    els.shortcutRefreshButton.disabled = state.shortcutLoading || state.shortcutBusy;
-  }
-  if (els.shortcutDownloadLink) {
-    els.shortcutDownloadLink.href = state.shortcutDownloadUrl;
-    els.shortcutDownloadLink.download = "Upload to CarPostClub Pick Vehicle.shortcut";
-  }
-  if (els.shortcutSecret) {
-    els.shortcutSecret.hidden = !state.shortcutSecret;
-  }
-  if (els.shortcutTokenValue) {
-    els.shortcutTokenValue.value = state.shortcutSecret;
-  }
-  renderShortcutTokenList();
-}
-
-function renderShortcutTokenList() {
-  if (!els.shortcutTokenList) return;
-  if (state.shortcutLoading) {
-    const item = document.createElement("div");
-    item.className = "shortcut-token-empty";
-    item.textContent = "Loading tokens";
-    els.shortcutTokenList.replaceChildren(item);
-    return;
-  }
-
-  if (!state.shortcutTokens.length) {
-    const item = document.createElement("div");
-    item.className = "shortcut-token-empty";
-    item.textContent = "No device tokens";
-    els.shortcutTokenList.replaceChildren(item);
-    return;
-  }
-
-  els.shortcutTokenList.replaceChildren(...state.shortcutTokens.map((token) => {
-    const item = document.createElement("article");
-    item.className = "shortcut-token-item";
-    item.classList.toggle("is-revoked", token.status === "revoked");
-
-    const copy = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = token.name || "Photos Shortcut";
-    const meta = document.createElement("span");
-    meta.textContent = shortcutTokenMeta(token);
-    copy.append(title, meta);
-    item.append(copy);
-
-    if (token.status !== "revoked") {
-      const button = document.createElement("button");
-      button.className = "icon-button danger";
-      button.type = "button";
-      button.dataset.shortcutTokenId = token.id;
-      button.setAttribute("aria-label", `Revoke ${title.textContent}`);
-      button.title = "Revoke";
-      button.disabled = state.shortcutBusy;
-      button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M3 6h18"/>
-        <path d="M8 6V4h8v2"/>
-        <path d="M19 6l-1 14H6L5 6"/>
-        <path d="M10 11v5"/>
-        <path d="M14 11v5"/>
-      </svg>`;
-      item.append(button);
-    }
-
-    return item;
-  }));
-}
-
-function shortcutTokenMeta(token) {
-  if (token.status === "revoked") {
-    return `Revoked ${formatShortcutTokenTime(token.revokedAt)}`;
-  }
-  const lastUsed = token.lastUsedAt ? `Last used ${formatShortcutTokenTime(token.lastUsedAt)}` : "Not used yet";
-  return `${lastUsed} · Created ${formatShortcutTokenTime(token.createdAt)}`;
-}
-
-function formatShortcutTokenTime(value) {
-  if (!Number.isFinite(Date.parse(value))) return "unknown";
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(value));
+  state.initialOpenAlbum = params.get("openAlbum") === "1";
 }
 
 function urlBase64ToUint8Array(value) {
@@ -955,12 +716,16 @@ function resumeChatStream() {
 
 function setChatOpen(isOpen, { syncUrl = true, feedback = false } = {}) {
   if (feedback && Boolean(isOpen) !== state.chatOpen) haptic("select");
-  if (isOpen && state.shortcutPanelOpen) setShortcutPanelOpen(false);
   state.chatOpen = Boolean(isOpen);
   els.chatPanel.hidden = !state.chatOpen;
   els.chatPanel.classList.toggle("is-open", state.chatOpen);
   document.body.classList.toggle("chat-view-active", state.chatOpen);
   els.chatPanel.setAttribute("aria-hidden", String(!state.chatOpen));
+  if (els.appShell) {
+    els.appShell.inert = state.chatOpen;
+    els.appShell.toggleAttribute("inert", state.chatOpen);
+    els.appShell.setAttribute("aria-hidden", String(state.chatOpen));
+  }
   els.chatToggle.setAttribute("aria-expanded", String(state.chatOpen));
   els.chatToggle.setAttribute("aria-label", state.chatOpen ? "Close chat" : "Open chat");
   if (syncUrl) syncChatUrl(state.chatOpen);
@@ -1160,6 +925,7 @@ function renderFilterOptions() {
   });
   els.inventoryTypeSelect.replaceChildren(...inventoryTypeOptions.map((option) => option.cloneNode(true)));
   els.manualInventoryTypeSelect.replaceChildren(...inventoryTypeOptions.map((option) => option.cloneNode(true)));
+  els.inventoryTypeSelect.value = state.selectedInventoryTypeId;
   els.manualInventoryTypeSelect.value = state.selectedInventoryTypeId;
 
   const dealershipOptions = state.dealerships.map((dealership) => {
@@ -1171,10 +937,12 @@ function renderFilterOptions() {
   });
   els.dealershipSelect.replaceChildren(...dealershipOptions.map((option) => option.cloneNode(true)));
   els.manualDealershipSelect.replaceChildren(...dealershipOptions.map((option) => option.cloneNode(true)));
+  els.dealershipSelect.value = state.selectedDealershipId;
   els.manualDealershipSelect.value = state.selectedDealershipId;
 }
 
 function setManualCarFormOpen(isOpen, { feedback = false } = {}) {
+  const wasOpen = state.manualFormOpen;
   if (feedback && Boolean(isOpen) !== state.manualFormOpen) haptic("select");
   state.manualFormOpen = Boolean(isOpen);
   els.manualCarForm.hidden = !state.manualFormOpen;
@@ -1185,15 +953,35 @@ function setManualCarFormOpen(isOpen, { feedback = false } = {}) {
   els.oregansSourceButton.setAttribute("aria-pressed", String(!state.manualFormOpen));
   els.pickerSubhead.textContent = state.manualFormOpen
     ? "Enter the vehicle details before uploading media."
-    : "Choose from O'Regan's inventory.";
+    : inventoryFreshnessLabel();
   if (!state.manualFormOpen) {
     els.manualCarForm.reset();
     return;
+  }
+  if (!wasOpen) {
+    state.selectedMake = "";
+    state.selectedModel = "";
+    state.carSearch = "";
+    clearSelectedCarSelection();
+    persistSelection();
+    renderCarOptions();
+    renderActiveCar();
   }
   els.manualInventoryTypeSelect.value = state.selectedInventoryTypeId;
   els.manualDealershipSelect.value = state.selectedDealershipId;
   els.manualYear.value = new Date().getFullYear();
   window.requestAnimationFrame(() => els.manualStockNumber.focus());
+}
+
+function renderInventoryFreshness() {
+  if (state.manualFormOpen) return;
+  els.pickerSubhead.textContent = inventoryFreshnessLabel();
+}
+
+function inventoryFreshnessLabel() {
+  return state.inventoryFetchedAt
+    ? `O'Regan's inventory refreshed ${formatDate(state.inventoryFetchedAt)}.`
+    : "Choose from O'Regan's inventory.";
 }
 
 async function createManualCar(event) {
@@ -1215,11 +1003,18 @@ async function createManualCar(event) {
     setManualCarFormOpen(false);
     renderFilterOptions();
     await loadCars({ keepSelectedCar: true, forceAlbumRefresh: true });
+    await loadAlbums();
     haptic("success");
     showStatus(`Added ${car.stockNumber || car.title}.`);
   } finally {
     submitButton.disabled = false;
   }
+}
+
+async function refreshInventoryAndAlbums() {
+  await loadCars({ keepSelectedCar: true, forceAlbumRefresh: true });
+  await loadAlbums();
+  showStatus("Inventory and packages refreshed.");
 }
 
 async function loadCars({ keepSelectedCar = false, forceAlbumRefresh = false } = {}) {
@@ -1231,6 +1026,7 @@ async function loadCars({ keepSelectedCar = false, forceAlbumRefresh = false } =
     });
     const response = await apiJson(`/api/inventory/cars?${params}`);
     state.cars = response.cars;
+    state.inventoryFetchedAt = response.fetchedAt || "";
     syncVehicleFiltersWithInventory({ keepSelectedCar });
     const selected = selectedCar();
     if (!keepSelectedCar || !selected || !carMatchesVehicleFilters(selected)) clearSelectedCarSelection();
@@ -1239,22 +1035,29 @@ async function loadCars({ keepSelectedCar = false, forceAlbumRefresh = false } =
     await loadSelectedCarAlbum({ force: forceAlbumRefresh });
     applyInitialAlbumView();
     renderActiveCar();
-    renderGallery();
+    renderInventoryFreshness();
   } finally {
     setSelectorBusy(false);
   }
 }
 
+async function loadAlbums() {
+  state.albumsLoading = true;
+  renderAlbumList();
+  try {
+    const response = await apiJson("/api/albums");
+    state.albums = Array.isArray(response.albums) ? response.albums : [];
+    renderAlbumList();
+  } finally {
+    state.albumsLoading = false;
+    renderAlbumList();
+  }
+}
+
 function applyInitialAlbumView() {
   if (!state.initialOpenAlbum) return;
-  const car = selectedCar();
-  if (!car) return;
-  state.galleryExpanded = state.photos.length > 0;
-  if (state.initialShortcutUploadComplete) {
-    showStatus(`Shortcut upload saved to ${car.stockNumber || carInventoryKey(car)}.`);
-  }
+  if (state.activeAlbum?.id) state.expandedAlbumId = state.activeAlbum.id;
   state.initialOpenAlbum = false;
-  state.initialShortcutUploadComplete = false;
   clearInitialSelectionUrl();
 }
 
@@ -1314,7 +1117,6 @@ async function selectCar(inventoryKey) {
   renderCarOptions();
   await loadSelectedCarAlbum({ force: true });
   renderActiveCar();
-  renderGallery();
 }
 
 async function loadSelectedCarAlbum({ force = false } = {}) {
@@ -1322,288 +1124,467 @@ async function loadSelectedCarAlbum({ force = false } = {}) {
   if (!car) {
     state.activeAlbum = null;
     state.photos = [];
-    resetMarketplaceDraft();
     return;
   }
   if (!force && state.activeAlbum?.vehicle?.inventoryKey === carInventoryKey(car)) {
-    if (!state.marketplaceDraft && !state.marketplaceLoading) {
-      loadMarketplaceDraft().catch((error) => showError(error));
-    }
     return;
   }
 
   const params = new URLSearchParams(carRequestPayload(car));
   const response = await apiJson(`/api/vehicle-album?${params}`);
-  state.activeAlbum = response.album;
-  state.photos = response.photos;
-  state.galleryExpanded = false;
-  resetMarketplaceDraft({ keepRequest: true });
-  loadMarketplaceDraft().catch((error) => showError(error));
+  state.activeAlbum = response.album || null;
+  state.photos = Array.isArray(response.photos) ? response.photos : [];
+  if (state.activeAlbum?.id) state.expandedAlbumId = state.activeAlbum.id;
 }
 
 function renderActiveCar() {
   const car = selectedCar();
   const unlocked = Boolean(car) && !state.uploading;
-  els.activeCarMeta.textContent = car
-    ? [car.source === "manual" ? "Manual inventory" : selectedDealership()?.name, car.stockNumber, car.price].filter(Boolean).join(" · ")
-    : "Select dealership and car";
-  els.activeCarName.textContent = car?.title || "Upload is locked";
-  els.uploadHint.textContent = car ? `Media will save to ${car.stockNumber || carInventoryKey(car)}` : "Choose a dealership and car first";
+  els.uploadHint.textContent = car ? "Adds to the selected album tile" : "Choose inventory to create an album tile";
   els.uploadState.textContent = uploadStateLabel(car);
   els.dropZone.disabled = !unlocked;
   els.cameraButton.disabled = !unlocked;
   els.videoButton.disabled = !unlocked;
   els.carSelect.disabled = state.uploading || !state.selectedMake || !filteredCars().length;
-  els.activeCarLink.hidden = !car?.detailUrl;
-  if (car?.detailUrl) els.activeCarLink.href = car.detailUrl;
   renderUploadRecovery();
-  renderMarketplaceDraft();
+  renderAlbumList();
 }
 
-async function loadMarketplaceDraft() {
-  await requestMarketplaceDraft({ regenerate: false });
+function renderAlbumList() {
+  const tiles = albumTiles();
+  els.albumCount.textContent = state.albumsLoading ? "..." : String(tiles.length);
+  els.albumEmpty.hidden = state.albumsLoading || tiles.length > 0;
+  els.albumList.replaceChildren(...tiles.map(renderAlbumCard));
 }
 
-async function regenerateMarketplaceDraft() {
-  await requestMarketplaceDraft({ regenerate: true });
-  haptic("success");
-  showStatus("Marketplace draft refreshed.");
+function albumTiles() {
+  if (state.page === "gallery") return state.albums;
+
+  const selectedTile = selectedAlbumTile();
+  if (!selectedTile) return state.albums;
+
+  const selectedKey = albumVehicleKey(selectedTile);
+  const savedTiles = state.albums.filter((album) => {
+    if (album.id === selectedTile.id) return false;
+    return !selectedKey || albumVehicleKey(album) !== selectedKey;
+  });
+  return [selectedTile, ...savedTiles];
 }
 
-async function requestMarketplaceDraft({ regenerate = false } = {}) {
+function selectedAlbumTile() {
   const car = selectedCar();
-  if (!car) {
-    resetMarketplaceDraft();
+  if (!car) return null;
+
+  const savedAlbum = state.activeAlbum || albumForCar(car);
+  if (savedAlbum?.id) {
+    return {
+      ...savedAlbum,
+      isSelected: true,
+      mediaCount: state.activeAlbum?.id === savedAlbum.id ? state.photos.length : savedAlbum.mediaCount,
+      vehicle: savedAlbum.vehicle || vehicleFromCar(car),
+    };
+  }
+
+  return {
+    id: selectedAlbumPendingId(car),
+    isPending: true,
+    isSelected: true,
+    name: car.title || "Selected vehicle",
+    coverUrl: "",
+    mediaCount: 0,
+    updatedAt: "",
+    dealership: car.dealership || selectedDealership(),
+    vehicle: vehicleFromCar(car),
+    inventoryStatus: selectedCarInventoryStatus(car),
+  };
+}
+
+function albumForCar(car) {
+  const key = carInventoryKey(car);
+  if (!key) return null;
+  return state.albums.find((album) => albumVehicleKey(album) === key) || null;
+}
+
+function albumVehicleKey(album) {
+  const vehicle = album?.vehicle || {};
+  return vehicle.inventoryKey || vehicle.manualInventoryId || vehicle.vin || "";
+}
+
+function selectedAlbumPendingId(car) {
+  return `selected-${slugifyClient(carInventoryKey(car) || car.stockNumber || car.title)}`;
+}
+
+function vehicleFromCar(car) {
+  return {
+    title: car.title || "",
+    year: car.year || "",
+    make: car.make || "",
+    model: car.model || "",
+    trim: car.trim || "",
+    stockNumber: car.stockNumber || "",
+    vin: car.vin || "",
+    manualInventoryId: car.manualInventoryId || "",
+    inventoryKey: carInventoryKey(car),
+    dealershipId: car.dealership?.id || state.selectedDealershipId,
+    dealershipName: car.dealership?.name || selectedDealership()?.name || "",
+    inventoryTypeId: car.inventoryTypeId || state.selectedInventoryTypeId,
+  };
+}
+
+function selectedCarInventoryStatus(car) {
+  if (car?.source === "manual") return { status: "manual", label: "Manual inventory." };
+  return {
+    status: "active",
+    checkedAt: state.inventoryFetchedAt,
+    label: inventoryFreshnessLabel(),
+  };
+}
+
+function renderAlbumCard(album) {
+  const isOpen = album.isSelected || state.expandedAlbumId === album.id;
+  const article = document.createElement("article");
+  article.className = "album-card";
+  article.classList.toggle("is-open", isOpen);
+  article.classList.toggle("is-selected", Boolean(album.isSelected));
+
+  const summary = document.createElement("button");
+  summary.className = "album-summary-button";
+  summary.type = "button";
+  summary.dataset.albumId = album.id;
+  if (!album.isPending) summary.dataset.action = "toggle-album";
+  summary.setAttribute("aria-expanded", String(isOpen));
+  if (album.isSelected) summary.setAttribute("aria-current", "true");
+
+  const cover = document.createElement("span");
+  cover.className = "album-cover";
+  if (album.coverUrl) {
+    const image = document.createElement("img");
+    image.src = album.coverUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    cover.append(image);
+  } else {
+    cover.textContent = "CP";
+  }
+
+  const copy = document.createElement("span");
+  copy.className = "album-summary-copy";
+  const title = document.createElement("strong");
+  title.textContent = album.name || album.vehicle?.title || "Vehicle package";
+  const meta = document.createElement("span");
+  meta.textContent = [
+    album.isSelected ? "Selected" : "",
+    album.vehicle?.stockNumber || album.inventoryNumber,
+    album.vehicle?.dealershipName || album.dealership?.name,
+    `${album.mediaCount || 0} ${plural(album.mediaCount || 0, "asset")}`,
+    album.updatedAt && `Updated ${formatDate(album.updatedAt)}`,
+  ].filter(Boolean).join(" · ");
+  copy.append(title, meta);
+
+  const status = inventoryStatusBadge(album.inventoryStatus);
+  summary.append(cover, copy, status);
+  article.append(summary);
+
+  if (isOpen) article.append(renderAlbumDetail(album));
+  return article;
+}
+
+function renderAlbumDetail(album) {
+  const detail = document.createElement("div");
+  detail.className = "album-detail";
+  const albumDetails = state.albumDetails[album.id] || {};
+  const photos = album.isSelected && state.activeAlbum?.id === album.id
+    ? state.photos
+    : Array.isArray(albumDetails.photos)
+      ? albumDetails.photos
+      : [];
+  const hasMedia = photos.length > 0 || album.mediaCount > 0;
+  const canUseSavedAlbum = Boolean(album.id && !album.isPending);
+
+  const actions = document.createElement("div");
+  actions.className = "album-detail-actions";
+
+  if (!album.isSelected && canUseSavedAlbum) {
+    const openButton = document.createElement("button");
+    openButton.className = "icon-text-button subtle";
+    openButton.type = "button";
+    openButton.dataset.action = "select-album";
+    openButton.dataset.albumId = album.id;
+    openButton.textContent = state.page === "gallery" ? "Upload" : "Select";
+    actions.append(openButton);
+  }
+
+  const descriptionLink = albumActionLink(album, "Description", `/api/albums/${encodeURIComponent(album.id)}/description.txt`, canUseSavedAlbum && hasMedia);
+  const filesButton = document.createElement("button");
+  filesButton.className = "icon-text-button subtle";
+  filesButton.type = "button";
+  filesButton.dataset.action = "download-album-files";
+  filesButton.dataset.albumId = album.id;
+  filesButton.disabled = !canUseSavedAlbum || !hasMedia;
+  filesButton.textContent = "Files";
+  const packageLink = albumActionLink(album, "Package", `/api/albums/${encodeURIComponent(album.id)}/package`, canUseSavedAlbum && hasMedia);
+  actions.append(descriptionLink, filesButton, packageLink);
+
+  if (canUseSavedAlbum && hasMedia) {
+    const clearButton = document.createElement("button");
+    clearButton.className = "icon-text-button subtle danger";
+    clearButton.type = "button";
+    clearButton.dataset.action = "delete-album-media";
+    clearButton.dataset.albumId = album.id;
+    clearButton.textContent = "Clear media";
+    actions.append(clearButton);
+  }
+
+  const statusLine = document.createElement("p");
+  statusLine.className = "album-status-line";
+  statusLine.textContent = inventoryStatusLabel(album.inventoryStatus);
+
+  const media = document.createElement("div");
+  media.className = "album-media-strip";
+  if (albumDetails.loading) {
+    media.textContent = "Loading media";
+  } else if (!photos.length) {
+    media.textContent = hasMedia ? "Open again to refresh media" : "No media saved";
+  } else {
+    media.replaceChildren(...photos.slice(0, 10).map(renderAlbumMediaThumb));
+  }
+
+  detail.append(actions, statusLine, media);
+  return detail;
+}
+
+function albumActionLink(album, label, href, available) {
+  const link = document.createElement("a");
+  link.className = "icon-text-button subtle";
+  link.href = available ? href : "#";
+  link.dataset.albumId = album.id;
+  link.textContent = label;
+  link.setAttribute("aria-disabled", String(!available));
+  link.classList.toggle("is-disabled", !available);
+  link.tabIndex = available ? 0 : -1;
+  return link;
+}
+
+function renderAlbumMediaThumb(photo) {
+  const item = document.createElement("a");
+  item.className = "album-media-thumb";
+  item.href = photo.url;
+  item.target = "_blank";
+  item.rel = "noreferrer";
+  item.title = `${photo.originalName} · ${photoUploaderLabel(photo)}`;
+
+  if (isVideoMedia(photo)) {
+    const videoLabel = document.createElement("span");
+    videoLabel.textContent = "Video";
+    item.append(videoLabel);
+  } else {
+    const image = document.createElement("img");
+    image.src = photo.thumbnailUrl || photo.url;
+    image.alt = photo.originalName;
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.addEventListener("error", () => {
+      if (image.src !== photo.url) image.src = photo.url;
+    }, { once: true });
+    item.append(image);
+  }
+  return item;
+}
+
+function inventoryStatusBadge(status) {
+  const badge = document.createElement("span");
+  badge.className = "inventory-status-badge";
+  const statusName = status?.status || "unknown";
+  badge.classList.add(`is-${statusName}`);
+  badge.textContent = statusName === "active"
+    ? "Active"
+    : statusName === "missing"
+      ? "No longer active"
+      : statusName === "manual"
+        ? "Manual"
+        : "Unknown";
+  badge.title = inventoryStatusLabel(status);
+  return badge;
+}
+
+function inventoryStatusLabel(status) {
+  if (!status) return "Inventory status unavailable.";
+  if (status.status === "active") {
+    return `Active in O'Regan's inventory as of ${formatDate(status.checkedAt)}.`;
+  }
+  if (status.status === "missing") {
+    return `No longer active in O'Regan's inventory as of ${formatDate(status.checkedAt)}.`;
+  }
+  return status.label || "Inventory status unavailable.";
+}
+
+async function handleAlbumListClick(event) {
+  const disabledLink = event.target.closest?.("a.is-disabled");
+  if (disabledLink) {
+    event.preventDefault();
     return;
   }
 
-  const requestId = state.marketplaceRequestId + 1;
-  state.marketplaceRequestId = requestId;
-  state.marketplaceLoading = true;
-  renderMarketplaceDraft();
+  const target = event.target.closest?.("[data-action]");
+  if (!target) return;
+  const albumId = target.dataset.albumId;
+  if (!albumId) return;
 
   try {
-    const payload = carRequestPayload(car);
-    const response = regenerate
-      ? await apiJson("/api/marketplace-draft/regenerate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      })
-      : await apiJson(`/api/marketplace-draft?${new URLSearchParams(payload)}`);
-
-    if (state.marketplaceRequestId !== requestId) return;
-    state.marketplaceDraft = response.draft;
-  } finally {
-    if (state.marketplaceRequestId === requestId) {
-      state.marketplaceLoading = false;
-      renderMarketplaceDraft();
+    if (target.dataset.action === "toggle-album") {
+      haptic("tap");
+      await toggleAlbum(albumId);
+    } else if (target.dataset.action === "select-album") {
+      haptic("select");
+      await selectAlbumPackage(albumId);
+    } else if (target.dataset.action === "download-album-files") {
+      haptic("tap");
+      const details = await loadAlbumDetails(albumId);
+      const album = albumById(albumId) || details.album;
+      await downloadAlbumFiles(album, details.photos || []);
+    } else if (target.dataset.action === "delete-album-media") {
+      haptic("warning");
+      await deleteAlbumMedia(albumId);
     }
+  } catch (error) {
+    showError(error);
   }
 }
 
-function resetMarketplaceDraft({ keepRequest = false } = {}) {
-  if (!keepRequest) state.marketplaceRequestId += 1;
-  state.marketplaceDraft = null;
-  state.marketplaceLoading = false;
-  renderMarketplaceDraft();
-}
-
-function renderMarketplaceDraft() {
-  const car = selectedCar();
-  els.marketplacePanel.hidden = !car;
-  if (!car) {
-    els.marketplaceStatus.textContent = "Select a car";
-    els.marketplaceFields.replaceChildren();
-    els.marketplaceDescription.value = "";
-    els.marketplaceCopyButton.disabled = true;
-    els.marketplaceRegenerateButton.disabled = true;
+async function toggleAlbum(albumId) {
+  if (state.expandedAlbumId === albumId) {
+    state.expandedAlbumId = "";
+    renderAlbumList();
     return;
   }
 
-  const draft = state.marketplaceDraft;
-  els.marketplaceStatus.textContent = state.marketplaceLoading
-    ? "Loading"
-    : draft
-      ? [draft.ready ? "Ready" : "Needs review", marketplaceSourceLabel(draft.descriptionSource)].filter(Boolean).join(" - ")
-      : "Waiting";
-  els.marketplaceCopyButton.disabled = state.marketplaceLoading || !draft?.copyText;
-  els.marketplaceRegenerateButton.disabled = state.marketplaceLoading;
-  els.marketplaceDescription.value = draft?.description || "";
-  els.marketplaceFields.replaceChildren(...marketplaceFieldRows(draft, car));
+  state.expandedAlbumId = albumId;
+  renderAlbumList();
+  await loadAlbumDetails(albumId);
+  renderAlbumList();
 }
 
-function marketplaceFieldRows(draft, car) {
-  const fields = draft?.fields || {};
-  const rows = [
-    ["Title", draft?.title || car.title],
-    ["Location", fields.location],
-    ["Year", fields.year || car.year],
-    ["Make", fields.make || car.make],
-    ["Model", fields.model || car.model],
-    ["Mileage", fields.mileage ? `${Number(fields.mileage).toLocaleString("en-CA")} km` : car.odometer],
-    ["Price", fields.price ? `$${Number(fields.price).toLocaleString("en-CA")}` : car.price],
-    ["Body style", fields.bodyStyle || car.bodyStyle],
-    ["Exterior", fields.exteriorColor || car.exteriorColor],
-    ["Interior", fields.interiorColor || car.interiorColor],
-    ["Condition", fields.vehicleCondition],
-    ["Fuel", fields.fuelType],
-    ["Transmission", fields.transmission],
+async function loadAlbumDetails(albumId, { force = false } = {}) {
+  const existing = state.albumDetails[albumId] || {};
+  if (!force && Array.isArray(existing.photos)) return existing;
+
+  state.albumDetails[albumId] = { ...existing, loading: true };
+  renderAlbumList();
+  try {
+    const response = await apiJson(`/api/albums/${encodeURIComponent(albumId)}/photos`);
+    state.albumDetails[albumId] = {
+      ...state.albumDetails[albumId],
+      album: response.album,
+      photos: response.photos || [],
+      loading: false,
+    };
+    updateAlbumSummary(response.album);
+    return state.albumDetails[albumId];
+  } catch (error) {
+    state.albumDetails[albumId] = { ...existing, loading: false };
+    throw error;
+  }
+}
+
+function updateAlbumSummary(album) {
+  if (!album?.id) return;
+  const index = state.albums.findIndex((candidate) => candidate.id === album.id);
+  if (index >= 0) state.albums.splice(index, 1, album);
+}
+
+async function selectAlbumPackage(albumId) {
+  const album = albumById(albumId);
+  if (!album?.vehicle) return;
+  if (album.inventoryStatus?.active === false) {
+    showStatus(album.inventoryStatus.label);
+    return;
+  }
+
+  if (state.page === "gallery") {
+    window.location.href = uploadPageUrlForAlbum(album);
+    return;
+  }
+
+  state.selectedDealershipId = album.vehicle.dealershipId || album.dealership?.id || state.selectedDealershipId;
+  state.selectedInventoryTypeId = album.vehicle.inventoryTypeId || album.inventoryTypeId || state.selectedInventoryTypeId;
+  state.selectedMake = album.vehicle.make || "";
+  state.selectedModel = album.vehicle.model || "";
+  state.selectedVin = album.vehicle.inventoryKey || album.vehicle.manualInventoryId || album.vehicle.vin || "";
+  persistSelection();
+  renderFilterOptions();
+  await loadCars({ keepSelectedCar: true, forceAlbumRefresh: true });
+  if (selectedCar()) {
+    if (state.activeAlbum?.id) state.expandedAlbumId = state.activeAlbum.id;
+    renderAlbumList();
+    showStatus(`Opened ${album.vehicle.stockNumber || album.name}.`);
+  } else {
+    showStatus("Package is saved, but it is not selectable in the current inventory feed.");
+  }
+}
+
+function uploadPageUrlForAlbum(album) {
+  const params = new URLSearchParams();
+  const vehicle = album?.vehicle || {};
+  const dealershipId = vehicle.dealershipId || album?.dealership?.id || "";
+  const inventoryTypeId = vehicle.inventoryTypeId || album?.inventoryTypeId || "";
+  const inventoryKey = vehicle.inventoryKey || vehicle.manualInventoryId || vehicle.vin || "";
+
+  if (dealershipId) params.set("dealershipId", dealershipId);
+  if (inventoryTypeId) params.set("inventoryTypeId", inventoryTypeId);
+  if (inventoryKey) params.set("inventoryKey", inventoryKey);
+  params.set("openAlbum", "1");
+
+  const query = params.toString();
+  return query ? `/?${query}` : "/";
+}
+
+async function downloadAlbumFiles(album, photos) {
+  if (!album?.id || !photos.length) return;
+  const downloads = [
+    {
+      href: `/api/albums/${encodeURIComponent(album.id)}/description.txt`,
+      download: `${slugifyClient(album.name || "vehicle")}-marketplace-description.txt`,
+    },
+    ...photos.map((photo) => ({
+      href: photo.downloadUrl || `${photo.url}?download=1`,
+      download: photo.downloadName || photo.originalName || photo.filename,
+    })),
   ];
 
-  return rows.flatMap(([label, value]) => {
-    const term = document.createElement("dt");
-    term.textContent = label;
-    const detail = document.createElement("dd");
-    detail.textContent = value || "Needs review";
-    detail.classList.toggle("needs-review", !value);
-    return [term, detail];
+  downloads.forEach((download, index) => {
+    window.setTimeout(() => triggerFileDownload(download.href, download.download), index * 220);
   });
+  showStatus(`Starting ${downloads.length} downloads.`);
 }
 
-function marketplaceSourceLabel(source) {
-  if (source === "openai-upload") return "Generated";
-  if (source === "template-upload") return "Template";
-  if (source === "not_generated") return "Upload media first";
-  if (source === "unassigned") return "No reserved copy";
-  return "";
+function triggerFileDownload(href, downloadName) {
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = downloadName || "";
+  link.rel = "noreferrer";
+  link.style.display = "none";
+  document.body.append(link);
+  link.click();
+  link.remove();
 }
 
-async function copyMarketplaceDraft() {
-  const draft = state.marketplaceDraft;
-  if (!draft?.copyText) return;
-  await copyTextToClipboard(draft.copyText);
-  haptic("success");
-  showStatus("Marketplace draft copied.");
+function albumById(albumId) {
+  return state.albums.find((album) => album.id === albumId) || state.albumDetails[albumId]?.album || null;
 }
 
-async function copyTextToClipboard(text) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch {
-      // Fall through to the selection-based copy path for older PWA shells.
-    }
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.style.position = "fixed";
-  textarea.style.inset = "0 auto auto 0";
-  textarea.style.width = "1px";
-  textarea.style.height = "1px";
-  textarea.style.opacity = "0";
-  document.body.append(textarea);
-  textarea.focus();
-  textarea.select();
-  const copied = document.execCommand?.("copy");
-  textarea.remove();
-  if (!copied) throw new Error("Copy failed. Select the Marketplace draft and copy it manually.");
-}
-
-function renderGallery() {
-  els.gallery.replaceChildren();
-  const hasCar = Boolean(selectedCar());
-  const hasMedia = hasCar && state.photos.length > 0;
-  els.photoCount.textContent = String(state.photos.length);
-  renderGalleryActions();
-  renderGallerySummary();
-  els.emptyGallery.hidden = hasMedia || !hasCar;
-  els.gallery.classList.toggle("is-collapsed", hasMedia && !state.galleryExpanded);
-  if (!hasCar || !hasMedia || !state.galleryExpanded) return;
-
-  for (const photo of state.photos) {
-    const fragment = els.photoTemplate.content.cloneNode(true);
-    const card = fragment.querySelector(".photo-card");
-    const frame = fragment.querySelector(".media-frame");
-    const title = fragment.querySelector("strong");
-    const details = fragment.querySelector(".media-details");
-    const uploader = fragment.querySelector(".media-uploader");
-    const downloadButton = fragment.querySelector("[data-action='download']");
-    const deleteButton = fragment.querySelector("[data-action='delete']");
-    const isVideo = isVideoMedia(photo);
-
-    if (isVideo) {
-      const video = document.createElement("video");
-      video.src = photo.url;
-      video.controls = true;
-      video.preload = "metadata";
-      video.playsInline = true;
-      video.setAttribute("playsinline", "");
-      frame.append(video);
-    } else {
-      const link = document.createElement("a");
-      link.className = "photo-link";
-      link.href = photo.url;
-      link.target = "_blank";
-      link.rel = "noreferrer";
-      const image = document.createElement("img");
-      image.src = photo.thumbnailUrl || photo.url;
-      image.alt = photo.originalName;
-      image.loading = "lazy";
-      image.decoding = "async";
-      image.addEventListener("error", () => {
-        if (image.src !== photo.url) image.src = photo.url;
-      }, { once: true });
-      link.append(image);
-      frame.append(link);
-    }
-
-    const badge = document.createElement("span");
-    badge.className = "media-kind";
-    badge.textContent = isVideo ? "Video" : "Photo";
-    frame.append(badge);
-    const uploaderBadge = document.createElement("span");
-    uploaderBadge.className = "media-uploader-badge";
-    uploaderBadge.textContent = `By ${photoUploaderLabel(photo)}`;
-    frame.append(uploaderBadge);
-    title.textContent = photo.originalName;
-    details.textContent = `${isVideo ? "Video" : "Photo"} · ${formatBytes(photo.bytes)} · ${formatDate(photo.uploadedAt)}`;
-    uploader.textContent = `Uploaded by ${photoUploaderLabel(photo)}`;
-    downloadButton.href = photo.downloadUrl || `${photo.url}?download=1`;
-    downloadButton.download = photo.downloadName || photo.originalName || photo.filename;
-    downloadButton.setAttribute("aria-label", `Download ${isVideo ? "video" : "photo"} ${photo.originalName}`);
-    downloadButton.title = "Download";
-    deleteButton.setAttribute("aria-label", `Delete ${isVideo ? "video" : "photo"} ${photo.originalName}`);
-    deleteButton.title = "Delete";
-    deleteButton.addEventListener("click", () => deletePhoto(photo, card));
-    els.gallery.append(card);
-  }
-}
-
-function renderGalleryActions() {
-  const hasMedia = Boolean(state.activeAlbum?.id && state.photos.length);
-  els.galleryToggleButton.disabled = !hasMedia;
-  els.galleryToggleButton.querySelector("span").textContent = state.galleryExpanded ? "Collapse" : "Expand";
-  els.galleryToggleButton.setAttribute("aria-expanded", String(state.galleryExpanded && hasMedia));
-  els.downloadAllButton.href = hasMedia
-    ? `/api/albums/${encodeURIComponent(state.activeAlbum.id)}/download`
-    : "#";
-  els.downloadAllButton.classList.toggle("is-disabled", !hasMedia);
-  els.downloadAllButton.setAttribute("aria-disabled", String(!hasMedia));
-  els.downloadAllButton.tabIndex = hasMedia ? 0 : -1;
-  els.deleteAllButton.disabled = !hasMedia;
-}
-
-function renderGallerySummary() {
-  const hasMedia = Boolean(selectedCar() && state.photos.length);
-  els.gallerySummary.hidden = !hasMedia || state.galleryExpanded;
-  if (!hasMedia) return;
-  const count = state.photos.length;
-  els.gallerySummary.querySelector("strong").textContent = `${count} saved ${plural(count, "asset")}`;
-  els.gallerySummary.querySelector("span").textContent = "Expand this media folder to load thumbnails and previews.";
+function slugifyClient(value) {
+  return String(value || "vehicle")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64) || "vehicle";
 }
 
 function photoUploaderLabel(photo) {
   const uploader = photo?.uploadedBy;
   return uploader?.displayName || uploader?.username || "unknown user";
-}
-
-function setGalleryExpanded(isExpanded) {
-  state.galleryExpanded = Boolean(isExpanded);
-  renderGallery();
 }
 
 function uploadStateLabel(car) {
@@ -1672,13 +1653,12 @@ async function uploadFiles(files) {
     state.activeAlbum = response.album;
     state.photos = [...response.photos, ...state.photos];
     await loadSelectedCarAlbum({ force: true });
-    state.galleryExpanded = false;
-    renderGallery();
+    await loadAlbums();
     uploadSucceeded = true;
     triggerUploadConfetti();
     haptic("success");
     showStatus([
-      `Uploaded ${response.count} ${plural(response.count, "file")} to ${car.stockNumber || carInventoryKey(car)}.`,
+      `Uploaded ${response.count} ${plural(response.count, "file")} to the selected album tile.`,
       skippedCount ? `Skipped ${skippedCount} unsupported ${plural(skippedCount, "file")}.` : "",
     ].filter(Boolean).join(" "));
   } catch (error) {
@@ -1732,47 +1712,34 @@ function uploadForm(form) {
   });
 }
 
-async function deletePhoto(photo, card) {
-  haptic("warning");
-  const confirmed = window.confirm(`Are you sure you want to delete ${photo.originalName}? This cannot be undone.`);
-  if (!confirmed) return;
+async function deleteAlbumMedia(albumId) {
+  const details = await loadAlbumDetails(albumId);
+  const album = albumById(albumId) || details.album;
+  const count = details.photos?.length || album?.mediaCount || 0;
+  if (!album?.id || !count) return;
 
-  card.classList.add("is-removing");
-  try {
-    await apiJson(`/api/albums/${encodeURIComponent(photo.albumId)}/photos/${encodeURIComponent(photo.filename)}`, {
-      method: "DELETE",
-    });
-    await loadSelectedCarAlbum({ force: true });
-    renderGallery();
-    haptic("success");
-  } catch (error) {
-    card.classList.remove("is-removing");
-    showError(error);
-  }
-}
-
-async function deleteAllPhotos() {
-  const albumId = state.activeAlbum?.id;
-  const count = state.photos.length;
-  if (!albumId || !count) return;
-
-  const car = selectedCar();
-  const label = car?.stockNumber || car?.vin || "this car";
+  const label = album.vehicle?.stockNumber || album.name || "this album";
   const confirmed = window.confirm(`Are you sure you want to delete all ${count} media ${plural(count, "asset")} for ${label}? This cannot be undone.`);
   if (!confirmed) return;
 
-  els.deleteAllButton.disabled = true;
   try {
     const response = await apiJson(`/api/albums/${encodeURIComponent(albumId)}/media`, {
       method: "DELETE",
     });
-    state.photos = [];
-    await loadSelectedCarAlbum({ force: true });
-    renderGallery();
+    if (state.activeAlbum?.id === albumId) {
+      state.photos = [];
+      await loadSelectedCarAlbum({ force: true });
+    }
+    state.albumDetails[albumId] = {
+      ...state.albumDetails[albumId],
+      photos: [],
+      loading: false,
+    };
+    await loadAlbums();
+    renderAlbumList();
     haptic("success");
     showStatus(`Deleted ${response.deleted ?? count} media ${plural(response.deleted ?? count, "asset")}.`);
   } catch (error) {
-    renderGalleryActions();
     throw error;
   }
 }
@@ -1839,9 +1806,7 @@ function clearSelectedCarSelection() {
   state.selectedVin = "";
   state.activeAlbum = null;
   state.photos = [];
-  state.galleryExpanded = false;
   clearFailedUpload();
-  resetMarketplaceDraft();
 }
 
 function vehicleFilteredCars() {
@@ -1910,7 +1875,7 @@ function persistSelection() {
 function clearInitialSelectionUrl() {
   const url = new URL(window.location.href);
   let changed = false;
-  for (const key of ["dealershipId", "inventoryTypeId", "inventoryKey", "vin", "openAlbum", "shortcutUpload"]) {
+  for (const key of ["dealershipId", "inventoryTypeId", "inventoryKey", "vin", "openAlbum"]) {
     if (!url.searchParams.has(key)) continue;
     url.searchParams.delete(key);
     changed = true;
