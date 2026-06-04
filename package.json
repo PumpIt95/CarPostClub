@@ -7,8 +7,10 @@
   "scripts": {
     "start": "node server.js",
     "build:manifest": "node scripts/build_release_manifest.mjs",
+    "qa:gallery": "node scripts/gallery_visual_qa.mjs",
     "smoke": "node scripts/smoke_test.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1061.0",
@@ -24,5 +26,8 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
   }
 }
