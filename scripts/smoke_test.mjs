@@ -43,6 +43,8 @@ await checkJson("/api/albums", authHeaders, (body) => {
 await checkJson("/api/inventory/dealerships", authHeaders, (body) => {
   assert(body.ok === true, "dealerships ok flag is false");
   assert(Array.isArray(body.dealerships) && body.dealerships.length > 0, "dealerships response did not include dealerships[]");
+  assert(JSON.stringify(body.dealerships.map((dealership) => dealership.id)) === JSON.stringify(["3", "15", "18", "31"]), "dealerships response did not match the upload picklist");
+  assert(body.dealerships.every((dealership) => typeof dealership.logoUrl === "string" && dealership.logoUrl.startsWith("/dealership-logos/")), "dealerships response did not include dealership logo URLs");
   assert(Array.isArray(body.inventoryTypes) && body.inventoryTypes.length > 0, "dealerships response did not include inventoryTypes[]");
 });
 

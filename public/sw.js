@@ -1,6 +1,6 @@
 const APP_ICON = "/icons/carpostclub-icon-192.png";
 const APP_BADGE = "/icons/carpostclub-apple-touch-icon.png";
-const CACHE_VERSION = "carpostclub-pwa-v34";
+const CACHE_VERSION = "carpostclub-pwa-v45";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/offline.html",
@@ -15,6 +15,10 @@ const CORE_ASSETS = [
   "/icons/carpostclub-apple-touch-icon.png",
   "/share-card.png",
   "/upload-monkey.svg",
+  "/dealership-logos/3-nissan.webp",
+  "/dealership-logos/15-kia.webp",
+  "/dealership-logos/18-gm.webp",
+  "/dealership-logos/31-volkswagen.webp",
 ];
 
 self.addEventListener("install", (event) => {
@@ -66,6 +70,8 @@ self.addEventListener("push", (event) => {
       url: payload.url || "/",
       kind: payload.kind || "",
       messageId: payload.messageId || "",
+      albumId: payload.albumId || "",
+      mediaCount: payload.mediaCount || 0,
       author: payload.author || "",
     },
     timestamp: notificationTimestamp(payload.timestamp),
@@ -73,7 +79,10 @@ self.addEventListener("push", (event) => {
     renotify: true,
   };
 
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil(Promise.all([
+    broadcastPushPayload(payload),
+    self.registration.showNotification(title, options),
+  ]));
 });
 
 self.addEventListener("notificationclick", (event) => {
@@ -121,6 +130,21 @@ function notificationActions(payload) {
       title: "Open chat",
     },
   ];
+}
+
+async function broadcastPushPayload(payload) {
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  await Promise.all(windows.map((client) => {
+    try {
+      client.postMessage({
+        type: "carpostclub:push",
+        payload,
+      });
+    } catch {
+      // Window clients can disappear while a push event is being handled.
+    }
+    return null;
+  }));
 }
 
 async function networkFirstNavigation(request) {

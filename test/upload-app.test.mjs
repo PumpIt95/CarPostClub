@@ -60,6 +60,14 @@ const MANUAL_CAR = {
   descriptionPreview: "Heated seats, backup camera, lane keep assist",
 };
 
+function assertCleanMarketplaceDescription(description) {
+  assert.doesNotMatch(description, /\b(?:I(?:'|’)m listing|I am listing|Listing this|Posting this|Sharing the details)\b/i);
+  assert.doesNotMatch(description, /\b(?:body style not specified|interior colou?r is Other|Other interior)\b/i);
+  assert.doesNotMatch(description, /\b(?:Message me|Send me a message)\b/i);
+  assert.ok((description.match(/automatic transmission/gi) || []).length <= 1);
+  assert.ok((description.match(/gasoline/gi) || []).length <= 1);
+}
+
 test("photo uploads require an O'Regan's dealership and car selection", async () => {
   const harness = await startTestServer();
 
@@ -229,7 +237,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260602-pwa-upload-v22/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260604-upload-selection-v43/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -383,7 +391,12 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
 
     const dealerships = await getJson(harness, "/api/inventory/dealerships");
     assert.equal(dealerships.ok, true);
-    assert.ok(dealerships.dealerships.some((dealership) => dealership.id === "15"));
+    assert.deepEqual(dealerships.dealerships, [
+      { id: "3", name: "O'Regan's Infiniti/Nissan Halifax", logoUrl: "/dealership-logos/3-nissan.webp" },
+      { id: "15", name: "O'Regan's Kia Halifax", logoUrl: "/dealership-logos/15-kia.webp" },
+      { id: "18", name: "O'Regan's Chevrolet Buick GMC Cadillac", logoUrl: "/dealership-logos/18-gm.webp" },
+      { id: "31", name: "O'Regan's Volkswagen Halifax", logoUrl: "/dealership-logos/31-volkswagen.webp" },
+    ]);
     assert.ok(dealerships.inventoryTypes.some((type) => type.id === "2"));
 
     const emptyChat = await getJson(harness, "/api/chat/messages");
@@ -428,6 +441,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(cars.cars[0].vin, TEST_CAR.vin);
     assert.equal(cars.cars[0].albumId, TEST_ALBUM_ID);
     assert.equal(cars.cars[0].inventoryKey, TEST_CAR.vin);
+    assert.deepEqual(cars.cars[0].posted, { posted: false });
 
     const incompleteManualCar = await postJson(harness, "/api/manual-inventory/cars", {
       dealershipId: "15",
@@ -538,6 +552,11 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(uploaded.body.album.photoCount, 3);
     assert.equal(uploaded.body.album.videoCount, 1);
     assert.equal(uploaded.body.album.mediaCount, 4);
+    const carsAfterUpload = await getJson(harness, "/api/inventory/cars?dealershipId=15&inventoryTypeId=2");
+    const uploadedInventoryCar = carsAfterUpload.cars.find((car) => car.vin === TEST_CAR.vin);
+    assert.equal(uploadedInventoryCar.posted.posted, true);
+    assert.equal(uploadedInventoryCar.posted.albumId, uploaded.body.album.id);
+    assert.equal(uploadedInventoryCar.posted.mediaCount, 4);
     assert.ok(uploaded.body.photos.every((photo) => photo.uploadedBy?.username === TEST_USERNAME));
     assert.ok(uploaded.body.photos.every((photo) => photo.uploadedBy?.displayName === TEST_USERNAME));
     assert.equal(uploaded.body.marketplaceGeneration.source, "template-upload");
@@ -553,15 +572,28 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.match(uploaded.body.marketplaceDraft.description, /ask for Konner/i);
     assert.match(uploaded.body.marketplaceDraft.description, /2026 Kia Seltos/);
     assert.match(uploaded.body.marketplaceDraft.description, /X-Line AWD/);
-    assert.match(uploaded.body.marketplaceDraft.description, /White exterior/);
+    assert.match(uploaded.body.marketplaceDraft.description, /finished in White/i);
     assert.match(uploaded.body.marketplaceDraft.description, /Black interior/);
+    assert.match(uploaded.body.marketplaceDraft.description, /Price:\s*\$30,990/);
+    assert.match(uploaded.body.marketplaceDraft.description, /VIN:\s*KNDETCA76T7828611/);
+    assert.match(uploaded.body.marketplaceDraft.description, /Mileage:\s*1,234 km/);
     assert.match(uploaded.body.marketplaceDraft.description, /Tire Road Hazard/);
+    assertCleanMarketplaceDescription(uploaded.body.marketplaceDraft.description);
     assert.doesNotMatch(uploaded.body.marketplaceDraft.description, new RegExp(TEST_CAR.stockNumber));
-    assert.match(uploaded.body.marketplaceDraft.copyText, /Mileage: 1234 km/);
-    assert.match(uploaded.body.marketplaceDraft.copyText, /Dealership: O'Regan's Kia Halifax/);
-    assert.match(uploaded.body.marketplaceDraft.copyText, /Ask for: Konner/);
+	    assert.match(uploaded.body.marketplaceDraft.copyText, /Mileage: 1234 km/);
+	    assert.match(uploaded.body.marketplaceDraft.copyText, /Dealership: O'Regan's Kia Halifax/);
+	    assert.match(uploaded.body.marketplaceDraft.copyText, /Ask for: Konner/);
 
-    const staleMarketplaceCopy = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
+	    const regularDuplicateUpload = await uploadPhotosWithCookie(harness, approvedCookie, {
+	      dealershipId: "15",
+	      inventoryTypeId: "2",
+	      vin: TEST_CAR.vin,
+	      photos: [{ filename: "duplicate-front.jpg", type: "image/jpeg", body: jpegBytes("duplicate-front") }],
+	    });
+	    assert.equal(regularDuplicateUpload.status, 409);
+	    assert.match(regularDuplicateUpload.body.error, /already has uploaded CarPostClub photos/i);
+
+	    const staleMarketplaceCopy = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
     await writeMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID, {
       ...staleMarketplaceCopy,
       promptVersion: "facebook-marketplace-user-description-v1",
@@ -570,6 +602,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(staleAlbumMarketplaceDraft.draft.descriptionSource, "template-upload");
     assert.match(staleAlbumMarketplaceDraft.draft.description, /O'Regan's Kia Halifax/);
     assert.match(staleAlbumMarketplaceDraft.draft.description, /ask for Konner/i);
+    assertCleanMarketplaceDescription(staleAlbumMarketplaceDraft.draft.description);
     const refreshedMarketplaceCopy = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
     assert.notEqual(refreshedMarketplaceCopy.promptVersion, "facebook-marketplace-user-description-v1");
     assert.equal(refreshedMarketplaceCopy.mode, "upload_pool");
@@ -587,6 +620,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.notEqual(uploadedMarketplaceDraft.draft.description, photoTechMarketplaceDraft.body.draft.description);
     assert.match(photoTechMarketplaceDraft.body.draft.description, /O'Regan's Kia Halifax/);
     assert.match(photoTechMarketplaceDraft.body.draft.description, /ask for Konner/i);
+    assertCleanMarketplaceDescription(photoTechMarketplaceDraft.body.draft.description);
 
     const regeneratedMarketplaceDraft = await postJson(harness, "/api/marketplace-draft/regenerate", {
       dealershipId: "15",
@@ -761,14 +795,21 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     });
     assert.equal(packageDownload.status, 200);
     assert.match(packageDownload.headers.get("content-type") || "", /zip/);
-    const packageDownloadBytes = Buffer.from(await packageDownload.arrayBuffer());
-    assert.ok(packageDownloadBytes.includes(Buffer.from("media/lot-tag.heic")));
-    assert.ok(packageDownloadBytes.includes(Buffer.from("facebook-marketplace-description.txt")));
-    assert.ok(packageDownloadBytes.includes(Buffer.from("facebook-marketplace-fields.json")));
-    assert.ok(packageDownloadBytes.includes(Buffer.from("package-manifest.json")));
+	    const packageDownloadBytes = Buffer.from(await packageDownload.arrayBuffer());
+	    assert.ok(packageDownloadBytes.includes(Buffer.from("media/lot-tag.heic")));
+	    assert.ok(packageDownloadBytes.includes(Buffer.from("facebook-marketplace-description.txt")));
+	    assert.ok(packageDownloadBytes.includes(Buffer.from("facebook-marketplace-fields.json")));
+	    assert.ok(packageDownloadBytes.includes(Buffer.from("package-manifest.json")));
 
-    const deleted = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/photos/${encodeURIComponent(firstPhoto.filename)}`, {
-      method: "DELETE",
+	    const regularDelete = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/photos/${encodeURIComponent(firstPhoto.filename)}`, {
+	      method: "DELETE",
+	      headers: { Cookie: approvedCookie, Accept: "application/json" },
+	    });
+	    assert.equal(regularDelete.status, 403);
+	    assert.match((await regularDelete.json()).error, /Admin access required/i);
+
+	    const deleted = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/photos/${encodeURIComponent(firstPhoto.filename)}`, {
+	      method: "DELETE",
       headers: { Cookie: harness.cookie, Accept: "application/json" },
     });
     assert.equal(deleted.status, 200);
@@ -975,6 +1016,39 @@ test("signup invite links expire and block account creation after 24 hours", asy
   }
 });
 
+test("admin invite generation returns a signup URL for clipboard copy", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const response = await fetch(`${harness.baseUrl}/admin/invites`, {
+      method: "POST",
+      headers: {
+        Cookie: harness.cookie,
+        Accept: "application/json",
+        "X-Requested-With": "fetch",
+      },
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") || "", /application\/json/);
+    assertNoStoreHeaders(response);
+
+    const body = await response.json();
+    assert.match(body.invite.id, /^[A-Za-z0-9_-]{24,}$/);
+    assert.equal(body.invite.active, true);
+    assert.equal(body.invite.signupUrl, `${harness.baseUrl}/signup?invite=${body.invite.id}`);
+    assert.match(body.redirect, /\/admin\/users\?/);
+    const redirect = new URL(body.redirect, harness.baseUrl);
+    assert.equal(redirect.searchParams.get("success"), "Invite link created and copied to clipboard.");
+    assert.equal(redirect.searchParams.get("invite"), body.invite.id);
+
+    const storedInvites = JSON.parse(await fs.readFile(path.join(harness.tempRoot, "auth-invites.json"), "utf8"));
+    assert.equal(storedInvites.invites[0].id, body.invite.id);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("one active invite link can sign up multiple people before it expires", async () => {
   const harness = await startTestServer();
 
@@ -1063,7 +1137,84 @@ test("upload limits return clear client errors", async () => {
   }
 });
 
-test("multiple approved accounts can use live chat and upload to the same album concurrently", async () => {
+test("vehicle gallery unread state is tracked per user", async () => {
+  const harness = await startTestServer();
+  const albumCollectors = [];
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const firstViewer = await createApprovedAccount(harness, {
+      username: "first.viewer",
+      displayName: "First Viewer",
+      password: "first-viewer-123",
+    });
+    const secondViewer = await createApprovedAccount(harness, {
+      username: "second.viewer",
+      displayName: "Second Viewer",
+      password: "second-viewer-123",
+    });
+
+    albumCollectors.push(await openAlbumCollector(harness, firstViewer.cookie));
+    albumCollectors.push(await openAlbumCollector(harness, secondViewer.cookie));
+    await sleep(100);
+
+    const uploaded = await uploadPhotosWithCookie(harness, harness.cookie, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [
+        { filename: "admin-front.jpg", type: "image/jpeg", body: jpegBytes("admin-front") },
+      ],
+    });
+    assert.equal(uploaded.status, 201);
+    assert.equal(uploaded.body.album.id, TEST_ALBUM_ID);
+
+    for (const collector of albumCollectors) {
+      const [event] = await collector.waitForMessages(1);
+      assert.equal(event.kind, "upload");
+      assert.match(event.uploadId, /^upload-/);
+      assert.equal(event.albumId, TEST_ALBUM_ID);
+      assert.equal(event.mediaCount, 1);
+      assert.equal(event.uploadedBy.username, TEST_USERNAME);
+      assert.match(event.body, /1 file added for U6247A/);
+      assert.equal(event.url, `/?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&openAlbum=1`);
+    }
+
+    const adminGallery = await getJsonWithCookie(harness, harness.cookie, "/api/albums");
+    assert.equal(albumUnread(adminGallery, TEST_ALBUM_ID), false);
+    assert.equal(adminGallery.unreadTotal, 0);
+
+    const firstGallery = await getJsonWithCookie(harness, firstViewer.cookie, "/api/albums");
+    const secondGallery = await getJsonWithCookie(harness, secondViewer.cookie, "/api/albums");
+    assert.equal(albumUnread(firstGallery, TEST_ALBUM_ID), true);
+    assert.equal(albumUnread(secondGallery, TEST_ALBUM_ID), true);
+    assert.equal(firstGallery.unreadTotal, 1);
+    assert.equal(secondGallery.unreadTotal, 1);
+
+    const firstRead = await postJsonWithCookie(harness, firstViewer.cookie, "/api/gallery/dealerships/15/seen", {});
+    assert.equal(firstRead.status, 200);
+    assert.equal(firstRead.body.marked, 1);
+    assert.equal(albumUnread(firstRead.body, TEST_ALBUM_ID), false);
+    assert.equal(firstRead.body.unreadTotal, 0);
+
+    const firstAfterRead = await getJsonWithCookie(harness, firstViewer.cookie, "/api/albums");
+    const secondAfterFirstRead = await getJsonWithCookie(harness, secondViewer.cookie, "/api/albums");
+    assert.equal(albumUnread(firstAfterRead, TEST_ALBUM_ID), false);
+    assert.equal(albumUnread(secondAfterFirstRead, TEST_ALBUM_ID), true);
+    assert.equal(secondAfterFirstRead.unreadTotal, 1);
+
+    const secondRead = await postJsonWithCookie(harness, secondViewer.cookie, `/api/albums/${TEST_ALBUM_ID}/seen`, {});
+    assert.equal(secondRead.status, 200);
+    assert.equal(secondRead.body.marked, 1);
+    assert.equal(albumUnread(secondRead.body, TEST_ALBUM_ID), false);
+    assert.equal(secondRead.body.unreadTotal, 0);
+  } finally {
+    await Promise.all(albumCollectors.map((collector) => collector.close()));
+    await stopTestServer(harness);
+  }
+});
+
+test("multiple approved accounts can use live chat while duplicate vehicle uploads are blocked", async () => {
   const harness = await startTestServer();
   const testAccounts = [
     { username: "lot.runner", displayName: "Lot Runner", password: "lot-runner-123" },
@@ -1123,15 +1274,11 @@ test("multiple approved accounts can use live chat and upload to the same album 
       chatUsers.map((user) => user.username).sort(),
     );
 
-    const uploadUsers = chatUsers.slice(0, 3);
-    const expectedOriginalNames = uploadUsers.flatMap((user) => [
-      `${user.username}-front.jpg`,
-      `${user.username}-walkaround.mp4`,
-    ]).sort();
-    const expectedUploaderByOriginalName = new Map(uploadUsers.flatMap((user) => [
-      [`${user.username}-front.jpg`, user],
-      [`${user.username}-walkaround.mp4`, user],
-    ]));
+	    const uploadUsers = approvedUsers;
+	    const expectedUploaderByOriginalName = new Map(uploadUsers.flatMap((user) => [
+	      [`${user.username}-front.jpg`, user],
+	      [`${user.username}-walkaround.mp4`, user],
+	    ]));
 
     const uploads = await Promise.all(uploadUsers.map((user) => uploadPhotosWithCookie(harness, user.cookie, {
       dealershipId: "15",
@@ -1143,21 +1290,26 @@ test("multiple approved accounts can use live chat and upload to the same album 
       ],
     })));
 
-    for (const upload of uploads) {
-      assert.equal(upload.status, 201);
-      assert.equal(upload.body.ok, true);
-      assert.equal(upload.body.album.id, TEST_ALBUM_ID);
-      assert.equal(upload.body.count, 2);
-      for (const photo of upload.body.photos) {
-        const expectedUploader = expectedUploaderByOriginalName.get(photo.originalName);
-        assert.equal(photo.uploadedBy.username, expectedUploader.username);
-        assert.equal(photo.uploadedBy.displayName, expectedUploader.displayName);
-      }
-    }
+	    assert.deepEqual(uploads.map((upload) => upload.status).sort(), [201, 409, 409]);
+	    const successfulUpload = uploads.find((upload) => upload.status === 201);
+	    assert.ok(successfulUpload);
+	    assert.equal(successfulUpload.body.ok, true);
+	    assert.equal(successfulUpload.body.album.id, TEST_ALBUM_ID);
+	    assert.equal(successfulUpload.body.count, 2);
+	    for (const photo of successfulUpload.body.photos) {
+	      const expectedUploader = expectedUploaderByOriginalName.get(photo.originalName);
+	      assert.equal(photo.uploadedBy.username, expectedUploader.username);
+	      assert.equal(photo.uploadedBy.displayName, expectedUploader.displayName);
+	    }
+	    for (const upload of uploads.filter((candidate) => candidate.status === 409)) {
+	      assert.match(upload.body.error, /already has uploaded CarPostClub photos/i);
+	    }
 
-    const albumAfterConcurrentUploads = await getJson(
-      harness,
-      `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
+	    const expectedOriginalNames = successfulUpload.body.photos.map((photo) => photo.originalName).sort();
+
+	    const albumAfterConcurrentUploads = await getJson(
+	      harness,
+	      `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
     );
     assert.equal(albumAfterConcurrentUploads.photos.length, expectedOriginalNames.length);
     assert.deepEqual(
@@ -1328,12 +1480,20 @@ async function createApprovedAccount(harness, account) {
 }
 
 async function getJson(harness, pathname) {
+  return getJsonWithCookie(harness, harness.cookie, pathname);
+}
+
+async function getJsonWithCookie(harness, cookie, pathname) {
   const response = await fetch(`${harness.baseUrl}${pathname}`, {
-    headers: { Cookie: harness.cookie, Accept: "application/json" },
+    headers: { Cookie: cookie, Accept: "application/json" },
   });
   const body = await response.json();
   assert.equal(response.status, 200, JSON.stringify(body));
   return body;
+}
+
+function albumUnread(gallery, albumId) {
+  return Boolean(gallery.albums?.find((album) => album.id === albumId)?.unread);
 }
 
 async function postJson(harness, pathname, body) {
@@ -1423,8 +1583,16 @@ async function openMarketplaceDescriptionTestDb(harness) {
 }
 
 async function openChatCollector(harness, cookie) {
+  return openSseCollector(harness, cookie, "/api/chat/stream", "chat messages");
+}
+
+async function openAlbumCollector(harness, cookie) {
+  return openSseCollector(harness, cookie, "/api/albums/stream", "album events");
+}
+
+async function openSseCollector(harness, cookie, pathname, label) {
   const controller = new AbortController();
-  const response = await fetch(`${harness.baseUrl}/api/chat/stream`, {
+  const response = await fetch(`${harness.baseUrl}${pathname}`, {
     headers: { Cookie: cookie },
     signal: controller.signal,
   });
@@ -1465,7 +1633,7 @@ async function openChatCollector(harness, cookie) {
         if (messages.length >= count) return messages.slice(0, count);
         await sleep(25);
       }
-      throw new Error(`Timed out waiting for ${count} chat messages; received ${messages.length}.`);
+      throw new Error(`Timed out waiting for ${count} ${label}; received ${messages.length}.`);
     },
     async close() {
       controller.abort();

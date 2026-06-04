@@ -76,6 +76,7 @@ const s3MediaClient = s3MediaStorageEnabled
   : null;
 const chatMessagesPath = path.resolve(process.env.CHAT_MESSAGES_PATH || path.join(path.dirname(uploadRoot), "chat-messages.json"));
 const manualInventoryPath = path.resolve(process.env.MANUAL_INVENTORY_PATH || path.join(path.dirname(uploadRoot), "manual-inventory.json"));
+const albumSeenPath = path.resolve(process.env.CARPOSTCLUB_ALBUM_SEEN_PATH || process.env.KONNER_ALBUM_SEEN_PATH || process.env.ALBUM_SEEN_PATH || path.join(path.dirname(uploadRoot), "album-seen.json"));
 const pushSubscriptionsPath = path.resolve(process.env.CARPOSTCLUB_PUSH_SUBSCRIPTIONS_PATH || process.env.KONNER_PUSH_SUBSCRIPTIONS_PATH || process.env.PUSH_SUBSCRIPTIONS_PATH || path.join(path.dirname(uploadRoot), "push-subscriptions.json"));
 const pushVapidKeysPath = path.resolve(process.env.CARPOSTCLUB_PUSH_VAPID_KEYS_PATH || process.env.KONNER_PUSH_VAPID_KEYS_PATH || process.env.PUSH_VAPID_KEYS_PATH || path.join(path.dirname(uploadRoot), "push-vapid-keys.json"));
 const releaseManifestPath = process.env.CARPOSTCLUB_RELEASE_MANIFEST || process.env.KONNER_RELEASE_MANIFEST || path.join(appRoot, "release-manifest.json");
@@ -87,7 +88,7 @@ const chatMessageMaxLength = positiveInteger(process.env.CHAT_MESSAGE_MAX_LENGTH
 const marketplaceDescriptionModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_MODEL || "gpt-5-nano";
 const marketplaceDescriptionFallbackModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_FALLBACK_MODEL || "gpt-4.1-nano";
 const marketplaceDescriptionVariantCount = positiveInteger(process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_VARIANT_COUNT, 6);
-const marketplaceDescriptionPromptVersion = "facebook-marketplace-user-description-v2";
+const marketplaceDescriptionPromptVersion = "facebook-marketplace-user-description-v3";
 const marketplaceLocation = process.env.FACEBOOK_MARKETPLACE_LOCATION || "Halifax, Nova Scotia";
 const marketplaceCleanTitleDefault = parseBooleanEnv("FACEBOOK_MARKETPLACE_CLEAN_TITLE_DEFAULT", true);
 const marketplacePriceDisclosureFee = 499.95;
@@ -148,32 +149,41 @@ const inventoryTypes = Object.freeze([
 const oregansDealerships = Object.freeze([
   { id: "1", name: "O'Regan's Mercedes-Benz" },
   { id: "2", name: "O'Regan's Green Light Used Car Centre Halifax" },
-  { id: "3", name: "O'Regan's Infiniti/Nissan Halifax" },
+  { id: "3", name: "O'Regan's Infiniti/Nissan Halifax", logoUrl: "/dealership-logos/3-nissan.webp" },
   { id: "6", name: "O'Regan's Kia Dartmouth" },
   { id: "7", name: "O'Regan's Toyota Dartmouth" },
   { id: "8", name: "O'Regan's National Leasing" },
   { id: "9", name: "O'Regan's Toyota Halifax" },
   { id: "13", name: "O'Regan's Dartmouth Hyundai" },
   { id: "14", name: "O'Regan's Green Light Used Car Centre Dartmouth" },
-  { id: "15", name: "O'Regan's Kia Halifax" },
+  { id: "15", name: "O'Regan's Kia Halifax", logoUrl: "/dealership-logos/15-kia.webp" },
   { id: "16", name: "O'Regan's Wholesale Direct Dartmouth" },
   { id: "17", name: "O'Regan's Nissan Dartmouth" },
-  { id: "18", name: "O'Regan's Chevrolet Buick GMC Cadillac" },
+  { id: "18", name: "O'Regan's Chevrolet Buick GMC Cadillac", logoUrl: "/dealership-logos/18-gm.webp" },
   { id: "21", name: "O'Regan's Wholesale Direct Halifax" },
   { id: "28", name: "O'Regan's BMW/MINI" },
-  { id: "31", name: "O'Regan's Volkswagen Halifax" },
+  { id: "31", name: "O'Regan's Volkswagen Halifax", logoUrl: "/dealership-logos/31-volkswagen.webp" },
   { id: "40", name: "O'Regan's Lexus" },
 ]);
+const inventoryPicklistDealershipIds = Object.freeze(["3", "15", "18", "31"]);
+const inventoryPicklistDealerships = Object.freeze(
+  inventoryPicklistDealershipIds
+    .map((id) => oregansDealerships.find((dealership) => dealership.id === id))
+    .filter(Boolean),
+);
 const inventoryCache = new Map();
 const chatClients = new Set();
+const albumClients = new Set();
 const marketplaceCopyPromises = new Map();
 const marketplaceCopyStoreWritePromises = new Map();
+const vehicleUploadWritePromises = new Map();
 const photoMetadataWritePromises = new Map();
 let marketplaceDescriptionsDb = null;
 let chatWritePromise = Promise.resolve();
 let authUsersWritePromise = Promise.resolve();
 let authInvitesWritePromise = Promise.resolve();
 let manualInventoryWritePromise = Promise.resolve();
+let albumSeenWritePromise = Promise.resolve();
 let pushSubscriptionsWritePromise = Promise.resolve();
 let openaiClient = null;
 
@@ -182,6 +192,7 @@ await fs.mkdir(tmpRoot, { recursive: true });
 await fs.mkdir(path.dirname(marketplaceDescriptionsDbPath), { recursive: true });
 await fs.mkdir(path.dirname(chatMessagesPath), { recursive: true });
 await fs.mkdir(path.dirname(manualInventoryPath), { recursive: true });
+await fs.mkdir(path.dirname(albumSeenPath), { recursive: true });
 await fs.mkdir(path.dirname(authUsersPath), { recursive: true });
 await fs.mkdir(path.dirname(authInvitesPath), { recursive: true });
 await fs.mkdir(path.dirname(pushSubscriptionsPath), { recursive: true });
@@ -460,6 +471,18 @@ app.get("/admin/users", requireAdmin, async (req, res, next) => {
 app.post("/admin/invites", requireAdmin, async (req, res, next) => {
   try {
     const invite = await createAuthInvite(req.authUser);
+    if (requestWantsJson(req)) {
+      setPrivateNoStore(res);
+      res.json({
+        invite: publicAuthInvite(invite, req),
+        redirect: adminUsersUrl({
+          invite: invite.id,
+          success: "Invite link created and copied to clipboard.",
+        }),
+      });
+      return;
+    }
+
     res.redirect(303, adminUsersUrl({
       invite: invite.id,
       success: "Invite link created. It is valid for 24 hours.",
@@ -523,13 +546,64 @@ app.get("/inventory", requireAuth, (_req, res) => {
   res.redirect(302, "/");
 });
 
-app.get("/api/albums", requireAuth, async (_req, res, next) => {
+app.get("/api/albums", requireAuth, async (req, res, next) => {
   try {
+    const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
     res.json({
       ok: true,
       uploadRoot,
       mediaDriver: mediaStorageDriver,
-      albums: await listAlbums({ includeInventoryStatus: true }),
+      albums: gallery.albums,
+      unreadTotal: gallery.unreadTotal,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/albums/stream", requireAuth, (req, res) => {
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const client = {
+    res,
+    username: normalizeAuthUsername(req.authUser?.username),
+  };
+  let closed = false;
+  const heartbeat = setInterval(() => {
+    writeSseEvent(res, ": ping\n\n");
+  }, 25_000);
+  heartbeat.unref?.();
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    albumClients.delete(client);
+  };
+
+  albumClients.add(client);
+  req.on("close", cleanup);
+  writeSseEvent(res, "retry: 3000\n\n");
+  writeSseEvent(res, ": connected\n\n");
+});
+
+app.post("/api/gallery/dealerships/:dealershipId/seen", requireAuth, async (req, res, next) => {
+  try {
+    const dealership = cleanDealershipId(req.params.dealershipId);
+    const albums = (await listAlbums()).filter((album) => albumDealershipKey(album) === dealership.id);
+    const marked = await markAlbumObjectsSeen(req.authUser, albums);
+    const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
+    res.json({
+      ok: true,
+      dealership,
+      marked,
+      albums: gallery.albums,
+      unreadTotal: gallery.unreadTotal,
     });
   } catch (error) {
     next(error);
@@ -595,7 +669,7 @@ app.post("/api/push/test", requireAuth, async (req, res, next) => {
 app.get("/api/inventory/dealerships", requireAuth, (_req, res) => {
   res.json({
     ok: true,
-    dealerships: oregansDealerships,
+    dealerships: inventoryPicklistDealerships,
     inventoryTypes,
     defaultInventoryTypeId,
     sourceUrl: "https://www.oregans.com/inventory/",
@@ -607,7 +681,10 @@ app.get("/api/inventory/cars", requireAuth, async (req, res, next) => {
     const dealership = cleanDealershipId(req.query.dealershipId);
     const inventoryTypeId = cleanInventoryTypeId(req.query.inventoryTypeId || defaultInventoryTypeId);
     const inventory = await fetchInventoryCarsSnapshot({ dealershipId: dealership.id, inventoryTypeId });
-    const cars = await mergeManualInventoryCars(inventory.cars, { dealership, inventoryTypeId });
+    const cars = await annotateInventoryCarsWithPostedStatus(
+      await mergeManualInventoryCars(inventory.cars, { dealership, inventoryTypeId }),
+      { dealershipId: dealership.id, inventoryTypeId },
+    );
     res.json({
       ok: true,
       dealership,
@@ -707,10 +784,31 @@ app.get("/api/vehicle-album", requireAuth, async (req, res, next) => {
   try {
     const { car } = await resolveInventoryCar(req.query);
     const album = await findExistingVehicleAlbum(car);
+    const photos = album ? await listAlbumPhotos(album.id) : [];
+    if (album && photos.length) await markAlbumObjectsSeen(req.authUser, [album]);
     res.json({
       ok: true,
       album: await albumWithInventoryStatus(album),
-      photos: album ? await listAlbumPhotos(album.id) : [],
+      photos,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/albums/:albumId/seen", requireAuth, async (req, res, next) => {
+  try {
+    const albumId = cleanAlbumId(req.params.albumId);
+    const album = await readAlbum(albumId);
+    if (!album) throw httpError(404, "Album not found.");
+    const marked = await markAlbumObjectsSeen(req.authUser, [album]);
+    const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
+    res.json({
+      ok: true,
+      album: withAlbumReadState(await albumWithInventoryStatus(album), req.authUser, await readAlbumSeenStore()),
+      marked,
+      albums: gallery.albums,
+      unreadTotal: gallery.unreadTotal,
     });
   } catch (error) {
     next(error);
@@ -722,10 +820,12 @@ app.get("/api/albums/:albumId/photos", requireAuth, async (req, res, next) => {
     const albumId = cleanAlbumId(req.params.albumId);
     const album = await readAlbum(albumId);
     if (!album) throw httpError(404, "Album not found.");
+    const photos = await listAlbumPhotos(albumId);
+    if (photos.length) await markAlbumObjectsSeen(req.authUser, [album]);
     res.json({
       ok: true,
       album: await albumWithInventoryStatus(album),
-      photos: await listAlbumPhotos(albumId),
+      photos,
     });
   } catch (error) {
     next(error);
@@ -741,6 +841,7 @@ app.post("/api/upload", requireAuth, upload.array("photos", maxUploadFiles), asy
   try {
     const { car } = await resolveInventoryCar(req.body);
     const result = await saveUploadedMediaForCar({ files, car, user: req.authUser });
+    const uploadEvent = uploadAlbumEventPayload(car, result, req.authUser);
 
     res.status(201).json({
       ok: true,
@@ -752,9 +853,10 @@ app.post("/api/upload", requireAuth, upload.array("photos", maxUploadFiles), asy
       marketplaceGeneration: result.marketplaceGeneration,
       marketplaceDraft: result.marketplaceDraft,
     });
+    broadcastAlbumEvent(uploadEvent, { excludeUsername: req.authUser.username });
     queuePushNotifications({
       excludeUsername: req.authUser.username,
-      payload: uploadPushPayload(car, result.photos.length),
+      payload: uploadPushPayload(car, result.photos.length, uploadEvent),
     });
   } catch (error) {
     await cleanupTempFiles(files);
@@ -766,10 +868,10 @@ app.get("/api/albums/:albumId/media/:filename", requireAuth, serveAlbumMedia);
 app.get("/api/albums/:albumId/photos/:filename", requireAuth, serveAlbumMedia);
 app.get("/api/albums/:albumId/media/:filename/thumbnail", requireAuth, serveAlbumThumbnail);
 
-app.delete("/api/albums/:albumId/media", requireAuth, deleteAlbumMediaCollection);
-app.delete("/api/albums/:albumId/photos", requireAuth, deleteAlbumMediaCollection);
-app.delete("/api/albums/:albumId/media/:filename", requireAuth, deleteAlbumMedia);
-app.delete("/api/albums/:albumId/photos/:filename", requireAuth, deleteAlbumMedia);
+app.delete("/api/albums/:albumId/media", requireAdmin, deleteAlbumMediaCollection);
+app.delete("/api/albums/:albumId/photos", requireAdmin, deleteAlbumMediaCollection);
+app.delete("/api/albums/:albumId/media/:filename", requireAdmin, deleteAlbumMedia);
+app.delete("/api/albums/:albumId/photos/:filename", requireAdmin, deleteAlbumMedia);
 
 async function serveAlbumMedia(req, res, next) {
   try {
@@ -1173,6 +1275,124 @@ async function listAlbums({ includeInventoryStatus = false } = {}) {
   return includeInventoryStatus ? albumsWithInventoryStatus(sorted) : sorted;
 }
 
+async function listAlbumsForUser(user, { includeInventoryStatus = false } = {}) {
+  const [albums, seenStore] = await Promise.all([
+    listAlbums({ includeInventoryStatus }),
+    readAlbumSeenStore(),
+  ]);
+  const albumsWithReadState = albums.map((album) => withAlbumReadState(album, user, seenStore));
+  return {
+    albums: albumsWithReadState,
+    unreadTotal: albumsWithReadState.filter((album) => album.unread).length,
+  };
+}
+
+function withAlbumReadState(album, user, seenStore) {
+  const username = normalizeAuthUsername(user?.username);
+  const seen = seenStore?.users?.[username]?.albums?.[album.id] || null;
+  const albumUpdatedAt = albumReadVersion(album);
+  const albumUpdatedMs = Date.parse(albumUpdatedAt || "");
+  const seenMs = Date.parse(seen?.albumUpdatedAt || seen?.seenAt || "");
+  const latestUploaderUsername = normalizeAuthUsername(album.latestUploadedBy?.username || album.updatedBy?.username);
+  const hasSeenVersion = Number.isFinite(seenMs) && (!Number.isFinite(albumUpdatedMs) || seenMs >= albumUpdatedMs);
+  const unread = Boolean(
+    username
+    && album.mediaCount > 0
+    && latestUploaderUsername !== username
+    && !hasSeenVersion
+  );
+
+  return {
+    ...album,
+    unread,
+    readState: {
+      unread,
+      seenAt: seen?.seenAt || "",
+      albumUpdatedAt: seen?.albumUpdatedAt || "",
+    },
+  };
+}
+
+function albumReadVersion(album) {
+  return album?.latestUploadedAt || album?.updatedAt || album?.createdAt || "";
+}
+
+function albumDealershipKey(album) {
+  return normalizeSpace(album?.vehicle?.dealershipId || album?.dealership?.id || "");
+}
+
+async function markAlbumObjectsSeen(user, albums) {
+  const username = normalizeAuthUsername(user?.username);
+  const validAlbums = albums
+    .filter((album) => album?.id && album.mediaCount > 0)
+    .map((album) => ({
+      id: cleanAlbumId(album.id),
+      albumUpdatedAt: albumReadVersion(album),
+    }));
+  if (!username || !validAlbums.length) return 0;
+
+  return updateAlbumSeenStore((store) => {
+    const userStore = store.users[username] || { albums: {} };
+    userStore.albums = userStore.albums && typeof userStore.albums === "object" ? userStore.albums : {};
+    const seenAt = new Date().toISOString();
+    let marked = 0;
+    for (const album of validAlbums) {
+      const previous = userStore.albums[album.id];
+      if (previous?.albumUpdatedAt === album.albumUpdatedAt) continue;
+      userStore.albums[album.id] = {
+        seenAt,
+        albumUpdatedAt: album.albumUpdatedAt,
+      };
+      marked += 1;
+    }
+    store.users[username] = userStore;
+    return marked;
+  });
+}
+
+async function readAlbumSeenStore() {
+  return normalizeAlbumSeenStore(await readJson(albumSeenPath, { users: {} }));
+}
+
+async function updateAlbumSeenStore(mutator) {
+  albumSeenWritePromise = albumSeenWritePromise.catch(() => {}).then(async () => {
+    const store = await readAlbumSeenStore();
+    const result = await mutator(store);
+    await writeJson(albumSeenPath, store);
+    return result;
+  });
+  return albumSeenWritePromise;
+}
+
+function normalizeAlbumSeenStore(value) {
+  const users = value?.users && typeof value.users === "object" ? value.users : {};
+  const normalized = { users: {} };
+  for (const [rawUsername, rawUserStore] of Object.entries(users)) {
+    const username = normalizeAuthUsername(rawUsername);
+    if (!username) continue;
+    const rawAlbums = rawUserStore?.albums && typeof rawUserStore.albums === "object" ? rawUserStore.albums : {};
+    const albums = {};
+    for (const [rawAlbumId, rawSeen] of Object.entries(rawAlbums)) {
+      if (!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(rawAlbumId) || rawAlbumId.includes("..")) continue;
+      const albumId = rawAlbumId.toLowerCase();
+      const seenAt = validIsoString(rawSeen?.seenAt);
+      const albumUpdatedAt = validIsoString(rawSeen?.albumUpdatedAt);
+      if (!seenAt && !albumUpdatedAt) continue;
+      albums[albumId] = {
+        seenAt: seenAt || albumUpdatedAt,
+        albumUpdatedAt: albumUpdatedAt || seenAt,
+      };
+    }
+    normalized.users[username] = { albums };
+  }
+  return normalized;
+}
+
+function validIsoString(value) {
+  const text = String(value || "");
+  return Number.isFinite(Date.parse(text)) ? text : "";
+}
+
 async function readAlbum(albumId) {
   albumId = cleanAlbumId(albumId);
   const directory = albumPath(albumId);
@@ -1193,7 +1413,8 @@ async function readAlbum(albumId) {
   const storage = albumStorageInfo(albumId, metadata);
   const uploadedByUsers = albumUploadedByUsers(photos);
   const createdBy = albumCreator(metadata, photos);
-  const updatedBy = publicUploader(metadata.updatedBy) || publicUploader(photos[0]?.uploadedBy) || createdBy;
+  const latestPhoto = photos[0] || null;
+  const updatedBy = publicUploader(metadata.updatedBy) || publicUploader(latestPhoto?.uploadedBy) || createdBy;
 
   return {
     id: albumId,
@@ -1209,6 +1430,8 @@ async function readAlbum(albumId) {
     mediaCount: photos.length,
     bytes,
     coverUrl: cover?.url || null,
+    latestUploadedAt: latestPhoto?.uploadedAt || null,
+    latestUploadedBy: latestPhoto?.uploadedBy || null,
     descriptionPreview: normalizeSpace(metadata.vehicle?.descriptionPreview),
     objectStoragePrefix: storage.prefix,
     storage,
@@ -1564,6 +1787,34 @@ async function fetchInventoryCars({ dealershipId, inventoryTypeId }) {
   inventoryTypeId = cleanInventoryTypeId(inventoryTypeId || defaultInventoryTypeId);
   const inventory = await fetchInventoryCarsSnapshot({ dealershipId: dealership.id, inventoryTypeId });
   return mergeManualInventoryCars(inventory.cars, { dealership, inventoryTypeId });
+}
+
+async function annotateInventoryCarsWithPostedStatus(cars, { dealershipId, inventoryTypeId }) {
+  const albums = await listAlbums();
+  const scopedAlbums = albums.filter((album) => albumMatchesInventoryScope(album, { dealershipId, inventoryTypeId }));
+  return cars.map((car) => {
+    const album = scopedAlbums.find((candidate) => inventoryCarMatchesAlbum(car, candidate));
+    if (!album) return { ...car, posted: { posted: false } };
+    return {
+      ...car,
+      posted: {
+        posted: true,
+        albumId: album.id,
+        albumName: album.name,
+        mediaCount: album.mediaCount || 0,
+        updatedAt: album.updatedAt || "",
+        dealershipId: album.vehicle?.dealershipId || album.dealership?.id || "",
+        inventoryTypeId: album.vehicle?.inventoryTypeId || album.inventoryTypeId || "",
+      },
+    };
+  });
+}
+
+function albumMatchesInventoryScope(album, { dealershipId, inventoryTypeId }) {
+  const albumDealershipId = normalizeSpace(album?.vehicle?.dealershipId || album?.dealership?.id);
+  const albumInventoryTypeId = normalizeSpace(album?.vehicle?.inventoryTypeId || album?.inventoryTypeId);
+  return (!albumDealershipId || albumDealershipId === String(dealershipId))
+    && (!albumInventoryTypeId || albumInventoryTypeId === String(inventoryTypeId));
 }
 
 async function shortcutInventoryAlbumPicker(query = {}) {
@@ -2172,14 +2423,17 @@ async function generateMarketplaceDescriptionVariants(input, count) {
             text: [
               `Write exactly ${count} different Facebook Marketplace vehicle descriptions from the supplied JSON facts.`,
               "Use only supplied facts. Do not invent warranty, financing, accident history, ownership history, inspection status, availability, accessories, or condition details.",
-              "Each one should sound like a different real local person wrote it: specific, plain-spoken, helpful, and not like AI or a dealership brochure.",
+              "Each one should sound like a real salesperson wrote a clean dealership Facebook Marketplace post: specific, plain-spoken, helpful, and not like AI, a database export, or a private sale.",
               "Use the supplied postingProfiles in order. Let each profile subtly change rhythm and word choice, but do not mention app usernames or that the copy is assigned to a profile.",
-              "Every description must mention the vehicle year, make, model, trim when available, price, mileage, body style, exterior color, interior color when available, fuel type, transmission, and a few supplied highlights when available.",
-              "Every description must mention the dealership by name and make clear where the vehicle is located.",
-              "Avoid emojis, hashtags, exclamation marks, generic hype, and phrases like 'look no further', 'turn heads', 'perfect blend', 'must-see', or 'don't miss out'.",
-              "Keep all important factual information represented in every description, but vary sentence structure and word choice across the set.",
-              "For each description, write 2 to 3 short paragraphs plus one final details line. Keep each one between 135 and 210 words.",
-              "The final details line should include VIN, price, and mileage when available.",
+              "Never start with 'I'm listing', 'I am listing', 'Listing this', 'Posting this', or similar listing-process language.",
+              "Open naturally with the vehicle and dealership, for example '<year> <make> <model> - <trim/status> at <dealership>.'",
+              "Every description must mention the vehicle year, make, model, trim/status when available, price, mileage, dealership name, and location. Include VIN when available.",
+              "Mention exterior color, transmission, fuel type, body style, interior color, and supplied highlights only when the supplied value is useful and specific.",
+              "Do not mention missing, vague, or placeholder facts such as Other, Unknown, N/A, not specified, body style not specified, or interior color is Other.",
+              "Do not repeat the same facts. Price, mileage, VIN, color, transmission, fuel type, dealership, and location should each appear at most once inside the generated body/details.",
+              "Avoid emojis, hashtags, exclamation marks, generic hype, and phrases like 'look no further', 'turn heads', 'perfect blend', 'must-see', 'priced to sell', 'won't last long', or 'don't miss out'.",
+              "For each description, write one short opening line, one concise useful paragraph, and a simple details block or details line. Keep each one between 80 and 145 words.",
+              "The details block or line should include VIN, price, and mileage when available.",
               "Do not include stock number, inventory number, internal inventory ID, dealership stock code, contact/footer line, or price-disclosure fee line.",
               "Return only JSON matching the schema.",
               "",
@@ -2274,6 +2528,11 @@ function buildMarketplaceDescriptionPoolInput({ car, fields, users = [], count =
 
 function buildMarketplaceDescriptionFactsInput({ car, fields, postingProfiles = [] }) {
   const dealership = marketplaceDealershipContext(car);
+  const bodyStyle = marketplaceUsefulFact(fields.bodyStyle);
+  const exteriorColor = marketplaceUsefulFact(fields.exteriorColor);
+  const interiorColor = marketplaceUsefulInteriorColor(fields.interiorColor);
+  const fuelType = marketplaceUsefulFact(fields.fuelType);
+  const transmission = marketplaceUsefulFact(fields.transmission);
   return {
     promptVersion: marketplaceDescriptionPromptVersion,
     location: fields.location || dealership.location,
@@ -2303,12 +2562,12 @@ function buildMarketplaceDescriptionFactsInput({ car, fields, postingProfiles = 
       trim: car.trim,
       price: fields.price,
       odometerKm: fields.mileage,
-      bodyStyle: fields.bodyStyle,
-      exteriorColor: fields.exteriorColor,
-      interiorColor: fields.interiorColor,
+      bodyStyle: bodyStyle || null,
+      exteriorColor: exteriorColor || null,
+      interiorColor: interiorColor || null,
       condition: fields.vehicleCondition,
-      fuelType: fields.fuelType,
-      transmission: fields.transmission,
+      fuelType: fuelType || null,
+      transmission: transmission || null,
       detailUrl: car.detailUrl,
     },
     inventoryCopy: {
@@ -2637,80 +2896,144 @@ function buildMarketplaceTitle(car) {
   return [car.year, car.make, car.model].filter(Boolean).join(" ").trim() || car.title || "Vehicle for sale";
 }
 
-function buildMarketplaceDescription(car, fields, user, variantSeed = "") {
+function marketplaceUsefulFact(value) {
+  const text = normalizeSpace(value);
+  if (!text) return "";
+  const normalized = normalizeSearchToken(text);
+  const placeholders = new Set([
+    "other",
+    "unknown",
+    "none",
+    "null",
+    "undefined",
+    "n a",
+    "na",
+    "not applicable",
+    "not available",
+    "not specified",
+    "unspecified",
+    "tbd",
+    "needs review",
+  ]);
+  if (placeholders.has(normalized)) return "";
+  if (/\bnot specified\b/i.test(text)) return "";
+  return text;
+}
+
+function marketplaceUsefulInteriorColor(value) {
+  return marketplaceUsefulFact(value);
+}
+
+function marketplaceVehicleLead(car, fields = {}) {
   const title = buildMarketplaceTitle(car);
-  const lead = [
-    title,
-    car.trim && car.trim !== car.model ? car.trim : null,
-  ].filter(Boolean).join(" - ");
+  const trim = marketplaceUsefulFact(car.trim || fields.trim);
+  if (!trim) return title;
+  const titleToken = normalizeSearchToken(title);
+  const trimToken = normalizeSearchToken(trim);
+  if (trimToken && titleToken.includes(trimToken)) return title;
+  return `${title} - ${trim}`;
+}
+
+function marketplaceMileageText(fields = {}, car = {}) {
+  if (fields.mileage) return `${fields.mileage.toLocaleString("en-CA")} km`;
+  return normalizeSpace(car.odometer);
+}
+
+function marketplacePriceText(fields = {}, car = {}) {
+  if (fields.price) return `$${fields.price.toLocaleString("en-CA")}`;
+  return normalizeSpace(car.price);
+}
+
+function marketplaceLowerSpec(value) {
+  const text = marketplaceUsefulFact(value);
+  if (!text) return "";
+  return /^[A-Z0-9 +.-]{2,}$/.test(text) ? text : text.toLowerCase();
+}
+
+function marketplaceTransmissionPhrase(value) {
+  const text = marketplaceLowerSpec(value);
+  if (!text) return "";
+  return /\btransmission\b/i.test(text) ? text : `${text} transmission`;
+}
+
+function marketplaceFuelPhrase(value) {
+  const text = marketplaceLowerSpec(value);
+  if (!text) return "";
+  if (/\belectric\b/i.test(text)) return "electric powertrain";
+  if (/\bhybrid\b/i.test(text)) return `${text} powertrain`;
+  if (/\b(?:gasoline|petrol|diesel|flex)\b/i.test(text)) return `${text} engine`;
+  return text;
+}
+
+function marketplaceArticlePhrase(value) {
+  const text = normalizeSpace(value);
+  if (!text) return "";
+  if (/^(?:a|an)\s+/i.test(text)) return text;
+  return /^[aeiou]/i.test(text) ? `an ${text}` : `a ${text}`;
+}
+
+function buildMarketplaceDescription(car, fields, user, variantSeed = "") {
+  const lead = marketplaceVehicleLead(car, fields);
   const dealership = marketplaceDealershipContext(car);
   const dealershipName = fields.dealershipName || dealership.name;
   const dealershipLocation = fields.location || dealership.location;
   const posterKey = marketplaceUserKey(user);
   const openers = [
-    `${lead} available at ${dealershipName} in ${dealershipLocation}.`,
-    `Posting this ${lead} from ${dealershipName} in ${dealershipLocation}.`,
-    `This ${lead} is at ${dealershipName} and ready for a closer look in ${dealershipLocation}.`,
-    `Sharing the details on this ${lead}, located at ${dealershipName} in ${dealershipLocation}.`,
-    `Available now through ${dealershipName}: ${lead}.`,
-    `Here are the useful details on this ${lead} at ${dealershipName}.`,
-    `Listing this ${lead} from ${dealershipName}, with the key specs below.`,
-    `${dealershipName} has this ${lead} available in ${dealershipLocation}.`,
+    `${lead} at ${dealershipName}.`,
+    `${lead} - ${dealershipName}.`,
+    `${dealershipName} has this ${lead}.`,
+    `${lead} available through ${dealershipName}.`,
+    `Now at ${dealershipName}: ${lead}.`,
+    `${lead} from ${dealershipName}.`,
   ];
   const openerIndex = marketplaceVariantIndex(variantSeed, openers.length, `${car.vin}:${posterKey}`);
 
-  const facts = [
-    fields.mileage ? `${fields.mileage.toLocaleString("en-CA")} km` : car.odometer,
-    fields.bodyStyle,
-    fields.exteriorColor && `${fields.exteriorColor} exterior`,
-    fields.interiorColor && fields.interiorColor !== "Other" && `${fields.interiorColor} interior`,
-    fields.transmission,
-    fields.fuelType,
-  ].filter(Boolean);
+  const modelName = marketplaceUsefulFact(fields.model || car.model) || "vehicle";
+  const mileageText = marketplaceMileageText(fields, car);
+  const priceText = marketplacePriceText(fields, car);
+  const exteriorColor = marketplaceUsefulFact(fields.exteriorColor);
+  const interiorColor = marketplaceUsefulInteriorColor(fields.interiorColor);
+  const transmission = marketplaceTransmissionPhrase(fields.transmission);
+  const fuelType = marketplaceFuelPhrase(fields.fuelType);
+  const summarySentences = [];
 
-  const priceText = fields.price ? `$${fields.price.toLocaleString("en-CA")}` : car.price;
-  const detailSentences = [];
-  if (priceText || facts.length) {
-    detailSentences.push([
-      priceText ? `Listed at ${priceText}` : "",
-      facts.length ? `with ${naturalList(facts)}` : "",
-    ].filter(Boolean).join(", ").replace(/,\s*with/, " with"));
+  const colorAndMileage = [];
+  if (exteriorColor) {
+    colorAndMileage.push(`finished in ${exteriorColor}${interiorColor ? ` with ${interiorColor} interior` : ""}`);
+  }
+  if (mileageText) colorAndMileage.push(`${mileageText} on the odometer`);
+  if (colorAndMileage.length) {
+    summarySentences.push(`This ${modelName} is ${naturalList(colorAndMileage)}.`);
+  }
+
+  const drivetrain = [transmission, fuelType].filter(Boolean).map(marketplaceArticlePhrase);
+  if (drivetrain.length) {
+    summarySentences.push(`It comes with ${naturalList(drivetrain)}.`);
   }
 
   const highlights = featureHighlights(car);
   if (highlights.length) {
     const highlightIntro = [
-      "The equipment notes call out",
-      "A few useful highlights include",
-      "Notable features listed for it include",
-      "From the inventory notes, highlights include",
+      "Highlights include",
+      "Useful features include",
+      "The feature list includes",
+      "Notable equipment includes",
     ][marketplaceVariantIndex(`${variantSeed}:highlights`, 4, posterKey)];
-    detailSentences.push(`${highlightIntro} ${naturalList(highlights.slice(0, 5))}.`);
+    summarySentences.push(`${highlightIntro} ${naturalList(highlights.slice(0, 5))}.`);
   }
-
-  if (car.detailUrl) {
-    detailSentences.push("Photos and the current inventory record are tied to this exact vehicle.");
-  }
-
-  const dealershipSentences = [
-    `The vehicle is located at ${dealershipName}, so it is easy to line up a look in ${dealership.city || dealershipLocation}.`,
-    `It is sitting at ${dealershipName}; the location on the listing should match ${dealershipLocation}.`,
-    `You can use ${dealershipName} as the pickup/viewing point for anyone who wants to see it in person.`,
-    `For local shoppers, the important bit is that this one is at ${dealershipName}.`,
-  ];
+  summarySentences.push(`Located at ${dealershipName} in ${dealershipLocation}.`);
 
   const lines = [
     openers[openerIndex],
-    detailSentences.filter(Boolean).join(" "),
-    dealershipSentences[marketplaceVariantIndex(`${variantSeed}:dealer`, dealershipSentences.length, posterKey)],
+    summarySentences.filter(Boolean).join(" "),
   ].filter(Boolean);
 
-  const detailLine = [
-    car.vin && `VIN ${car.vin}`,
-    fields.price ? `Price $${fields.price.toLocaleString("en-CA")}` : car.price && `Price ${car.price}`,
-    fields.mileage ? `Mileage ${fields.mileage.toLocaleString("en-CA")} km` : car.odometer && `Mileage ${car.odometer}`,
-  ].filter(Boolean).join(" | ");
-  if (detailLine) lines.push(detailLine);
+  const detailLines = [
+    priceText && `Price: ${priceText}`,
+    car.vin && `VIN: ${car.vin}`,
+    mileageText && `Mileage: ${mileageText}`,
+  ].filter(Boolean);
+  if (detailLines.length) lines.push(detailLines.join("\n"));
 
   return finalizeMarketplaceBuyerDescription(lines.join("\n\n"), fields, car, user);
 }
@@ -2733,13 +3056,13 @@ function buildMarketplaceCopyText({ title, fields, description, car }) {
     ["Model", fields.model],
     ["Mileage", fields.mileage ? `${fields.mileage} km` : null],
     ["Price", fields.price ? `$${fields.price.toLocaleString("en-CA")}` : car.price],
-    ["Body style", fields.bodyStyle],
+    ["Body style", marketplaceUsefulFact(fields.bodyStyle)],
     ["Exterior color", fields.exteriorColor],
-    ["Interior color", fields.interiorColor],
+    ["Interior color", marketplaceUsefulInteriorColor(fields.interiorColor)],
     ["Clean title", fields.cleanTitle === true ? "Yes" : "Needs review"],
     ["Vehicle condition", fields.vehicleCondition],
-    ["Fuel type", fields.fuelType],
-    ["Transmission", fields.transmission],
+    ["Fuel type", marketplaceUsefulFact(fields.fuelType)],
+    ["Transmission", marketplaceUsefulFact(fields.transmission)],
   ];
   return [
     ...rows.map(([label, value]) => `${label}: ${value || "Needs review"}`),
@@ -2798,12 +3121,12 @@ function buildMarketplaceContactLine(fields = {}, car = null, user = null) {
   const contactName = fields.contactName || dealership.contactName || marketplaceContactPerson;
   const seed = `${marketplaceUserKey(user)}:${car?.vin || car?.stockNumber || dealershipName}`;
   const lines = [
-    `Message me if you'd like more details. If you stop by ${dealershipName}, ask for ${contactName}.`,
-    `Send me a message with any questions. If you come by ${dealershipName}${city ? ` in ${city}` : ""}, ask for ${contactName}.`,
-    `Message me and I can help with the next step. For an in-person look at ${dealershipName}, ask for ${contactName}.`,
-    `Reach out if you want to take a closer look. If you're stopping into ${dealershipName}, ask for ${contactName}.`,
-    `Message me for the details that matter to you. If you visit ${dealershipName}, ask for ${contactName}.`,
-    `Send me a note if you want to see it. At ${dealershipName}, ask for ${contactName} when you arrive.`,
+    `Send a message with any questions, or stop by ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
+    `For questions or a closer look, contact ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
+    `If you would like to see it in person, visit ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
+    `Send a message to arrange a closer look, or visit ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
+    `Questions are welcome. At ${dealershipName}${city ? ` in ${city}` : ""}, ask for ${contactName}.`,
+    `For more details, contact ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
   ];
   return lines[marketplaceVariantIndex(seed, lines.length, fields.location || "")];
 }
@@ -2847,7 +3170,7 @@ function isMarketplaceInventoryNumberSegment(value, stockNumberPattern) {
 
 function hasMarketplaceContactLine(description) {
   const text = String(description || "");
-  return /\b(?:message me|send me a message|reach out|send me a note)\b/i.test(text)
+  return /\b(?:message|contact|reach|stop by|visit|come by|questions|closer look)\b/i.test(text)
     && new RegExp(`\\bask for\\s+${escapeRegExp(marketplaceContactPerson)}\\b`, "i").test(text);
 }
 
@@ -2869,6 +3192,8 @@ function normalizeMarketplaceGeneratedDescription(value, fallbackDescription) {
     .trim();
   if (!text || text.length < 70) return fallbackDescription;
   if (/as an ai|i can(?:'|’)t|i cannot/i.test(text)) return fallbackDescription;
+  if (/^\s*(?:i(?:'|’)m listing|i am listing|listing this|posting this)\b/i.test(text)) return fallbackDescription;
+  if (/\b(?:body style not specified|interior colou?r is other|other interior)\b/i.test(text)) return fallbackDescription;
   return text.slice(0, 1400);
 }
 
@@ -3755,7 +4080,22 @@ function broadcastChatMessage(message) {
   }
 }
 
+function broadcastAlbumEvent(event, { excludeUsername = "" } = {}) {
+  const excluded = normalizeAuthUsername(excludeUsername);
+  const payload = `data: ${JSON.stringify(event)}\n\n`;
+  for (const client of [...albumClients]) {
+    if (excluded && client.username === excluded) continue;
+    if (!writeSseEvent(client.res, payload)) {
+      albumClients.delete(client);
+    }
+  }
+}
+
 function writeChatEvent(res, payload) {
+  return writeSseEvent(res, payload);
+}
+
+function writeSseEvent(res, payload) {
   try {
     res.write(payload);
     return true;
@@ -4022,13 +4362,36 @@ function chatPushPayload(message) {
   };
 }
 
-function uploadPushPayload(car, mediaCount) {
-  const label = car?.stockNumber || car?.title || "a vehicle";
+function uploadAlbumEventPayload(car, result, user) {
+  const mediaCount = Array.isArray(result?.photos) ? result.photos.length : 0;
+  const album = result?.album || null;
+  const label = car?.stockNumber || car?.title || album?.name || "a vehicle";
   return {
+    kind: "upload",
+    uploadId: `upload-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`,
+    albumId: album?.id || "",
+    mediaCount,
     title: "Media uploaded",
     body: `${mediaCount} ${mediaCount === 1 ? "file" : "files"} added for ${label}.`,
     tag: `carpostclub-upload-${carInventoryNotificationKey(car)}`,
     url: vehicleDeepLink(car, { openAlbum: true }),
+    uploadedBy: publicAuthUser(user),
+    uploadedAt: new Date().toISOString(),
+  };
+}
+
+function uploadPushPayload(car, mediaCount, uploadEvent = null) {
+  const label = car?.stockNumber || car?.title || "a vehicle";
+  return {
+    kind: "upload",
+    messageId: uploadEvent?.uploadId || `upload-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`,
+    albumId: uploadEvent?.albumId || "",
+    mediaCount,
+    title: "Media uploaded",
+    body: uploadEvent?.body || `${mediaCount} ${mediaCount === 1 ? "file" : "files"} added for ${label}.`,
+    tag: uploadEvent?.tag || `carpostclub-upload-${carInventoryNotificationKey(car)}`,
+    url: uploadEvent?.url || vehicleDeepLink(car, { openAlbum: true }),
+    timestamp: uploadEvent?.uploadedAt || new Date().toISOString(),
   };
 }
 
@@ -4148,6 +4511,8 @@ function cleanPushPayload(payload = {}) {
     url: cleanNotificationPath(payload.url, "/"),
     kind,
     messageId: normalizeSpace(payload.messageId).slice(0, 80),
+    albumId: normalizeSpace(payload.albumId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 120),
+    mediaCount: positiveInteger(payload.mediaCount, 0),
     author: payload.author ? normalizeChatAuthor(payload.author) : "",
     timestamp,
   };
@@ -4215,16 +4580,32 @@ async function cleanupSavedUploads(photos) {
 }
 
 async function saveUploadedMediaForCar({ files, car, user }) {
+  const lockKey = vehicleUploadLockKey(car);
+  const previous = vehicleUploadWritePromises.get(lockKey) || Promise.resolve();
+  const next = previous.catch(() => {}).then(() => saveUploadedMediaForCarLocked({ files, car, user }));
+  vehicleUploadWritePromises.set(lockKey, next);
+  try {
+    return await next;
+  } finally {
+    if (vehicleUploadWritePromises.get(lockKey) === next) {
+      vehicleUploadWritePromises.delete(lockKey);
+    }
+  }
+}
+
+async function saveUploadedMediaForCarLocked({ files, car, user }) {
   const saved = [];
   try {
-    const album = await ensureCarAlbum(car, user);
     if (!files.length) throw httpError(400, "No media files were uploaded.");
+    await assertVehicleCanReceiveUpload(car, user);
+    const album = await ensureCarAlbum(car, user);
 
     for (const file of files) {
       saved.push(await saveUploadedPhoto(album.id, file, user));
     }
 
     let updatedAlbum = await readAlbum(album.id) || album;
+    await markAlbumObjectsSeen(user, [updatedAlbum]);
     const marketplaceGeneration = await prepareMarketplaceDescriptionsForUpload(car, user, {
       album: updatedAlbum,
       uploadedMediaCount: saved.length,
@@ -4242,6 +4623,29 @@ async function saveUploadedMediaForCar({ files, car, user }) {
     await cleanupSavedUploads(saved);
     throw error;
   }
+}
+
+async function assertVehicleCanReceiveUpload(car, user) {
+  const existingAlbum = await findExistingVehicleAlbum(car);
+  if (!existingAlbum?.mediaCount) return;
+  if (user?.role === "admin") return;
+
+  const vehicleLabel = existingAlbum.vehicle?.stockNumber
+    || existingAlbum.vehicle?.vin
+    || existingAlbum.name
+    || "this vehicle";
+  throw httpError(
+    409,
+    `${vehicleLabel} already has uploaded CarPostClub photos. Open it from the gallery instead of creating a duplicate photo set.`,
+  );
+}
+
+function vehicleUploadLockKey(car) {
+  return [
+    normalizeSpace(car?.dealership?.id || car?.dealershipId || "dealership").toLowerCase(),
+    normalizeSpace(car?.inventoryTypeId || defaultInventoryTypeId).toLowerCase(),
+    normalizeSpace(car?.vin || car?.inventoryKey || car?.manualInventoryId || car?.stockNumber || "vehicle").toUpperCase(),
+  ].join(":");
 }
 
 function albumPath(albumId) {
@@ -5238,9 +5642,10 @@ function sendAdminUsersPage(res, { currentUser, users, invites = [], generatedIn
         <strong>Invite link</strong>
         <span>Anyone with the latest link can sign up for 24 hours.</span>
       </div>
-      <form method="post" action="/admin/invites">
+      <form method="post" action="/admin/invites" data-invite-form>
         <button type="submit">Generate invite link</button>
       </form>
+      <p class="admin-invite-copy-status" data-invite-copy-status role="status" aria-live="polite"></p>
     </section>
     ${generatedInvite ? renderGeneratedInvite(generatedInvite) : ""}
     <div class="admin-user-list">${inviteRows}</div>
@@ -5253,7 +5658,8 @@ function sendAdminUsersPage(res, { currentUser, users, invites = [], generatedIn
     </section>
     <p class="auth-note">Invited users are active immediately. Use deactivate if an account should no longer have access.</p>
     <div class="admin-user-list">${userRows}</div>
-    <p class="auth-actions"><a href="/">Back to app</a></p>`,
+    <p class="auth-actions"><a href="/">Back to app</a></p>
+    ${renderInviteClipboardScript()}`,
   }));
 }
 
@@ -5296,13 +5702,152 @@ function renderGeneratedInvite(invite) {
   return `<section class="admin-user-card is-bootstrap">
     <div>
       <strong>New invite link</strong>
-      <span>Copy this link and send it to the group chat. It expires ${escapeHtml(formatAuthDate(invite.expiresAt))}</span>
+      <span>This link expires ${escapeHtml(formatAuthDate(invite.expiresAt))}</span>
     </div>
-    <label class="admin-invite-link">
-      <span>Invite URL</span>
-      <input value="${escapeHtml(invite.signupUrl)}" readonly onclick="this.select()">
-    </label>
+    <div class="admin-invite-link">
+      <label>
+        <span>Invite URL</span>
+        <input value="${escapeHtml(invite.signupUrl)}" readonly onclick="this.select()" data-generated-invite-url>
+      </label>
+      <button type="button" data-copy-invite-button>Copy link</button>
+      <p class="admin-invite-copy-status" data-invite-copy-status role="status" aria-live="polite"></p>
+    </div>
   </section>`;
+}
+
+function renderInviteClipboardScript() {
+  return `<script>
+(() => {
+  const form = document.querySelector("[data-invite-form]");
+  const existingInput = document.querySelector("[data-generated-invite-url]");
+  const copyButton = document.querySelector("[data-copy-invite-button]");
+  const status = document.querySelector("[data-invite-copy-status]");
+
+  function setCopyStatus(message, ok = true) {
+    if (!status) return;
+    status.textContent = message;
+    status.dataset.copyStatus = ok ? "success" : "error";
+  }
+
+  async function writeClipboardText(text) {
+    if (!text) return false;
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {}
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.setAttribute("aria-hidden", "true");
+    textarea.style.position = "fixed";
+    textarea.style.top = "0";
+    textarea.style.left = "0";
+    textarea.style.width = "1px";
+    textarea.style.height = "1px";
+    textarea.style.opacity = "0";
+    textarea.style.pointerEvents = "none";
+    document.body.append(textarea);
+
+    const selection = document.getSelection();
+    const range = selection && selection.rangeCount ? selection.getRangeAt(0) : null;
+    textarea.focus({ preventScroll: true });
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch {}
+
+    textarea.remove();
+    if (range && selection) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    return copied;
+  }
+
+  async function copyGeneratedInvite(text, { silent = false } = {}) {
+    const copied = await writeClipboardText(text);
+    if (!silent || copied) {
+      setCopyStatus(copied ? "Invite link copied to clipboard." : "Clipboard copy blocked. Use Copy link.", copied);
+    }
+    return copied;
+  }
+
+  async function createInviteLink() {
+    const response = await fetch(form.action, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        "X-Requested-With": "fetch",
+      },
+    });
+    if (!response.ok) throw new Error("Invite request failed.");
+    return response.json();
+  }
+
+  function prepareDeferredClipboardWrite(invitePromise) {
+    if (!navigator.clipboard?.write || !window.ClipboardItem || !window.isSecureContext) return null;
+    try {
+      const clipboardItem = new ClipboardItem({
+        "text/plain": invitePromise.then((data) => new Blob([data?.invite?.signupUrl || ""], { type: "text/plain" })),
+      });
+      return navigator.clipboard.write([clipboardItem]).then(() => true, () => false);
+    } catch {
+      return null;
+    }
+  }
+
+  function redirectWithCopyStatus(url, copied) {
+    if (!url) return;
+    const next = new URL(url, window.location.origin);
+    next.searchParams.set(
+      copied ? "success" : "error",
+      copied ? "Invite link created and copied to clipboard." : "Invite link created. Use Copy link to copy it.",
+    );
+    window.location.assign(next.toString());
+  }
+
+  if (copyButton && existingInput) {
+    copyButton.addEventListener("click", () => {
+      existingInput.select();
+      copyGeneratedInvite(existingInput.value);
+    });
+  }
+
+  if (existingInput?.value) {
+    copyGeneratedInvite(existingInput.value, { silent: true });
+  }
+
+  if (!form || !window.fetch) return;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    if (button) button.disabled = true;
+    setCopyStatus("Generating invite link...", true);
+
+    try {
+      const invitePromise = createInviteLink();
+      const preparedClipboardWrite = prepareDeferredClipboardWrite(invitePromise);
+      const data = await invitePromise;
+      const inviteUrl = data?.invite?.signupUrl || "";
+      const copied = preparedClipboardWrite
+        ? await preparedClipboardWrite || await copyGeneratedInvite(inviteUrl)
+        : await copyGeneratedInvite(inviteUrl);
+      if (copied) setCopyStatus("Invite link copied to clipboard.", true);
+      redirectWithCopyStatus(data?.redirect, copied);
+    } catch {
+      setCopyStatus("Could not generate the invite link. Try again.", false);
+      if (button) button.disabled = false;
+    }
+  });
+})();
+</script>`;
 }
 
 function renderAuthInviteCard(invite) {
@@ -5336,7 +5881,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260602-pwa-upload-v22">
+  <link rel="stylesheet" href="/styles.css?v=20260604-upload-selection-v43">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">
@@ -5364,6 +5909,11 @@ function adminUsersUrl({ error = "", success = "", invite = "" } = {}) {
   if (invite) params.set("invite", invite);
   const query = params.toString();
   return query ? `/admin/users?${query}` : "/admin/users";
+}
+
+function requestWantsJson(req) {
+  return /\bapplication\/json\b/i.test(req.get("accept") || "")
+    || req.get("x-requested-with") === "fetch";
 }
 
 function flashMessage(value) {
