@@ -709,12 +709,18 @@ textarea:focus {
 
 .album-media-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
   gap: var(--spacing-8);
   min-height: 56px;
   align-items: stretch;
   color: var(--color-smoke-gray);
   font-size: 13px;
+}
+
+.album-media-item {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
 }
 
 .album-media-thumb {
@@ -735,6 +741,60 @@ textarea:focus {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.album-media-name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-smoke-gray);
+  font-size: 11px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.album-media-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 4px;
+}
+
+.album-media-action {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-stone-gray);
+  border-radius: var(--radius-buttons);
+  padding: 0 4px;
+  color: var(--color-midnight-graphite);
+  background: var(--color-cloud-white);
+  font-size: 11px;
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
+  text-align: center;
+  text-decoration: none;
+}
+
+.album-media-action:hover:not(:disabled) {
+  border-color: var(--color-midnight-graphite);
+}
+
+.album-media-action.danger {
+  color: var(--color-flame-orange);
+  border-color: rgba(236, 91, 42, 0.45);
+}
+
+.album-media-action.danger:hover:not(:disabled) {
+  border-color: var(--color-flame-orange);
+}
+
+.album-media-action:disabled {
+  color: var(--color-smoke-gray);
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .upload-panel {
@@ -1728,7 +1788,7 @@ textarea:focus {
   }
 
   .album-media-strip {
-    grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
   }
 
   .source-link {

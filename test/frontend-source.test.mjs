@@ -105,8 +105,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /src="\/upload-monkey\.svg"/);
   assert.match(html, /class="progress-confetti"/);
   assert.doesNotMatch(html, /&#128018;/);
-  assert.match(html, /\/app\.js\?v=20260603-shared-albums-v29/);
-  assert.match(html, /\/styles\.css\?v=20260603-shared-albums-v29/);
+  assert.match(html, /\/app\.js\?v=20260604-album-media-v30/);
+  assert.match(html, /\/styles\.css\?v=20260604-album-media-v30/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -156,6 +156,11 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /triggerFileDownload/);
   assert.match(source, /state\.activeAlbum = response\.album \|\| null/);
   assert.match(source, /deleteAlbumMedia/);
+  assert.match(source, /deleteAlbumPhoto/);
+  assert.match(source, /delete-album-photo/);
+  assert.match(source, /Download all/);
+  assert.match(source, /Delete all/);
+  assert.doesNotMatch(source, /photos\.slice\(0, 10\)/);
   assert.doesNotMatch(source, /renderMarketplaceDraft/);
   assert.doesNotMatch(source, /requestMarketplaceDraft/);
   assert.doesNotMatch(source, /\/api\/marketplace-draft/);
@@ -264,6 +269,8 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /loading = "lazy"/);
   assert.match(source, /photoUploaderLabel/);
   assert.match(source, /renderAlbumMediaThumb/);
+  assert.match(source, /album-media-action/);
+  assert.match(source, /delete-album-photo/);
   assert.doesNotMatch(source, /galleryExpanded/);
   assert.doesNotMatch(source, /galleryToggleButton/);
   assert.doesNotMatch(source, /downloadAllButton/);
@@ -294,7 +301,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v33/);
+  assert.match(serviceWorker, /carpostclub-pwa-v34/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -488,9 +495,15 @@ test("album media thumbs keep media inside album tiles", async () => {
   const source = await fs.readFile(appJsPath, "utf8");
 
   assert.match(styles, /\.album-media-strip/);
+  assert.match(styles, /\.album-media-item/);
   assert.match(styles, /\.album-media-thumb/);
+  assert.match(styles, /\.album-media-name/);
+  assert.match(styles, /\.album-media-actions/);
+  assert.match(styles, /\.album-media-action/);
   assert.match(source, /renderAlbumMediaThumb/);
   assert.match(source, /photoUploaderLabel/);
+  assert.match(source, /photo\.downloadUrl/);
+  assert.match(source, /deleteAlbumPhoto/);
   assert.doesNotMatch(styles, /\.gallery-grid/);
   assert.doesNotMatch(styles, /\.photo-card/);
 });

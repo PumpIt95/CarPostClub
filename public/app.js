@@ -1342,7 +1342,7 @@ function renderAlbumDetail(album) {
   filesButton.dataset.action = "download-album-files";
   filesButton.dataset.albumId = album.id;
   filesButton.disabled = !canUseSavedAlbum || !hasMedia;
-  filesButton.textContent = "Files";
+  filesButton.textContent = "Download all";
   const packageLink = albumActionLink(album, "Package", `/api/albums/${encodeURIComponent(album.id)}/package`, canUseSavedAlbum && hasMedia);
   actions.append(descriptionLink, filesButton, packageLink);
 
@@ -1352,7 +1352,7 @@ function renderAlbumDetail(album) {
     clearButton.type = "button";
     clearButton.dataset.action = "delete-album-media";
     clearButton.dataset.albumId = album.id;
-    clearButton.textContent = "Clear media";
+    clearButton.textContent = "Delete all";
     actions.append(clearButton);
   }
 
@@ -1367,7 +1367,7 @@ function renderAlbumDetail(album) {
   } else if (!photos.length) {
     media.textContent = hasMedia ? "Open again to refresh media" : "No media saved";
   } else {
-    media.replaceChildren(...photos.slice(0, 10).map(renderAlbumMediaThumb));
+    media.replaceChildren(...photos.map(renderAlbumMediaThumb));
   }
 
   detail.append(actions, statusLine, media);
@@ -1458,28 +1458,62 @@ function albumActionLink(album, label, href, available) {
 }
 
 function renderAlbumMediaThumb(photo) {
-  const item = document.createElement("a");
-  item.className = "album-media-thumb";
-  item.href = photo.url;
-  item.target = "_blank";
-  item.rel = "noreferrer";
-  item.title = `${photo.originalName} · ${photoUploaderLabel(photo)}`;
+  const item = document.createElement("div");
+  item.className = "album-media-item";
+  const mediaName = photo.originalName || photo.filename || "Media asset";
+
+  const preview = document.createElement("a");
+  preview.className = "album-media-thumb";
+  preview.href = photo.url;
+  preview.target = "_blank";
+  preview.rel = "noreferrer";
+  preview.title = `${mediaName} · ${photoUploaderLabel(photo)}`;
 
   if (isVideoMedia(photo)) {
     const videoLabel = document.createElement("span");
     videoLabel.textContent = "Video";
-    item.append(videoLabel);
+    preview.append(videoLabel);
   } else {
     const image = document.createElement("img");
     image.src = photo.thumbnailUrl || photo.url;
-    image.alt = photo.originalName;
+    image.alt = mediaName;
     image.loading = "lazy";
     image.decoding = "async";
     image.addEventListener("error", () => {
       if (image.src !== photo.url) image.src = photo.url;
     }, { once: true });
-    item.append(image);
+    preview.append(image);
   }
+
+  const name = document.createElement("span");
+  name.className = "album-media-name";
+  name.textContent = mediaName;
+  name.title = mediaName;
+
+  const actions = document.createElement("div");
+  actions.className = "album-media-actions";
+
+  const downloadLink = document.createElement("a");
+  downloadLink.className = "album-media-action";
+  downloadLink.href = photo.downloadUrl || `${photo.url}?download=1`;
+  downloadLink.download = photo.downloadName || mediaName;
+  downloadLink.rel = "noreferrer";
+  downloadLink.textContent = "Download";
+  downloadLink.title = `Download ${mediaName}`;
+
+  const deleteButton = document.createElement("button");
+  deleteButton.className = "album-media-action danger";
+  deleteButton.type = "button";
+  deleteButton.dataset.action = "delete-album-photo";
+  deleteButton.dataset.albumId = photo.albumId || "";
+  deleteButton.dataset.filename = photo.filename || "";
+  deleteButton.dataset.originalName = mediaName;
+  deleteButton.disabled = !photo.albumId || !photo.filename;
+  deleteButton.textContent = "Delete";
+  deleteButton.title = `Delete ${mediaName}`;
+
+  actions.append(downloadLink, deleteButton);
+  item.append(preview, name, actions);
   return item;
 }
 
@@ -1537,6 +1571,9 @@ async function handleAlbumListClick(event) {
     } else if (target.dataset.action === "delete-album-media") {
       haptic("warning");
       await deleteAlbumMedia(albumId);
+    } else if (target.dataset.action === "delete-album-photo") {
+      haptic("warning");
+      await deleteAlbumPhoto(albumId, target.dataset.filename, target.dataset.originalName);
     }
   } catch (error) {
     showError(error);
@@ -1663,21 +1700,15 @@ function uploadPageUrlForAlbum(album) {
 
 async function downloadAlbumFiles(album, photos) {
   if (!album?.id || !photos.length) return;
-  const downloads = [
-    {
-      href: `/api/albums/${encodeURIComponent(album.id)}/description.txt`,
-      download: `${slugifyClient(album.name || "vehicle")}-marketplace-description.txt`,
-    },
-    ...photos.map((photo) => ({
-      href: photo.downloadUrl || `${photo.url}?download=1`,
-      download: photo.downloadName || photo.originalName || photo.filename,
-    })),
-  ];
+  const downloads = photos.map((photo) => ({
+    href: photo.downloadUrl || `${photo.url}?download=1`,
+    download: photo.downloadName || photo.originalName || photo.filename,
+  }));
 
   downloads.forEach((download, index) => {
     window.setTimeout(() => triggerFileDownload(download.href, download.download), index * 220);
   });
-  showStatus(`Starting ${downloads.length} downloads.`);
+  showStatus(`Starting ${downloads.length} media ${plural(downloads.length, "download")}.`);
 }
 
 function triggerFileDownload(href, downloadName) {
@@ -1864,6 +1895,31 @@ async function deleteAlbumMedia(albumId) {
   } catch (error) {
     throw error;
   }
+}
+
+async function deleteAlbumPhoto(albumId, filename, label = "this media asset") {
+  if (!albumId || !filename) return;
+  const mediaLabel = label || filename;
+  const confirmed = window.confirm(`Delete ${mediaLabel} from this album? This cannot be undone.`);
+  if (!confirmed) return;
+
+  const response = await apiJson(`/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}`, {
+    method: "DELETE",
+  });
+  if (state.activeAlbum?.id === albumId) {
+    state.photos = state.photos.filter((photo) => photo.filename !== filename);
+    await loadSelectedCarAlbum({ force: true });
+  }
+  state.albumDetails[albumId] = {
+    ...state.albumDetails[albumId],
+    photos: (state.albumDetails[albumId]?.photos || []).filter((photo) => photo.filename !== filename),
+    loading: false,
+  };
+  await loadAlbums();
+  await loadAlbumDetails(albumId, { force: true, includeDraft: state.page === "gallery" });
+  renderAlbumList();
+  haptic("success");
+  showStatus(response.ok ? `Deleted ${mediaLabel}.` : "Deleted media asset.");
 }
 
 async function apiJson(path, options = {}) {
