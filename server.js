@@ -76,6 +76,7 @@ const s3MediaClient = s3MediaStorageEnabled
   : null;
 const chatMessagesPath = path.resolve(process.env.CHAT_MESSAGES_PATH || path.join(path.dirname(uploadRoot), "chat-messages.json"));
 const manualInventoryPath = path.resolve(process.env.MANUAL_INVENTORY_PATH || path.join(path.dirname(uploadRoot), "manual-inventory.json"));
+const albumSeenPath = path.resolve(process.env.CARPOSTCLUB_ALBUM_SEEN_PATH || process.env.KONNER_ALBUM_SEEN_PATH || process.env.ALBUM_SEEN_PATH || path.join(path.dirname(uploadRoot), "album-seen.json"));
 const pushSubscriptionsPath = path.resolve(process.env.CARPOSTCLUB_PUSH_SUBSCRIPTIONS_PATH || process.env.KONNER_PUSH_SUBSCRIPTIONS_PATH || process.env.PUSH_SUBSCRIPTIONS_PATH || path.join(path.dirname(uploadRoot), "push-subscriptions.json"));
 const pushVapidKeysPath = path.resolve(process.env.CARPOSTCLUB_PUSH_VAPID_KEYS_PATH || process.env.KONNER_PUSH_VAPID_KEYS_PATH || process.env.PUSH_VAPID_KEYS_PATH || path.join(path.dirname(uploadRoot), "push-vapid-keys.json"));
 const releaseManifestPath = process.env.CARPOSTCLUB_RELEASE_MANIFEST || process.env.KONNER_RELEASE_MANIFEST || path.join(appRoot, "release-manifest.json");
@@ -164,16 +165,24 @@ const oregansDealerships = Object.freeze([
   { id: "31", name: "O'Regan's Volkswagen Halifax" },
   { id: "40", name: "O'Regan's Lexus" },
 ]);
+const inventoryPicklistDealershipIds = Object.freeze(["3", "15", "18", "31"]);
+const inventoryPicklistDealerships = Object.freeze(
+  inventoryPicklistDealershipIds
+    .map((id) => oregansDealerships.find((dealership) => dealership.id === id))
+    .filter(Boolean),
+);
 const inventoryCache = new Map();
 const chatClients = new Set();
 const marketplaceCopyPromises = new Map();
 const marketplaceCopyStoreWritePromises = new Map();
+const vehicleUploadWritePromises = new Map();
 const photoMetadataWritePromises = new Map();
 let marketplaceDescriptionsDb = null;
 let chatWritePromise = Promise.resolve();
 let authUsersWritePromise = Promise.resolve();
 let authInvitesWritePromise = Promise.resolve();
 let manualInventoryWritePromise = Promise.resolve();
+let albumSeenWritePromise = Promise.resolve();
 let pushSubscriptionsWritePromise = Promise.resolve();
 let openaiClient = null;
 
@@ -182,6 +191,7 @@ await fs.mkdir(tmpRoot, { recursive: true });
 await fs.mkdir(path.dirname(marketplaceDescriptionsDbPath), { recursive: true });
 await fs.mkdir(path.dirname(chatMessagesPath), { recursive: true });
 await fs.mkdir(path.dirname(manualInventoryPath), { recursive: true });
+await fs.mkdir(path.dirname(albumSeenPath), { recursive: true });
 await fs.mkdir(path.dirname(authUsersPath), { recursive: true });
 await fs.mkdir(path.dirname(authInvitesPath), { recursive: true });
 await fs.mkdir(path.dirname(pushSubscriptionsPath), { recursive: true });
@@ -523,13 +533,33 @@ app.get("/inventory", requireAuth, (_req, res) => {
   res.redirect(302, "/");
 });
 
-app.get("/api/albums", requireAuth, async (_req, res, next) => {
+app.get("/api/albums", requireAuth, async (req, res, next) => {
   try {
+    const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
     res.json({
       ok: true,
       uploadRoot,
       mediaDriver: mediaStorageDriver,
-      albums: await listAlbums({ includeInventoryStatus: true }),
+      albums: gallery.albums,
+      unreadTotal: gallery.unreadTotal,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/gallery/dealerships/:dealershipId/seen", requireAuth, async (req, res, next) => {
+  try {
+    const dealership = cleanDealershipId(req.params.dealershipId);
+    const albums = (await listAlbums()).filter((album) => albumDealershipKey(album) === dealership.id);
+    const marked = await markAlbumObjectsSeen(req.authUser, albums);
+    const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
+    res.json({
+      ok: true,
+      dealership,
+      marked,
+      albums: gallery.albums,
+      unreadTotal: gallery.unreadTotal,
     });
   } catch (error) {
     next(error);
@@ -595,7 +625,7 @@ app.post("/api/push/test", requireAuth, async (req, res, next) => {
 app.get("/api/inventory/dealerships", requireAuth, (_req, res) => {
   res.json({
     ok: true,
-    dealerships: oregansDealerships,
+    dealerships: inventoryPicklistDealerships,
     inventoryTypes,
     defaultInventoryTypeId,
     sourceUrl: "https://www.oregans.com/inventory/",
@@ -607,7 +637,10 @@ app.get("/api/inventory/cars", requireAuth, async (req, res, next) => {
     const dealership = cleanDealershipId(req.query.dealershipId);
     const inventoryTypeId = cleanInventoryTypeId(req.query.inventoryTypeId || defaultInventoryTypeId);
     const inventory = await fetchInventoryCarsSnapshot({ dealershipId: dealership.id, inventoryTypeId });
-    const cars = await mergeManualInventoryCars(inventory.cars, { dealership, inventoryTypeId });
+    const cars = await annotateInventoryCarsWithPostedStatus(
+      await mergeManualInventoryCars(inventory.cars, { dealership, inventoryTypeId }),
+      { dealershipId: dealership.id, inventoryTypeId },
+    );
     res.json({
       ok: true,
       dealership,
@@ -707,10 +740,31 @@ app.get("/api/vehicle-album", requireAuth, async (req, res, next) => {
   try {
     const { car } = await resolveInventoryCar(req.query);
     const album = await findExistingVehicleAlbum(car);
+    const photos = album ? await listAlbumPhotos(album.id) : [];
+    if (album && photos.length) await markAlbumObjectsSeen(req.authUser, [album]);
     res.json({
       ok: true,
       album: await albumWithInventoryStatus(album),
-      photos: album ? await listAlbumPhotos(album.id) : [],
+      photos,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/albums/:albumId/seen", requireAuth, async (req, res, next) => {
+  try {
+    const albumId = cleanAlbumId(req.params.albumId);
+    const album = await readAlbum(albumId);
+    if (!album) throw httpError(404, "Album not found.");
+    const marked = await markAlbumObjectsSeen(req.authUser, [album]);
+    const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
+    res.json({
+      ok: true,
+      album: withAlbumReadState(await albumWithInventoryStatus(album), req.authUser, await readAlbumSeenStore()),
+      marked,
+      albums: gallery.albums,
+      unreadTotal: gallery.unreadTotal,
     });
   } catch (error) {
     next(error);
@@ -722,10 +776,12 @@ app.get("/api/albums/:albumId/photos", requireAuth, async (req, res, next) => {
     const albumId = cleanAlbumId(req.params.albumId);
     const album = await readAlbum(albumId);
     if (!album) throw httpError(404, "Album not found.");
+    const photos = await listAlbumPhotos(albumId);
+    if (photos.length) await markAlbumObjectsSeen(req.authUser, [album]);
     res.json({
       ok: true,
       album: await albumWithInventoryStatus(album),
-      photos: await listAlbumPhotos(albumId),
+      photos,
     });
   } catch (error) {
     next(error);
@@ -766,10 +822,10 @@ app.get("/api/albums/:albumId/media/:filename", requireAuth, serveAlbumMedia);
 app.get("/api/albums/:albumId/photos/:filename", requireAuth, serveAlbumMedia);
 app.get("/api/albums/:albumId/media/:filename/thumbnail", requireAuth, serveAlbumThumbnail);
 
-app.delete("/api/albums/:albumId/media", requireAuth, deleteAlbumMediaCollection);
-app.delete("/api/albums/:albumId/photos", requireAuth, deleteAlbumMediaCollection);
-app.delete("/api/albums/:albumId/media/:filename", requireAuth, deleteAlbumMedia);
-app.delete("/api/albums/:albumId/photos/:filename", requireAuth, deleteAlbumMedia);
+app.delete("/api/albums/:albumId/media", requireAdmin, deleteAlbumMediaCollection);
+app.delete("/api/albums/:albumId/photos", requireAdmin, deleteAlbumMediaCollection);
+app.delete("/api/albums/:albumId/media/:filename", requireAdmin, deleteAlbumMedia);
+app.delete("/api/albums/:albumId/photos/:filename", requireAdmin, deleteAlbumMedia);
 
 async function serveAlbumMedia(req, res, next) {
   try {
@@ -1173,6 +1229,124 @@ async function listAlbums({ includeInventoryStatus = false } = {}) {
   return includeInventoryStatus ? albumsWithInventoryStatus(sorted) : sorted;
 }
 
+async function listAlbumsForUser(user, { includeInventoryStatus = false } = {}) {
+  const [albums, seenStore] = await Promise.all([
+    listAlbums({ includeInventoryStatus }),
+    readAlbumSeenStore(),
+  ]);
+  const albumsWithReadState = albums.map((album) => withAlbumReadState(album, user, seenStore));
+  return {
+    albums: albumsWithReadState,
+    unreadTotal: albumsWithReadState.filter((album) => album.unread).length,
+  };
+}
+
+function withAlbumReadState(album, user, seenStore) {
+  const username = normalizeAuthUsername(user?.username);
+  const seen = seenStore?.users?.[username]?.albums?.[album.id] || null;
+  const albumUpdatedAt = albumReadVersion(album);
+  const albumUpdatedMs = Date.parse(albumUpdatedAt || "");
+  const seenMs = Date.parse(seen?.albumUpdatedAt || seen?.seenAt || "");
+  const latestUploaderUsername = normalizeAuthUsername(album.latestUploadedBy?.username || album.updatedBy?.username);
+  const hasSeenVersion = Number.isFinite(seenMs) && (!Number.isFinite(albumUpdatedMs) || seenMs >= albumUpdatedMs);
+  const unread = Boolean(
+    username
+    && album.mediaCount > 0
+    && latestUploaderUsername !== username
+    && !hasSeenVersion
+  );
+
+  return {
+    ...album,
+    unread,
+    readState: {
+      unread,
+      seenAt: seen?.seenAt || "",
+      albumUpdatedAt: seen?.albumUpdatedAt || "",
+    },
+  };
+}
+
+function albumReadVersion(album) {
+  return album?.latestUploadedAt || album?.updatedAt || album?.createdAt || "";
+}
+
+function albumDealershipKey(album) {
+  return normalizeSpace(album?.vehicle?.dealershipId || album?.dealership?.id || "");
+}
+
+async function markAlbumObjectsSeen(user, albums) {
+  const username = normalizeAuthUsername(user?.username);
+  const validAlbums = albums
+    .filter((album) => album?.id && album.mediaCount > 0)
+    .map((album) => ({
+      id: cleanAlbumId(album.id),
+      albumUpdatedAt: albumReadVersion(album),
+    }));
+  if (!username || !validAlbums.length) return 0;
+
+  return updateAlbumSeenStore((store) => {
+    const userStore = store.users[username] || { albums: {} };
+    userStore.albums = userStore.albums && typeof userStore.albums === "object" ? userStore.albums : {};
+    const seenAt = new Date().toISOString();
+    let marked = 0;
+    for (const album of validAlbums) {
+      const previous = userStore.albums[album.id];
+      if (previous?.albumUpdatedAt === album.albumUpdatedAt) continue;
+      userStore.albums[album.id] = {
+        seenAt,
+        albumUpdatedAt: album.albumUpdatedAt,
+      };
+      marked += 1;
+    }
+    store.users[username] = userStore;
+    return marked;
+  });
+}
+
+async function readAlbumSeenStore() {
+  return normalizeAlbumSeenStore(await readJson(albumSeenPath, { users: {} }));
+}
+
+async function updateAlbumSeenStore(mutator) {
+  albumSeenWritePromise = albumSeenWritePromise.catch(() => {}).then(async () => {
+    const store = await readAlbumSeenStore();
+    const result = await mutator(store);
+    await writeJson(albumSeenPath, store);
+    return result;
+  });
+  return albumSeenWritePromise;
+}
+
+function normalizeAlbumSeenStore(value) {
+  const users = value?.users && typeof value.users === "object" ? value.users : {};
+  const normalized = { users: {} };
+  for (const [rawUsername, rawUserStore] of Object.entries(users)) {
+    const username = normalizeAuthUsername(rawUsername);
+    if (!username) continue;
+    const rawAlbums = rawUserStore?.albums && typeof rawUserStore.albums === "object" ? rawUserStore.albums : {};
+    const albums = {};
+    for (const [rawAlbumId, rawSeen] of Object.entries(rawAlbums)) {
+      if (!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(rawAlbumId) || rawAlbumId.includes("..")) continue;
+      const albumId = rawAlbumId.toLowerCase();
+      const seenAt = validIsoString(rawSeen?.seenAt);
+      const albumUpdatedAt = validIsoString(rawSeen?.albumUpdatedAt);
+      if (!seenAt && !albumUpdatedAt) continue;
+      albums[albumId] = {
+        seenAt: seenAt || albumUpdatedAt,
+        albumUpdatedAt: albumUpdatedAt || seenAt,
+      };
+    }
+    normalized.users[username] = { albums };
+  }
+  return normalized;
+}
+
+function validIsoString(value) {
+  const text = String(value || "");
+  return Number.isFinite(Date.parse(text)) ? text : "";
+}
+
 async function readAlbum(albumId) {
   albumId = cleanAlbumId(albumId);
   const directory = albumPath(albumId);
@@ -1193,7 +1367,8 @@ async function readAlbum(albumId) {
   const storage = albumStorageInfo(albumId, metadata);
   const uploadedByUsers = albumUploadedByUsers(photos);
   const createdBy = albumCreator(metadata, photos);
-  const updatedBy = publicUploader(metadata.updatedBy) || publicUploader(photos[0]?.uploadedBy) || createdBy;
+  const latestPhoto = photos[0] || null;
+  const updatedBy = publicUploader(metadata.updatedBy) || publicUploader(latestPhoto?.uploadedBy) || createdBy;
 
   return {
     id: albumId,
@@ -1209,6 +1384,8 @@ async function readAlbum(albumId) {
     mediaCount: photos.length,
     bytes,
     coverUrl: cover?.url || null,
+    latestUploadedAt: latestPhoto?.uploadedAt || null,
+    latestUploadedBy: latestPhoto?.uploadedBy || null,
     descriptionPreview: normalizeSpace(metadata.vehicle?.descriptionPreview),
     objectStoragePrefix: storage.prefix,
     storage,
@@ -1564,6 +1741,34 @@ async function fetchInventoryCars({ dealershipId, inventoryTypeId }) {
   inventoryTypeId = cleanInventoryTypeId(inventoryTypeId || defaultInventoryTypeId);
   const inventory = await fetchInventoryCarsSnapshot({ dealershipId: dealership.id, inventoryTypeId });
   return mergeManualInventoryCars(inventory.cars, { dealership, inventoryTypeId });
+}
+
+async function annotateInventoryCarsWithPostedStatus(cars, { dealershipId, inventoryTypeId }) {
+  const albums = await listAlbums();
+  const scopedAlbums = albums.filter((album) => albumMatchesInventoryScope(album, { dealershipId, inventoryTypeId }));
+  return cars.map((car) => {
+    const album = scopedAlbums.find((candidate) => inventoryCarMatchesAlbum(car, candidate));
+    if (!album) return { ...car, posted: { posted: false } };
+    return {
+      ...car,
+      posted: {
+        posted: true,
+        albumId: album.id,
+        albumName: album.name,
+        mediaCount: album.mediaCount || 0,
+        updatedAt: album.updatedAt || "",
+        dealershipId: album.vehicle?.dealershipId || album.dealership?.id || "",
+        inventoryTypeId: album.vehicle?.inventoryTypeId || album.inventoryTypeId || "",
+      },
+    };
+  });
+}
+
+function albumMatchesInventoryScope(album, { dealershipId, inventoryTypeId }) {
+  const albumDealershipId = normalizeSpace(album?.vehicle?.dealershipId || album?.dealership?.id);
+  const albumInventoryTypeId = normalizeSpace(album?.vehicle?.inventoryTypeId || album?.inventoryTypeId);
+  return (!albumDealershipId || albumDealershipId === String(dealershipId))
+    && (!albumInventoryTypeId || albumInventoryTypeId === String(inventoryTypeId));
 }
 
 async function shortcutInventoryAlbumPicker(query = {}) {
@@ -4215,16 +4420,32 @@ async function cleanupSavedUploads(photos) {
 }
 
 async function saveUploadedMediaForCar({ files, car, user }) {
+  const lockKey = vehicleUploadLockKey(car);
+  const previous = vehicleUploadWritePromises.get(lockKey) || Promise.resolve();
+  const next = previous.catch(() => {}).then(() => saveUploadedMediaForCarLocked({ files, car, user }));
+  vehicleUploadWritePromises.set(lockKey, next);
+  try {
+    return await next;
+  } finally {
+    if (vehicleUploadWritePromises.get(lockKey) === next) {
+      vehicleUploadWritePromises.delete(lockKey);
+    }
+  }
+}
+
+async function saveUploadedMediaForCarLocked({ files, car, user }) {
   const saved = [];
   try {
-    const album = await ensureCarAlbum(car, user);
     if (!files.length) throw httpError(400, "No media files were uploaded.");
+    await assertVehicleCanReceiveUpload(car, user);
+    const album = await ensureCarAlbum(car, user);
 
     for (const file of files) {
       saved.push(await saveUploadedPhoto(album.id, file, user));
     }
 
     let updatedAlbum = await readAlbum(album.id) || album;
+    await markAlbumObjectsSeen(user, [updatedAlbum]);
     const marketplaceGeneration = await prepareMarketplaceDescriptionsForUpload(car, user, {
       album: updatedAlbum,
       uploadedMediaCount: saved.length,
@@ -4242,6 +4463,29 @@ async function saveUploadedMediaForCar({ files, car, user }) {
     await cleanupSavedUploads(saved);
     throw error;
   }
+}
+
+async function assertVehicleCanReceiveUpload(car, user) {
+  const existingAlbum = await findExistingVehicleAlbum(car);
+  if (!existingAlbum?.mediaCount) return;
+  if (user?.role === "admin") return;
+
+  const vehicleLabel = existingAlbum.vehicle?.stockNumber
+    || existingAlbum.vehicle?.vin
+    || existingAlbum.name
+    || "this vehicle";
+  throw httpError(
+    409,
+    `${vehicleLabel} already has uploaded CarPostClub photos. Open it from the gallery instead of creating a duplicate photo set.`,
+  );
+}
+
+function vehicleUploadLockKey(car) {
+  return [
+    normalizeSpace(car?.dealership?.id || car?.dealershipId || "dealership").toLowerCase(),
+    normalizeSpace(car?.inventoryTypeId || defaultInventoryTypeId).toLowerCase(),
+    normalizeSpace(car?.vin || car?.inventoryKey || car?.manualInventoryId || car?.stockNumber || "vehicle").toUpperCase(),
+  ].join(":");
 }
 
 function albumPath(albumId) {
@@ -5336,7 +5580,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260602-pwa-upload-v22">
+  <link rel="stylesheet" href="/styles.css?v=20260604-gallery-responsive-v37">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">

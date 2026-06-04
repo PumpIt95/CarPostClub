@@ -25,7 +25,7 @@
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260604-album-media-v30">
+  <link rel="stylesheet" href="/styles.css?v=20260604-gallery-responsive-v37">
 </head>
 <body>
   <main class="app-shell">
@@ -154,6 +154,11 @@
         <label class="field field-wide" for="carSelect">
           <span><strong>5</strong> Inventory <em id="carCount">0</em></span>
           <input id="carSearchInput" type="search" autocomplete="off" placeholder="Search stock, make, model, year, color, VIN, price, km">
+          <label class="inventory-filter-toggle" for="showPostedInventoryToggle">
+            <input id="showPostedInventoryToggle" type="checkbox">
+            <span>Show already posted vehicles</span>
+          </label>
+          <span id="postedInventoryHint" class="field-hint">Unposted inventory only</span>
           <select id="carSelect" disabled>
             <option value="">Choose a car</option>
           </select>
@@ -369,6 +374,36 @@
         </button>
         <span id="albumCount" class="count-pill">0</span>
       </div>
+      <div id="galleryFilterBar" class="gallery-filter-bar" hidden>
+        <label class="field" for="gallerySearchInput">
+          <span>Search vehicles</span>
+          <input id="gallerySearchInput" type="search" autocomplete="off" placeholder="Search stock, VIN, make, model, year, uploader">
+        </label>
+        <label class="field" for="galleryStatusFilter">
+          <span>Status</span>
+          <select id="galleryStatusFilter">
+            <option value="active">Active only</option>
+            <option value="inactive">Inactive only</option>
+            <option value="all">All statuses</option>
+          </select>
+        </label>
+        <label class="field" for="galleryMakeFilter">
+          <span>Make</span>
+          <select id="galleryMakeFilter"></select>
+        </label>
+        <label class="field" for="galleryModelFilter">
+          <span>Model</span>
+          <select id="galleryModelFilter"></select>
+        </label>
+        <label class="field" for="galleryYearFilter">
+          <span>Year</span>
+          <select id="galleryYearFilter"></select>
+        </label>
+        <label class="field" for="galleryUploaderFilter">
+          <span>Uploader</span>
+          <select id="galleryUploaderFilter"></select>
+        </label>
+      </div>
       <div id="albumList" class="album-list"></div>
       <div id="albumEmpty" class="empty-state" hidden>No album tiles yet</div>
     </section>
@@ -399,6 +434,6 @@
     </form>
   </section>
 
-  <script src="/app.js?v=20260604-album-media-v30" type="module"></script>
+  <script src="/app.js?v=20260604-gallery-responsive-v37" type="module"></script>
 </body>
 </html>

@@ -41,9 +41,21 @@ Each inventory album stores files under its own object-key prefix, for example `
 
 ```bash
 npm test
+npm run test:e2e
+sudo npm run qa:gallery
 npm run smoke
 docker compose up --build
 ```
+
+`npm run test:e2e` uses Playwright. On this server, Chrome is available at `/usr/bin/google-chrome-stable`;
+set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to use a different browser executable.
+Set `CARPOSTCLUB_E2E_SCREENSHOT_DIR=/tmp/carpostclub-gallery-qa` to save gallery viewport screenshots
+while running the responsive Playwright checks.
+
+`sudo npm run qa:gallery` logs in as the dedicated `visual.qa` user, screenshots the production gallery
+across desktop, laptop, tablet, and mobile sizes, checks for horizontal overflow, and writes the run to
+`/var/lib/konner-upload/debug-screenshots/gallery-qa`. It reads the password from
+`/var/lib/konner-upload/visual-qa-credentials.txt` and restores that user's unread/read state afterward.
 
 ## PWA Media Upload
 
