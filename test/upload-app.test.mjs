@@ -578,6 +578,20 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.match(uploaded.body.marketplaceDraft.copyText, /Dealership: O'Regan's Kia Halifax/);
     assert.match(uploaded.body.marketplaceDraft.copyText, /Ask for: Konner/);
 
+    const staleMarketplaceCopyPath = path.join(harness.uploadRoot, TEST_ALBUM_ID, ".marketplace-copy.json");
+    const staleMarketplaceCopy = JSON.parse(await fs.readFile(staleMarketplaceCopyPath, "utf8"));
+    await fs.writeFile(staleMarketplaceCopyPath, `${JSON.stringify({
+      ...staleMarketplaceCopy,
+      promptVersion: "facebook-marketplace-user-description-v1",
+    }, null, 2)}\n`);
+    const staleAlbumMarketplaceDraft = await getJson(harness, `/api/albums/${uploaded.body.album.id}/marketplace-draft`);
+    assert.equal(staleAlbumMarketplaceDraft.draft.descriptionSource, "template-upload");
+    assert.match(staleAlbumMarketplaceDraft.draft.description, /O'Regan's Kia Halifax/);
+    assert.match(staleAlbumMarketplaceDraft.draft.description, /ask for Konner/i);
+    const refreshedMarketplaceCopy = JSON.parse(await fs.readFile(staleMarketplaceCopyPath, "utf8"));
+    assert.notEqual(refreshedMarketplaceCopy.promptVersion, "facebook-marketplace-user-description-v1");
+    assert.equal(refreshedMarketplaceCopy.mode, "upload_pool");
+
     const uploadedMarketplaceDraft = await getJson(
       harness,
       `/api/marketplace-draft?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,

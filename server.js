@@ -2131,7 +2131,14 @@ async function getMarketplaceDescriptionForUser({ car, fields, user, album, forc
 
   const inputHash = marketplaceDescriptionInputHash(car, fields);
   const copyPath = marketplaceCopyPath(album.id);
-  const store = await readMarketplaceCopyStore(copyPath);
+  let store = await readMarketplaceCopyStore(copyPath);
+  if (!isMarketplaceUploadPoolCurrent(store, inputHash)) {
+    await prepareMarketplaceDescriptionsForUpload(car, user, {
+      album,
+      uploadedMediaCount: album.mediaCount || 0,
+    });
+    store = await readMarketplaceCopyStore(copyPath);
+  }
   if (!isMarketplaceUploadPoolCurrent(store, inputHash)) return { ...fallback, inputHash };
 
   const assigned = await assignMarketplaceDescriptionToUser(copyPath, user, inputHash, { force });
