@@ -517,28 +517,6 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
 
     const marketplaceCopyConflictPath = path.join(harness.uploadRoot, TEST_ALBUM_ID, ".marketplace-copy.json");
     await fs.mkdir(marketplaceCopyConflictPath, { recursive: true });
-    const failedGeneratedUpload = await uploadPhotos(harness, {
-      dealershipId: "15",
-      inventoryTypeId: "2",
-      vin: TEST_CAR.vin,
-      photos: [
-        { filename: "rollback-front.jpg", type: "image/jpeg", body: jpegBytes("rollback-front") },
-        { filename: "rollback-interior.png", type: "image/png", body: pngBytes("rollback-interior") },
-      ],
-    });
-    assert.equal(failedGeneratedUpload.status, 500);
-    assert.match(failedGeneratedUpload.body.error, /Unexpected server error/);
-    const afterFailedGeneratedUpload = await getJson(
-      harness,
-      `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
-    );
-    assert.deepEqual(afterFailedGeneratedUpload.photos, []);
-    assert.deepEqual(await fs.readdir(harness.tmpRoot), []);
-    assert.deepEqual(
-      JSON.parse(await fs.readFile(path.join(harness.uploadRoot, TEST_ALBUM_ID, ".photos.json"), "utf8")),
-      {},
-    );
-    await fs.rm(marketplaceCopyConflictPath, { recursive: true, force: true });
 
     const uploaded = await uploadPhotos(harness, {
       dealershipId: "15",
@@ -565,6 +543,11 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(uploaded.body.marketplaceGeneration.source, "template-upload");
     assert.equal(uploaded.body.marketplaceGeneration.variantCount, 6);
     assert.equal(uploaded.body.marketplaceGeneration.assignedCount, 2);
+    const persistedMarketplaceCopy = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
+    assert.equal(persistedMarketplaceCopy.mode, "upload_pool");
+    assert.equal(persistedMarketplaceCopy.variants.length, 6);
+    await assert.rejects(fs.readFile(marketplaceCopyConflictPath, "utf8"), { code: "EISDIR" });
+    await fs.rm(marketplaceCopyConflictPath, { recursive: true, force: true });
     assert.equal(uploaded.body.marketplaceDraft.descriptionSource, "template-upload");
     assert.match(uploaded.body.marketplaceDraft.description, /O'Regan's Kia Halifax/);
     assert.match(uploaded.body.marketplaceDraft.description, /ask for Konner/i);
@@ -578,17 +561,16 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.match(uploaded.body.marketplaceDraft.copyText, /Dealership: O'Regan's Kia Halifax/);
     assert.match(uploaded.body.marketplaceDraft.copyText, /Ask for: Konner/);
 
-    const staleMarketplaceCopyPath = path.join(harness.uploadRoot, TEST_ALBUM_ID, ".marketplace-copy.json");
-    const staleMarketplaceCopy = JSON.parse(await fs.readFile(staleMarketplaceCopyPath, "utf8"));
-    await fs.writeFile(staleMarketplaceCopyPath, `${JSON.stringify({
+    const staleMarketplaceCopy = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
+    await writeMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID, {
       ...staleMarketplaceCopy,
       promptVersion: "facebook-marketplace-user-description-v1",
-    }, null, 2)}\n`);
+    });
     const staleAlbumMarketplaceDraft = await getJson(harness, `/api/albums/${uploaded.body.album.id}/marketplace-draft`);
     assert.equal(staleAlbumMarketplaceDraft.draft.descriptionSource, "template-upload");
     assert.match(staleAlbumMarketplaceDraft.draft.description, /O'Regan's Kia Halifax/);
     assert.match(staleAlbumMarketplaceDraft.draft.description, /ask for Konner/i);
-    const refreshedMarketplaceCopy = JSON.parse(await fs.readFile(staleMarketplaceCopyPath, "utf8"));
+    const refreshedMarketplaceCopy = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
     assert.notEqual(refreshedMarketplaceCopy.promptVersion, "facebook-marketplace-user-description-v1");
     assert.equal(refreshedMarketplaceCopy.mode, "upload_pool");
 
@@ -823,6 +805,24 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(marketplaceDraftAfterDeleteAll.draft.description, "");
     assert.equal(marketplaceDraftAfterDeleteAll.draft.copyText, "");
     assert.ok(marketplaceDraftAfterDeleteAll.draft.missingFields.includes("Description"));
+
+    const persistentMarketplaceCopyAfterDelete = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
+    assert.equal(persistentMarketplaceCopyAfterDelete.mode, "upload_pool");
+    assert.equal(persistentMarketplaceCopyAfterDelete.variants.length, 6);
+
+    const reuploaded = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [
+        { filename: "reupload-front.jpg", type: "image/jpeg", body: jpegBytes("reupload-front") },
+      ],
+    });
+    assert.equal(reuploaded.status, 201);
+    assert.equal(reuploaded.body.marketplaceGeneration.source, "existing-upload-pool");
+    assert.equal(reuploaded.body.marketplaceGeneration.variantCount, 6);
+    assert.equal(reuploaded.body.marketplaceDraft.descriptionSource, "template-upload");
+    assert.match(reuploaded.body.marketplaceDraft.description, /O'Regan's Kia Halifax/);
   } finally {
     await stopTestServer(harness);
   }
@@ -1366,6 +1366,60 @@ async function postJsonWithCookie(harness, cookie, pathname, body) {
     status: response.status,
     body: await response.json(),
   };
+}
+
+async function readMarketplaceDescriptionDbStore(harness, albumId) {
+  const db = await openMarketplaceDescriptionTestDb(harness);
+  try {
+    const row = db.prepare(`
+      SELECT store_json
+      FROM marketplace_description_stores
+      WHERE album_id = ?
+    `).get(albumId);
+    assert.ok(row?.store_json, `Missing marketplace description DB row for ${albumId}`);
+    return JSON.parse(row.store_json);
+  } finally {
+    if (typeof db.close === "function") db.close();
+  }
+}
+
+async function writeMarketplaceDescriptionDbStore(harness, albumId, store) {
+  const db = await openMarketplaceDescriptionTestDb(harness);
+  try {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO marketplace_description_stores (
+        album_id,
+        mode,
+        prompt_version,
+        input_hash,
+        store_json,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(album_id) DO UPDATE SET
+        mode = excluded.mode,
+        prompt_version = excluded.prompt_version,
+        input_hash = excluded.input_hash,
+        store_json = excluded.store_json,
+        updated_at = excluded.updated_at
+    `).run(
+      albumId,
+      String(store?.mode || ""),
+      String(store?.promptVersion || ""),
+      String(store?.inputHash || ""),
+      JSON.stringify(store),
+      now,
+      now,
+    );
+  } finally {
+    if (typeof db.close === "function") db.close();
+  }
+}
+
+async function openMarketplaceDescriptionTestDb(harness) {
+  const { DatabaseSync } = await import("node:sqlite");
+  return new DatabaseSync(path.join(path.dirname(harness.uploadRoot), "marketplace-descriptions.sqlite"));
 }
 
 async function openChatCollector(harness, cookie) {

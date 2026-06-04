@@ -3,6 +3,7 @@ import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { DatabaseSync } from "node:sqlite";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -36,6 +37,9 @@ const port = Number(process.env.PORT || 3911);
 const host = process.env.HOST || "127.0.0.1";
 const uploadRoot = path.resolve(process.env.UPLOAD_ROOT || "/var/lib/carpostclub/uploads");
 const tmpRoot = path.resolve(process.env.TMP_ROOT || "/var/lib/carpostclub/tmp");
+const marketplaceDescriptionsDbPath = path.resolve(process.env.CARPOSTCLUB_MARKETPLACE_DESCRIPTIONS_DB_PATH
+  || process.env.MARKETPLACE_DESCRIPTIONS_DB_PATH
+  || path.join(path.dirname(uploadRoot), "marketplace-descriptions.sqlite"));
 const objectStorageBucket = process.env.CARPOSTCLUB_S3_BUCKET || process.env.HETZNER_OBJECT_STORAGE_BUCKET || "";
 const objectStorageRegion = process.env.CARPOSTCLUB_S3_REGION || process.env.HETZNER_OBJECT_STORAGE_REGION || "fsn1";
 const objectStorageEndpoint = process.env.CARPOSTCLUB_S3_ENDPOINT
@@ -165,6 +169,7 @@ const chatClients = new Set();
 const marketplaceCopyPromises = new Map();
 const marketplaceCopyStoreWritePromises = new Map();
 const photoMetadataWritePromises = new Map();
+let marketplaceDescriptionsDb = null;
 let chatWritePromise = Promise.resolve();
 let authUsersWritePromise = Promise.resolve();
 let authInvitesWritePromise = Promise.resolve();
@@ -174,6 +179,7 @@ let openaiClient = null;
 
 await fs.mkdir(uploadRoot, { recursive: true });
 await fs.mkdir(tmpRoot, { recursive: true });
+await fs.mkdir(path.dirname(marketplaceDescriptionsDbPath), { recursive: true });
 await fs.mkdir(path.dirname(chatMessagesPath), { recursive: true });
 await fs.mkdir(path.dirname(manualInventoryPath), { recursive: true });
 await fs.mkdir(path.dirname(authUsersPath), { recursive: true });
@@ -181,6 +187,7 @@ await fs.mkdir(path.dirname(authInvitesPath), { recursive: true });
 await fs.mkdir(path.dirname(pushSubscriptionsPath), { recursive: true });
 await fs.mkdir(path.dirname(pushVapidKeysPath), { recursive: true });
 
+marketplaceDescriptionsDb = openMarketplaceDescriptionsDatabase();
 const pushKeys = await resolvePushVapidKeys();
 webPush.setVapidDetails(pushSubject, pushKeys.publicKey, pushKeys.privateKey);
 
@@ -2052,15 +2059,14 @@ async function prepareMarketplaceDescriptionsForUpload(car, user, { album = null
   const targetCount = Math.max(marketplaceDescriptionVariantCount, targetUsers.length);
   const input = buildMarketplaceDescriptionPoolInput({ car, fields, users: targetUsers, count: targetCount });
   const inputHash = marketplaceDescriptionInputHash(car, fields);
-  const copyPath = marketplaceCopyPath(album.id);
   const promiseKey = `upload:${album.id}:${inputHash}:${targetCount}`;
 
   if (marketplaceCopyPromises.has(promiseKey)) return marketplaceCopyPromises.get(promiseKey);
 
   const promise = (async () => {
-    const existingStore = await readMarketplaceCopyStore(copyPath);
+    const existingStore = await readMarketplaceCopyStore(album.id);
     if (isMarketplaceUploadPoolCurrent(existingStore, inputHash) && existingStore.variants.length >= targetCount) {
-      const assigned = await assignMarketplaceDescriptionsToUsers(copyPath, targetUsers, inputHash);
+      const assigned = await assignMarketplaceDescriptionsToUsers(album.id, targetUsers, inputHash);
       return {
         ok: true,
         source: "existing-upload-pool",
@@ -2085,7 +2091,7 @@ async function prepareMarketplaceDescriptionsForUpload(car, user, { album = null
       });
 
     const generatedAt = new Date().toISOString();
-    await writeJson(copyPath, {
+    await writeMarketplaceCopyStore(album.id, {
       mode: "upload_pool",
       promptVersion: marketplaceDescriptionPromptVersion,
       inputHash,
@@ -2098,7 +2104,7 @@ async function prepareMarketplaceDescriptionsForUpload(car, user, { album = null
       users: {},
     });
 
-    const assigned = await assignMarketplaceDescriptionsToUsers(copyPath, targetUsers, inputHash);
+    const assigned = await assignMarketplaceDescriptionsToUsers(album.id, targetUsers, inputHash);
     return {
       ok: true,
       source: variants.some((variant) => variant.source === "openai-upload") ? "openai-upload" : "template-upload",
@@ -2130,18 +2136,17 @@ async function getMarketplaceDescriptionForUser({ car, fields, user, album, forc
   if (!await albumHasMedia(album.id)) return fallback;
 
   const inputHash = marketplaceDescriptionInputHash(car, fields);
-  const copyPath = marketplaceCopyPath(album.id);
-  let store = await readMarketplaceCopyStore(copyPath);
+  let store = await readMarketplaceCopyStore(album.id);
   if (!isMarketplaceUploadPoolCurrent(store, inputHash)) {
     await prepareMarketplaceDescriptionsForUpload(car, user, {
       album,
       uploadedMediaCount: album.mediaCount || 0,
     });
-    store = await readMarketplaceCopyStore(copyPath);
+    store = await readMarketplaceCopyStore(album.id);
   }
   if (!isMarketplaceUploadPoolCurrent(store, inputHash)) return { ...fallback, inputHash };
 
-  const assigned = await assignMarketplaceDescriptionToUser(copyPath, user, inputHash, { force });
+  const assigned = await assignMarketplaceDescriptionToUser(album.id, user, inputHash, { force });
   return assigned || { ...fallback, source: "unassigned", inputHash };
 }
 
@@ -2338,24 +2343,112 @@ function getOpenAIClient() {
   return openaiClient;
 }
 
-function readMarketplaceCopyStore(filePath) {
-  return readJson(filePath, { users: {} });
+function openMarketplaceDescriptionsDatabase() {
+  const db = new DatabaseSync(marketplaceDescriptionsDbPath);
+  db.exec(`
+    PRAGMA busy_timeout = 5000;
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE IF NOT EXISTS marketplace_description_stores (
+      album_id TEXT PRIMARY KEY,
+      mode TEXT NOT NULL DEFAULT '',
+      prompt_version TEXT NOT NULL DEFAULT '',
+      input_hash TEXT NOT NULL DEFAULT '',
+      store_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS marketplace_description_stores_input_hash_idx
+      ON marketplace_description_stores(input_hash);
+  `);
+  return db;
 }
 
-async function updateMarketplaceCopyStore(filePath, mutator) {
-  const previous = marketplaceCopyStoreWritePromises.get(filePath) || Promise.resolve();
+function emptyMarketplaceCopyStore() {
+  return { users: {} };
+}
+
+async function readMarketplaceCopyStore(albumId) {
+  albumId = cleanAlbumId(albumId);
+  const row = marketplaceDescriptionsDb.prepare(`
+    SELECT store_json
+    FROM marketplace_description_stores
+    WHERE album_id = ?
+  `).get(albumId);
+  if (row?.store_json) return JSON.parse(row.store_json);
+
+  const legacyStore = await readLegacyMarketplaceCopyStore(albumId);
+  if (legacyStore && typeof legacyStore === "object" && !Array.isArray(legacyStore)) {
+    await writeMarketplaceCopyStore(albumId, legacyStore, { mirrorLegacy: false });
+    return legacyStore;
+  }
+
+  return emptyMarketplaceCopyStore();
+}
+
+async function writeMarketplaceCopyStore(albumId, store, { mirrorLegacy = true } = {}) {
+  albumId = cleanAlbumId(albumId);
+  const now = new Date().toISOString();
+  marketplaceDescriptionsDb.prepare(`
+    INSERT INTO marketplace_description_stores (
+      album_id,
+      mode,
+      prompt_version,
+      input_hash,
+      store_json,
+      created_at,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(album_id) DO UPDATE SET
+      mode = excluded.mode,
+      prompt_version = excluded.prompt_version,
+      input_hash = excluded.input_hash,
+      store_json = excluded.store_json,
+      updated_at = excluded.updated_at
+  `).run(
+    albumId,
+    normalizeSpace(store?.mode),
+    normalizeSpace(store?.promptVersion),
+    normalizeSpace(store?.inputHash),
+    JSON.stringify(store),
+    now,
+    now,
+  );
+
+  if (mirrorLegacy) await writeLegacyMarketplaceCopyStore(albumId, store);
+}
+
+async function readLegacyMarketplaceCopyStore(albumId) {
+  try {
+    return await readJson(marketplaceCopyPath(albumId), null);
+  } catch (error) {
+    if (["EISDIR", "EPERM"].includes(error?.code)) return null;
+    throw error;
+  }
+}
+
+async function writeLegacyMarketplaceCopyStore(albumId, store) {
+  try {
+    await writeJson(marketplaceCopyPath(albumId), store);
+  } catch (error) {
+    console.warn("Legacy marketplace copy sidecar write skipped:", error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function updateMarketplaceCopyStore(albumId, mutator) {
+  albumId = cleanAlbumId(albumId);
+  const previous = marketplaceCopyStoreWritePromises.get(albumId) || Promise.resolve();
   const next = previous.catch(() => {}).then(async () => {
-    const store = await readMarketplaceCopyStore(filePath);
+    const store = await readMarketplaceCopyStore(albumId);
     const result = await mutator(store);
-    if (result?.write !== false) await writeJson(filePath, store);
+    if (result?.write !== false) await writeMarketplaceCopyStore(albumId, store);
     return result?.value;
   });
   const cleanup = next.finally(() => {
-    if (marketplaceCopyStoreWritePromises.get(filePath) === cleanup) {
-      marketplaceCopyStoreWritePromises.delete(filePath);
+    if (marketplaceCopyStoreWritePromises.get(albumId) === cleanup) {
+      marketplaceCopyStoreWritePromises.delete(albumId);
     }
   });
-  marketplaceCopyStoreWritePromises.set(filePath, cleanup);
+  marketplaceCopyStoreWritePromises.set(albumId, cleanup);
   return next;
 }
 
@@ -2367,18 +2460,18 @@ function isMarketplaceUploadPoolCurrent(store, inputHash) {
     && store.variants.length > 0;
 }
 
-async function assignMarketplaceDescriptionsToUsers(copyPath, users, inputHash) {
+async function assignMarketplaceDescriptionsToUsers(albumId, users, inputHash) {
   const assigned = [];
   for (const user of users) {
-    const copy = await assignMarketplaceDescriptionToUser(copyPath, user, inputHash);
+    const copy = await assignMarketplaceDescriptionToUser(albumId, user, inputHash);
     if (copy) assigned.push(copy);
   }
   return assigned;
 }
 
-async function assignMarketplaceDescriptionToUser(copyPath, user, inputHash, { force = false } = {}) {
+async function assignMarketplaceDescriptionToUser(albumId, user, inputHash, { force = false } = {}) {
   const userKey = marketplaceUserKey(user);
-  return updateMarketplaceCopyStore(copyPath, (store) => {
+  return updateMarketplaceCopyStore(albumId, (store) => {
     if (!isMarketplaceUploadPoolCurrent(store, inputHash)) return { write: false, value: null };
 
     store.users = store.users && typeof store.users === "object" ? store.users : {};
@@ -2466,8 +2559,10 @@ async function removeMarketplaceCopyIfAlbumEmpty(albumId) {
 }
 
 async function removeMarketplaceCopyStore(albumId) {
+  // Description pools live in SQLite so they can be reused after media is cleared.
+  // Remove only the legacy sidecar file that older releases wrote into album folders.
   await fs.unlink(marketplaceCopyPath(albumId)).catch((error) => {
-    if (error?.code !== "ENOENT") throw error;
+    if (!["ENOENT", "EISDIR", "EPERM"].includes(error?.code)) throw error;
   });
 }
 
