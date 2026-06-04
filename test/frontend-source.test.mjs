@@ -35,6 +35,12 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="uploadPageLink"[^>]*href="\/"[^>]*hidden/);
   assert.match(html, /aria-label="Home"/);
   assert.match(html, /title="Home"/);
+  const headerActionsIndex = html.indexOf('<div class="header-actions">');
+  const homeNavIndex = html.indexOf('id="uploadPageLink"', headerActionsIndex);
+  const installButtonIndex = html.indexOf('id="installButton"', headerActionsIndex);
+  assert.ok(headerActionsIndex >= 0);
+  assert.ok(homeNavIndex > headerActionsIndex);
+  assert.ok(homeNavIndex < installButtonIndex);
   assert.match(html, /id="inventoryTypeSelect"/);
   assert.match(html, /id="dealershipSelect"/);
   assert.match(html, /id="makeFilterSelect"/);
