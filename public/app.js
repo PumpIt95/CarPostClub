@@ -12,6 +12,8 @@ const state = {
   chatMessages: [],
   chatOpen: false,
   chatUnread: 0,
+  chatReadMarker: null,
+  chatReadSavePromise: null,
   chatEventSource: null,
   chatReconnectTimer: null,
   albumEventSource: null,
@@ -19,6 +21,8 @@ const state = {
   albumLiveRefreshPromise: null,
   handledUploadEventIds: new Set(),
   currentUser: null,
+  accountPreferencesSaveTimer: 0,
+  accountPreferencesSavePromise: null,
   deferredInstallPrompt: null,
   serviceWorkerRegistration: null,
   pushPublicKey: "",
@@ -31,7 +35,7 @@ const state = {
   selectedVin: safeStorageGet("carpostclub.selectedVin"),
   carSearch: safeStorageGet("carpostclub.carSearch"),
   showPostedInventory: safeStorageGet("carpostclub.showPostedInventory") === "true",
-  galleryDealershipId: "",
+  galleryDealershipId: safeStorageGet("carpostclub.galleryDealershipId"),
   gallerySearch: safeStorageGet("carpostclub.gallerySearch"),
   galleryStatusFilter: safeStorageGet("carpostclub.galleryStatusFilter", "active"),
   galleryMakeFilter: safeStorageGet("carpostclub.galleryMakeFilter"),
@@ -39,7 +43,7 @@ const state = {
   galleryYearFilter: safeStorageGet("carpostclub.galleryYearFilter"),
   galleryUploaderFilter: safeStorageGet("carpostclub.galleryUploaderFilter"),
   initialOpenAlbum: false,
-  expandedAlbumId: "",
+  expandedAlbumId: safeStorageGet("carpostclub.expandedAlbumId"),
   albumsLoading: false,
   openedUnreadAlbumIds: new Set(),
   inventoryFetchedAt: "",
@@ -48,6 +52,7 @@ const state = {
   recentUploadCompletion: null,
   manualFormOpen: false,
   uploading: false,
+  photoShareBusy: false,
   uploadCelebrationTimer: 0,
   chatSending: false,
   lastSessionCheckAt: 0,
@@ -176,7 +181,7 @@ init().catch((error) => showError(error));
 async function init() {
   applyPageMode();
   bindEvents();
-  loadCurrentUser().catch(() => {});
+  await loadCurrentUser().catch(() => {});
   initChat().catch((error) => showError(error));
   initAlbumEvents();
   initPwa().catch((error) => {
@@ -215,10 +220,16 @@ function applyPageMode() {
 async function loadCurrentUser() {
   const response = await apiJson("/api/me");
   state.currentUser = response.user || null;
+  applyAccountPreferences(response.preferences);
+  state.chatReadMarker = loadChatReadMarker();
   if (els.adminUsersLink) {
     els.adminUsersLink.hidden = state.currentUser?.role !== "admin";
   }
-  if (state.chatMessages.length) renderChatMessages();
+  if (state.chatMessages.length) {
+    updateChatUnreadFromMessages();
+    renderChatMessages();
+    updateChatChrome();
+  }
   renderActiveCar();
 }
 
@@ -306,6 +317,7 @@ function bindEvents() {
   els.carSearchInput.addEventListener("input", () => {
     state.carSearch = els.carSearchInput.value;
     safeStorageSet("carpostclub.carSearch", state.carSearch);
+    scheduleAccountPreferencesSave();
     const selectedBeforeSearch = state.selectedVin;
     syncVehicleFiltersWithInventory();
     if (selectedCar() && !carMatchesVehicleFilters(selectedCar())) {
@@ -322,6 +334,7 @@ function bindEvents() {
     haptic("select");
     state.showPostedInventory = els.showPostedInventoryToggle.checked;
     safeStorageSet("carpostclub.showPostedInventory", String(state.showPostedInventory));
+    scheduleAccountPreferencesSave();
     syncVehicleFiltersWithInventory({ keepSelectedCar: true });
     renderCarOptions();
     renderActiveCar();
@@ -353,12 +366,14 @@ function bindEvents() {
   els.gallerySearchInput?.addEventListener("input", () => {
     state.gallerySearch = els.gallerySearchInput.value;
     safeStorageSet("carpostclub.gallerySearch", state.gallerySearch);
+    scheduleAccountPreferencesSave();
     renderAlbumList();
   });
   els.galleryStatusFilter?.addEventListener("change", () => {
     haptic("select");
     state.galleryStatusFilter = els.galleryStatusFilter.value;
     safeStorageSet("carpostclub.galleryStatusFilter", state.galleryStatusFilter);
+    scheduleAccountPreferencesSave();
     syncGalleryFilterSelections();
     renderAlbumList();
   });
@@ -368,6 +383,7 @@ function bindEvents() {
     state.galleryModelFilter = "";
     safeStorageSet("carpostclub.galleryMakeFilter", state.galleryMakeFilter);
     safeStorageRemove("carpostclub.galleryModelFilter");
+    scheduleAccountPreferencesSave();
     syncGalleryFilterSelections();
     renderAlbumList();
   });
@@ -375,18 +391,21 @@ function bindEvents() {
     haptic("select");
     state.galleryModelFilter = els.galleryModelFilter.value;
     safeStorageSet("carpostclub.galleryModelFilter", state.galleryModelFilter);
+    scheduleAccountPreferencesSave();
     renderAlbumList();
   });
   els.galleryYearFilter?.addEventListener("change", () => {
     haptic("select");
     state.galleryYearFilter = els.galleryYearFilter.value;
     safeStorageSet("carpostclub.galleryYearFilter", state.galleryYearFilter);
+    scheduleAccountPreferencesSave();
     renderAlbumList();
   });
   els.galleryUploaderFilter?.addEventListener("change", () => {
     haptic("select");
     state.galleryUploaderFilter = els.galleryUploaderFilter.value;
     safeStorageSet("carpostclub.galleryUploaderFilter", state.galleryUploaderFilter);
+    scheduleAccountPreferencesSave();
     renderAlbumList();
   });
 
@@ -729,16 +748,23 @@ function applyInitialSelectionFromUrl() {
   const dealershipId = cleanQueryValue(params.get("dealershipId"));
   const inventoryTypeId = cleanQueryValue(params.get("inventoryTypeId"));
   const inventoryKey = cleanQueryValue(params.get("inventoryKey") || params.get("vin"));
+  let changed = false;
   if (dealershipId) state.selectedDealershipId = dealershipId;
-  if (inventoryTypeId) state.selectedInventoryTypeId = inventoryTypeId;
+  if (dealershipId) changed = true;
+  if (inventoryTypeId) {
+    state.selectedInventoryTypeId = inventoryTypeId;
+    changed = true;
+  }
   if (inventoryKey) {
     state.selectedVin = inventoryKey;
     state.selectedMake = "";
     state.selectedModel = "";
     state.carSearch = "";
     safeStorageRemove("carpostclub.carSearch");
+    changed = true;
   }
   state.initialOpenAlbum = params.get("openAlbum") === "1";
+  if (changed) persistSelection();
 }
 
 function urlBase64ToUint8Array(value) {
@@ -749,23 +775,22 @@ function urlBase64ToUint8Array(value) {
 }
 
 async function initChat() {
-  await loadChatMessages();
+  await loadChatMessages({ countUnread: true });
   connectChatStream();
 }
 
 async function loadChatMessages({ countUnread = false } = {}) {
-  const previousChatIds = new Set(state.chatMessages.map((message) => message.id));
   const response = await apiJson("/api/chat/messages");
   const messages = Array.isArray(response.messages)
     ? response.messages.map(normalizeChatMessage).filter(Boolean)
     : [];
-  if (countUnread && !state.chatOpen) {
-    const missedUnread = messages.filter((message) => {
-      return !previousChatIds.has(message.id) && !isOwnChatMessage(message);
-    }).length;
-    state.chatUnread += missedUnread;
-  }
   state.chatMessages = messages;
+  syncChatReadMarkerFromResponse(response);
+  if (state.chatOpen) {
+    markChatReadThroughLatestMessage();
+  } else if (countUnread) {
+    updateChatUnreadFromMessages();
+  }
   renderChatMessages({ scrollToEnd: true });
   updateChatChrome();
 }
@@ -962,6 +987,7 @@ function setChatOpen(isOpen, { syncUrl = true, feedback = false } = {}) {
   if (syncUrl) syncChatUrl(state.chatOpen);
   if (state.chatOpen) {
     state.chatUnread = 0;
+    markChatReadThroughLatestMessage();
     window.setTimeout(() => {
       scrollChatToEnd();
       els.chatInput.focus();
@@ -1020,11 +1046,157 @@ function mergeChatMessage(message, { incoming = false } = {}) {
   } else {
     state.chatMessages.push(normalized);
     state.chatMessages = state.chatMessages.slice(-200);
-    if (incoming && !state.chatOpen) state.chatUnread += 1;
+    if (incoming && !state.chatOpen && isUnreadChatMessage(normalized)) state.chatUnread += 1;
   }
 
+  if (state.chatOpen) markChatReadThroughLatestMessage();
   renderChatMessages({ scrollToEnd: state.chatOpen });
   updateChatChrome();
+}
+
+function updateChatUnreadFromMessages() {
+  if (state.chatOpen) {
+    state.chatUnread = 0;
+    return;
+  }
+  state.chatUnread = state.chatMessages.filter(isUnreadChatMessage).length;
+}
+
+function isUnreadChatMessage(message) {
+  if (!message || isOwnChatMessage(message)) return false;
+  const marker = state.chatReadMarker || loadChatReadMarker();
+  if (!marker?.id && !marker?.createdAt) return true;
+
+  const markerIndex = marker.id
+    ? state.chatMessages.findIndex((candidate) => candidate.id === marker.id)
+    : -1;
+  if (markerIndex >= 0) {
+    const messageIndex = state.chatMessages.findIndex((candidate) => candidate.id === message.id);
+    return messageIndex > markerIndex;
+  }
+
+  const markerTime = Date.parse(marker.createdAt);
+  const messageTime = Date.parse(message.createdAt);
+  if (Number.isFinite(markerTime) && Number.isFinite(messageTime)) {
+    return messageTime > markerTime;
+  }
+  return true;
+}
+
+function markChatReadThroughLatestMessage() {
+  const latest = state.chatMessages[state.chatMessages.length - 1];
+  if (!latest) {
+    state.chatUnread = 0;
+    return;
+  }
+  state.chatUnread = 0;
+  state.chatReadMarker = {
+    id: latest.id,
+    createdAt: latest.createdAt,
+  };
+  saveChatReadMarker(state.chatReadMarker, { syncServer: true });
+}
+
+function syncChatReadMarkerFromResponse(response) {
+  const serverMarker = normalizeChatReadMarker(response?.readState?.marker || response?.chatReadMarker);
+  const localMarker = state.chatReadMarker || loadChatReadMarker();
+  if (serverMarker && (!localMarker || chatReadMarkerCompare(serverMarker, localMarker) >= 0)) {
+    state.chatReadMarker = serverMarker;
+    saveChatReadMarker(serverMarker, { syncServer: false });
+    return;
+  }
+
+  if (localMarker) {
+    state.chatReadMarker = localMarker;
+    saveChatReadMarker(localMarker, { syncServer: !serverMarker || chatReadMarkerCompare(localMarker, serverMarker) > 0 });
+  }
+}
+
+function loadChatReadMarker() {
+  const value = safeStorageGet(chatReadStorageKey());
+  if (!value) return null;
+  try {
+    const marker = JSON.parse(value);
+    return normalizeChatReadMarker(marker);
+  } catch {
+    return normalizeChatReadMarker({ id: value });
+  }
+}
+
+function saveChatReadMarker(marker, { syncServer = false } = {}) {
+  const normalized = normalizeChatReadMarker(marker);
+  if (!normalized) return;
+  safeStorageSet(chatReadStorageKey(), JSON.stringify(normalized));
+  if (syncServer) persistChatReadMarker(normalized).catch((error) => console.warn(error));
+}
+
+async function persistChatReadMarker(marker) {
+  const normalized = normalizeChatReadMarker(marker);
+  if (!normalized) return null;
+
+  state.chatReadSavePromise = (state.chatReadSavePromise || Promise.resolve())
+    .catch(() => {})
+    .then(async () => {
+      const response = await apiJson("/api/chat/read-state", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ marker: normalized }),
+      });
+      const serverMarker = normalizeChatReadMarker(response?.readState?.marker || response?.marker);
+      if (serverMarker && chatReadMarkerCompare(serverMarker, state.chatReadMarker) >= 0) {
+        state.chatReadMarker = serverMarker;
+        saveChatReadMarker(serverMarker, { syncServer: false });
+        updateChatUnreadFromMessages();
+        updateChatChrome();
+      }
+      return serverMarker;
+    });
+
+  return state.chatReadSavePromise;
+}
+
+function normalizeChatReadMarker(marker) {
+  if (!marker || typeof marker !== "object") return null;
+  const id = String(marker.id || "").trim();
+  const createdAt = Number.isFinite(Date.parse(marker.createdAt))
+    ? new Date(marker.createdAt).toISOString()
+    : "";
+  if (!id && !createdAt) return null;
+  return { id, createdAt };
+}
+
+function chatReadMarkerCompare(left, right) {
+  const leftMarker = normalizeChatReadMarker(left);
+  const rightMarker = normalizeChatReadMarker(right);
+  if (!leftMarker && !rightMarker) return 0;
+  if (!leftMarker) return -1;
+  if (!rightMarker) return 1;
+
+  const leftIndex = chatMessageIndexForMarker(leftMarker);
+  const rightIndex = chatMessageIndexForMarker(rightMarker);
+  if (leftIndex >= 0 && rightIndex >= 0 && leftIndex !== rightIndex) {
+    return leftIndex > rightIndex ? 1 : -1;
+  }
+
+  const leftTime = Date.parse(leftMarker.createdAt);
+  const rightTime = Date.parse(rightMarker.createdAt);
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime > rightTime ? 1 : -1;
+  }
+
+  if (leftMarker.id && rightMarker.id && leftMarker.id === rightMarker.id) return 0;
+  return 0;
+}
+
+function chatMessageIndexForMarker(marker) {
+  if (!marker?.id) return -1;
+  return state.chatMessages.findIndex((message) => message.id === marker.id);
+}
+
+function chatReadStorageKey() {
+  const identity = normalizeChatIdentity(state.currentUser?.username || state.currentUser?.displayName || "guest")
+    || "guest";
+  return `carpostclub.chatRead.${identity}`;
 }
 
 function normalizeChatMessage(message) {
@@ -1451,6 +1623,7 @@ async function loadSelectedCarAlbum({ force = false } = {}) {
     const localAlbum = albumById(state.activeAlbum.id);
     if (localAlbum?.unread) state.openedUnreadAlbumIds.add(state.activeAlbum.id);
     state.expandedAlbumId = state.activeAlbum.id;
+    persistAccountPreferences();
     markGalleryAlbumSeen(state.activeAlbum.id).catch((error) => console.warn(error));
   }
 }
@@ -1507,7 +1680,10 @@ function renderAlbumList() {
 
 function renderGalleryAlbumList() {
   const selectedFolder = selectedGalleryFolder();
-  if (state.galleryDealershipId && !selectedFolder) state.galleryDealershipId = "";
+  if (state.galleryDealershipId && !selectedFolder) {
+    state.galleryDealershipId = "";
+    persistAccountPreferences();
+  }
   renderGalleryFilterBar(selectedFolder);
 
   if (!state.galleryDealershipId) {
@@ -1583,11 +1759,16 @@ function renderGalleryFilterBar(folder) {
 }
 
 function syncGalleryFilterSelections(folder = selectedGalleryFolder()) {
+  let changed = false;
   if (!["active", "inactive", "all"].includes(state.galleryStatusFilter)) {
     state.galleryStatusFilter = "active";
     safeStorageSet("carpostclub.galleryStatusFilter", state.galleryStatusFilter);
+    changed = true;
   }
-  if (!folder) return;
+  if (!folder) {
+    if (changed) scheduleAccountPreferencesSave();
+    return;
+  }
 
   const statusScopedAlbums = folder.albums.filter(galleryAlbumMatchesStatusFilter);
   const makeValues = uniqueGalleryFilterValues(statusScopedAlbums, (album) => album.vehicle?.make);
@@ -1596,6 +1777,7 @@ function syncGalleryFilterSelections(folder = selectedGalleryFolder()) {
     state.galleryModelFilter = "";
     safeStorageRemove("carpostclub.galleryMakeFilter");
     safeStorageRemove("carpostclub.galleryModelFilter");
+    changed = true;
   }
 
   const modelScopedAlbums = state.galleryMakeFilter
@@ -1605,19 +1787,23 @@ function syncGalleryFilterSelections(folder = selectedGalleryFolder()) {
   if (state.galleryModelFilter && !hasFilterValue(modelValues, state.galleryModelFilter)) {
     state.galleryModelFilter = "";
     safeStorageRemove("carpostclub.galleryModelFilter");
+    changed = true;
   }
 
   const yearValues = uniqueGalleryFilterValues(statusScopedAlbums, (album) => album.vehicle?.year);
   if (state.galleryYearFilter && !hasFilterValue(yearValues, state.galleryYearFilter)) {
     state.galleryYearFilter = "";
     safeStorageRemove("carpostclub.galleryYearFilter");
+    changed = true;
   }
 
   const uploaderValues = uniqueGalleryFilterValues(statusScopedAlbums, albumUploaderLabels);
   if (state.galleryUploaderFilter && !hasFilterValue(uploaderValues, state.galleryUploaderFilter)) {
     state.galleryUploaderFilter = "";
     safeStorageRemove("carpostclub.galleryUploaderFilter");
+    changed = true;
   }
+  if (changed) scheduleAccountPreferencesSave();
 }
 
 function replaceFilterSelectOptions(select, placeholder, values, selectedValue) {
@@ -2040,35 +2226,26 @@ function renderAlbumDetail(album) {
   const actions = document.createElement("div");
   actions.className = "album-detail-actions";
 
-  if (!album.isSelected && canUseSavedAlbum) {
+  if (state.page === "gallery") {
+    actions.append(
+      albumPlaceholderActionButton("Download Photos", {
+        action: "share-album-photos",
+        albumId: album.id,
+        disabled: !canUseSavedAlbum || !hasMedia || state.photoShareBusy,
+      }),
+      albumPlaceholderActionButton("Delete Upload", { danger: true, disabled: true }),
+    );
+  } else if (!album.isSelected && canUseSavedAlbum) {
     const openButton = document.createElement("button");
     openButton.className = "icon-text-button subtle";
     openButton.type = "button";
     openButton.dataset.action = "select-album";
     openButton.dataset.albumId = album.id;
-    openButton.textContent = state.page === "gallery" ? "Upload" : "Select";
+    openButton.textContent = "Select";
     actions.append(openButton);
-  }
-
-  const descriptionLink = albumActionLink(album, "Description", `/api/albums/${encodeURIComponent(album.id)}/description.txt`, canUseSavedAlbum && hasMedia);
-  const filesButton = document.createElement("button");
-  filesButton.className = "icon-text-button subtle";
-  filesButton.type = "button";
-  filesButton.dataset.action = "download-album-files";
-  filesButton.dataset.albumId = album.id;
-  filesButton.disabled = !canUseSavedAlbum || !hasMedia;
-  filesButton.textContent = "Download all";
-  const packageLink = albumActionLink(album, "Package", `/api/albums/${encodeURIComponent(album.id)}/package`, canUseSavedAlbum && hasMedia);
-  actions.append(descriptionLink, filesButton, packageLink);
-
-  if (canManageAlbumMedia() && canUseSavedAlbum && hasMedia) {
-    const clearButton = document.createElement("button");
-    clearButton.className = "icon-text-button subtle danger";
-    clearButton.type = "button";
-    clearButton.dataset.action = "delete-album-media";
-    clearButton.dataset.albumId = album.id;
-    clearButton.textContent = "Delete all";
-    actions.append(clearButton);
+    appendUploadAlbumActions(actions, album, { canUseSavedAlbum, hasMedia });
+  } else {
+    appendUploadAlbumActions(actions, album, { canUseSavedAlbum, hasMedia });
   }
 
   const statusLine = document.createElement("p");
@@ -2091,6 +2268,45 @@ function renderAlbumDetail(album) {
     detail.insertBefore(renderAlbumDescription(albumDetails), media);
   }
   return detail;
+}
+
+function appendUploadAlbumActions(actions, album, { canUseSavedAlbum, hasMedia }) {
+  const descriptionLink = albumActionLink(album, "Description", `/api/albums/${encodeURIComponent(album.id)}/description.txt`, canUseSavedAlbum && hasMedia);
+  const filesButton = document.createElement("button");
+  filesButton.className = "icon-text-button subtle";
+  filesButton.type = "button";
+  filesButton.dataset.action = "download-album-files";
+  filesButton.dataset.albumId = album.id;
+  filesButton.disabled = !canUseSavedAlbum || !hasMedia;
+  filesButton.textContent = "Download all";
+  const packageLink = albumActionLink(album, "Package", `/api/albums/${encodeURIComponent(album.id)}/package`, canUseSavedAlbum && hasMedia);
+  actions.append(descriptionLink, filesButton, packageLink);
+
+  if (canManageAlbumMedia() && canUseSavedAlbum && hasMedia) {
+    const clearButton = document.createElement("button");
+    clearButton.className = "icon-text-button subtle danger";
+    clearButton.type = "button";
+    clearButton.dataset.action = "delete-album-media";
+    clearButton.dataset.albumId = album.id;
+    clearButton.textContent = "Delete all";
+    actions.append(clearButton);
+  }
+}
+
+function albumPlaceholderActionButton(label, {
+  danger = false,
+  action = "",
+  albumId = "",
+  disabled = true,
+} = {}) {
+  const button = document.createElement("button");
+  button.className = `icon-text-button subtle${danger ? " danger" : ""}`;
+  button.type = "button";
+  button.disabled = Boolean(disabled);
+  if (action && !button.disabled) button.dataset.action = action;
+  if (albumId && !button.disabled) button.dataset.albumId = albumId;
+  button.textContent = label;
+  return button;
 }
 
 function renderAlbumPostingKit(album, albumDetails) {
@@ -2455,6 +2671,7 @@ async function handleAlbumListClick(event) {
     }
     state.galleryDealershipId = dealershipId;
     state.expandedAlbumId = "";
+    persistAccountPreferences();
     renderAlbumList();
     markGalleryDealershipSeen(dealershipId).catch((error) => showError(error));
     return;
@@ -2463,6 +2680,7 @@ async function handleAlbumListClick(event) {
     haptic("tap");
     state.galleryDealershipId = "";
     state.expandedAlbumId = "";
+    persistAccountPreferences();
     renderAlbumList();
     return;
   }
@@ -2482,6 +2700,9 @@ async function handleAlbumListClick(event) {
       const details = await loadAlbumDetails(albumId);
       const album = albumById(albumId) || details.album;
       await downloadAlbumFiles(album, details.photos || []);
+    } else if (target.dataset.action === "share-album-photos") {
+      haptic("tap");
+      await shareAlbumPhotos(albumId);
     } else if (target.dataset.action === "copy-album-text") {
       haptic("tap");
       await copyAlbumText(albumId, target.dataset.copyKind || "details");
@@ -2500,6 +2721,7 @@ async function handleAlbumListClick(event) {
 async function toggleAlbum(albumId) {
   if (state.expandedAlbumId === albumId) {
     state.expandedAlbumId = "";
+    persistAccountPreferences();
     renderAlbumList();
     return;
   }
@@ -2507,6 +2729,7 @@ async function toggleAlbum(albumId) {
   state.expandedAlbumId = albumId;
   const album = albumById(albumId);
   if (album?.unread) state.openedUnreadAlbumIds.add(albumId);
+  persistAccountPreferences();
   renderAlbumList();
   markGalleryAlbumSeen(albumId).catch((error) => console.warn(error));
   await loadAlbumDetails(albumId, { includeDraft: state.page === "gallery" });
@@ -2594,7 +2817,10 @@ async function selectAlbumPackage(albumId) {
   renderFilterOptions();
   await loadCars({ keepSelectedCar: true, forceAlbumRefresh: true });
   if (selectedCar()) {
-    if (state.activeAlbum?.id) state.expandedAlbumId = state.activeAlbum.id;
+    if (state.activeAlbum?.id) {
+      state.expandedAlbumId = state.activeAlbum.id;
+      persistAccountPreferences();
+    }
     renderAlbumList();
     showStatus(`Opened ${album.vehicle.stockNumber || album.name}.`);
   } else {
@@ -2629,6 +2855,80 @@ async function downloadAlbumFiles(album, photos) {
     window.setTimeout(() => triggerFileDownload(download.href, download.download), index * 220);
   });
   showStatus(`Starting ${downloads.length} media ${plural(downloads.length, "download")}.`);
+}
+
+async function shareAlbumPhotos(albumId) {
+  if (state.photoShareBusy) return;
+  if (!photoFileSharingSupported()) {
+    throw new Error("Saving photos uses your phone's share sheet. Open CarPostClub on a phone browser that supports sharing photo files.");
+  }
+
+  state.photoShareBusy = true;
+  renderAlbumList();
+  try {
+    const details = await loadAlbumDetails(albumId);
+    const album = albumById(albumId) || details.album;
+    const photos = imageAlbumPhotos(details.photos || []);
+    if (!photos.length) throw new Error("No photos are saved in this upload yet.");
+
+    showStatus(`Preparing ${photos.length} ${plural(photos.length, "photo")} for Photos.`);
+    const files = [];
+    for (const photo of photos) {
+      files.push(await albumPhotoShareFile(photo));
+    }
+
+    if (!navigator.canShare({ files })) {
+      throw new Error("This phone cannot save this photo set from the browser share sheet.");
+    }
+
+    await navigator.share({
+      files,
+      title: album?.name || "CarPostClub photos",
+      text: `${files.length} ${plural(files.length, "photo")} from ${album?.vehicle?.stockNumber || album?.name || "CarPostClub"}`,
+    });
+    haptic("success");
+    showStatus(`Shared ${files.length} ${plural(files.length, "photo")}. Choose Save Images or Photos in the share sheet.`);
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      showStatus("Photo save cancelled.");
+      return;
+    }
+    throw error;
+  } finally {
+    state.photoShareBusy = false;
+    renderAlbumList();
+  }
+}
+
+function photoFileSharingSupported() {
+  return Boolean(
+    window.File
+    && navigator.share
+    && navigator.canShare
+  );
+}
+
+function imageAlbumPhotos(photos) {
+  return (photos || []).filter((photo) => {
+    if (isVideoMedia(photo)) return false;
+    return photo?.kind === "image"
+      || String(photo?.contentType || "").startsWith("image/")
+      || /\.(avif|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(photo?.filename || photo?.originalName || "");
+  });
+}
+
+async function albumPhotoShareFile(photo) {
+  const response = await fetch(photo.url, { credentials: "same-origin" });
+  if (!response.ok) throw new Error(`Could not prepare ${photo.originalName || photo.filename || "photo"}.`);
+  const blob = await response.blob();
+  const type = blob.type || photo.contentType || "image/jpeg";
+  const fileBlob = blob.type ? blob : new Blob([blob], { type });
+  return new File([fileBlob], photoShareFilename(photo), { type });
+}
+
+function photoShareFilename(photo) {
+  const name = photo.downloadName || photo.originalName || photo.filename || "carpostclub-photo.jpg";
+  return String(name).replace(/[\\/:*?"<>|]+/g, "-").slice(0, 160) || "carpostclub-photo.jpg";
 }
 
 function triggerFileDownload(href, downloadName) {
@@ -2897,22 +3197,29 @@ function selectedCar() {
 }
 
 function syncVehicleFiltersWithInventory({ keepSelectedCar = false } = {}) {
+  let changed = false;
   const selected = selectedCar();
   if (keepSelectedCar && selected) {
-    state.selectedMake = selected.make || state.selectedMake;
-    state.selectedModel = selected.model || state.selectedModel;
+    const nextMake = selected.make || state.selectedMake;
+    const nextModel = selected.model || state.selectedModel;
+    changed = changed || nextMake !== state.selectedMake || nextModel !== state.selectedModel;
+    state.selectedMake = nextMake;
+    state.selectedModel = nextModel;
   }
 
   const makeValues = uniqueFilterValues(inventoryAvailabilityCars({ includeSelected: true }), "make");
   if (state.selectedMake && !hasFilterValue(makeValues, state.selectedMake)) {
     state.selectedMake = "";
     state.selectedModel = "";
+    changed = true;
   }
 
   const modelValues = state.selectedMake ? uniqueFilterValues(carsForMake(state.selectedMake), "model") : [];
   if (state.selectedModel && !hasFilterValue(modelValues, state.selectedModel)) {
     state.selectedModel = "";
+    changed = true;
   }
+  if (changed) persistAccountPreferences();
 }
 
 function clearSelectedCarSelection() {
@@ -3020,14 +3327,110 @@ function carRequestPayload(car = selectedCar()) {
 }
 
 function persistSelection() {
+  persistAccountPreferences();
+}
+
+function applyAccountPreferences(preferences) {
+  if (!preferences || typeof preferences !== "object") return;
+  if (hasPreference(preferences, "selectedDealershipId")) state.selectedDealershipId = cleanPreferenceValue(preferences.selectedDealershipId, "15");
+  if (hasPreference(preferences, "selectedInventoryTypeId")) state.selectedInventoryTypeId = cleanPreferenceValue(preferences.selectedInventoryTypeId, "2");
+  if (hasPreference(preferences, "selectedMake")) state.selectedMake = cleanPreferenceValue(preferences.selectedMake);
+  if (hasPreference(preferences, "selectedModel")) state.selectedModel = cleanPreferenceValue(preferences.selectedModel);
+  if (hasPreference(preferences, "selectedVin")) state.selectedVin = cleanPreferenceValue(preferences.selectedVin);
+  if (hasPreference(preferences, "carSearch")) state.carSearch = cleanPreferenceValue(preferences.carSearch);
+  if (hasPreference(preferences, "showPostedInventory")) state.showPostedInventory = Boolean(preferences.showPostedInventory);
+  if (hasPreference(preferences, "galleryDealershipId")) state.galleryDealershipId = cleanPreferenceValue(preferences.galleryDealershipId);
+  if (hasPreference(preferences, "expandedAlbumId")) state.expandedAlbumId = cleanPreferenceValue(preferences.expandedAlbumId);
+  if (hasPreference(preferences, "gallerySearch")) state.gallerySearch = cleanPreferenceValue(preferences.gallerySearch);
+  if (hasPreference(preferences, "galleryStatusFilter")) state.galleryStatusFilter = cleanGalleryStatusFilter(preferences.galleryStatusFilter);
+  if (hasPreference(preferences, "galleryMakeFilter")) state.galleryMakeFilter = cleanPreferenceValue(preferences.galleryMakeFilter);
+  if (hasPreference(preferences, "galleryModelFilter")) state.galleryModelFilter = cleanPreferenceValue(preferences.galleryModelFilter);
+  if (hasPreference(preferences, "galleryYearFilter")) state.galleryYearFilter = cleanPreferenceValue(preferences.galleryYearFilter);
+  if (hasPreference(preferences, "galleryUploaderFilter")) state.galleryUploaderFilter = cleanPreferenceValue(preferences.galleryUploaderFilter);
+  persistAccountPreferenceFallback();
+}
+
+function persistAccountPreferences() {
+  persistAccountPreferenceFallback();
+  scheduleAccountPreferencesSave();
+}
+
+function persistAccountPreferenceFallback() {
   safeStorageSet("carpostclub.selectedDealershipId", state.selectedDealershipId);
   safeStorageSet("carpostclub.selectedInventoryTypeId", state.selectedInventoryTypeId);
-  if (state.selectedMake) safeStorageSet("carpostclub.selectedMake", state.selectedMake);
-  else safeStorageRemove("carpostclub.selectedMake");
-  if (state.selectedModel) safeStorageSet("carpostclub.selectedModel", state.selectedModel);
-  else safeStorageRemove("carpostclub.selectedModel");
-  if (state.selectedVin) safeStorageSet("carpostclub.selectedVin", state.selectedVin);
-  else safeStorageRemove("carpostclub.selectedVin");
+  setOptionalStorage("carpostclub.selectedMake", state.selectedMake);
+  setOptionalStorage("carpostclub.selectedModel", state.selectedModel);
+  setOptionalStorage("carpostclub.selectedVin", state.selectedVin);
+  safeStorageSet("carpostclub.carSearch", state.carSearch);
+  safeStorageSet("carpostclub.showPostedInventory", String(state.showPostedInventory));
+  setOptionalStorage("carpostclub.galleryDealershipId", state.galleryDealershipId);
+  setOptionalStorage("carpostclub.expandedAlbumId", state.expandedAlbumId);
+  safeStorageSet("carpostclub.gallerySearch", state.gallerySearch);
+  safeStorageSet("carpostclub.galleryStatusFilter", state.galleryStatusFilter);
+  setOptionalStorage("carpostclub.galleryMakeFilter", state.galleryMakeFilter);
+  setOptionalStorage("carpostclub.galleryModelFilter", state.galleryModelFilter);
+  setOptionalStorage("carpostclub.galleryYearFilter", state.galleryYearFilter);
+  setOptionalStorage("carpostclub.galleryUploaderFilter", state.galleryUploaderFilter);
+}
+
+function scheduleAccountPreferencesSave() {
+  if (!state.currentUser) return;
+  window.clearTimeout(state.accountPreferencesSaveTimer);
+  state.accountPreferencesSaveTimer = window.setTimeout(() => {
+    saveAccountPreferences().catch((error) => console.warn(error));
+  }, 350);
+}
+
+async function saveAccountPreferences() {
+  if (!state.currentUser) return null;
+  const preferences = accountPreferencesPayload();
+  state.accountPreferencesSavePromise = (state.accountPreferencesSavePromise || Promise.resolve())
+    .catch(() => {})
+    .then(() => apiJson("/api/me/preferences", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preferences }),
+    }));
+  return state.accountPreferencesSavePromise;
+}
+
+function accountPreferencesPayload() {
+  return {
+    selectedDealershipId: state.selectedDealershipId,
+    selectedInventoryTypeId: state.selectedInventoryTypeId,
+    selectedMake: state.selectedMake,
+    selectedModel: state.selectedModel,
+    selectedVin: state.selectedVin,
+    carSearch: state.carSearch,
+    showPostedInventory: state.showPostedInventory,
+    galleryDealershipId: state.galleryDealershipId,
+    expandedAlbumId: state.expandedAlbumId,
+    gallerySearch: state.gallerySearch,
+    galleryStatusFilter: cleanGalleryStatusFilter(state.galleryStatusFilter),
+    galleryMakeFilter: state.galleryMakeFilter,
+    galleryModelFilter: state.galleryModelFilter,
+    galleryYearFilter: state.galleryYearFilter,
+    galleryUploaderFilter: state.galleryUploaderFilter,
+  };
+}
+
+function hasPreference(preferences, key) {
+  return Object.prototype.hasOwnProperty.call(preferences, key);
+}
+
+function cleanPreferenceValue(value, fallback = "") {
+  const text = String(value || "").trim().slice(0, 160);
+  return text || fallback;
+}
+
+function cleanGalleryStatusFilter(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return ["active", "inactive", "all"].includes(text) ? text : "active";
+}
+
+function setOptionalStorage(key, value) {
+  if (value) safeStorageSet(key, value);
+  else safeStorageRemove(key);
 }
 
 function clearInitialSelectionUrl() {

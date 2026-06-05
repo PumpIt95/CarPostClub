@@ -75,6 +75,8 @@ const s3MediaClient = s3MediaStorageEnabled
   })
   : null;
 const chatMessagesPath = path.resolve(process.env.CHAT_MESSAGES_PATH || path.join(path.dirname(uploadRoot), "chat-messages.json"));
+const chatReadStatePath = path.resolve(process.env.CARPOSTCLUB_CHAT_READ_STATE_PATH || process.env.KONNER_CHAT_READ_STATE_PATH || process.env.CHAT_READ_STATE_PATH || path.join(path.dirname(uploadRoot), "chat-read-state.json"));
+const userPreferencesPath = path.resolve(process.env.CARPOSTCLUB_USER_PREFERENCES_PATH || process.env.KONNER_USER_PREFERENCES_PATH || process.env.USER_PREFERENCES_PATH || path.join(path.dirname(uploadRoot), "user-preferences.json"));
 const manualInventoryPath = path.resolve(process.env.MANUAL_INVENTORY_PATH || path.join(path.dirname(uploadRoot), "manual-inventory.json"));
 const albumSeenPath = path.resolve(process.env.CARPOSTCLUB_ALBUM_SEEN_PATH || process.env.KONNER_ALBUM_SEEN_PATH || process.env.ALBUM_SEEN_PATH || path.join(path.dirname(uploadRoot), "album-seen.json"));
 const pushSubscriptionsPath = path.resolve(process.env.CARPOSTCLUB_PUSH_SUBSCRIPTIONS_PATH || process.env.KONNER_PUSH_SUBSCRIPTIONS_PATH || process.env.PUSH_SUBSCRIPTIONS_PATH || path.join(path.dirname(uploadRoot), "push-subscriptions.json"));
@@ -180,6 +182,8 @@ const vehicleUploadWritePromises = new Map();
 const photoMetadataWritePromises = new Map();
 let marketplaceDescriptionsDb = null;
 let chatWritePromise = Promise.resolve();
+let chatReadStateWritePromise = Promise.resolve();
+let userPreferencesWritePromise = Promise.resolve();
 let authUsersWritePromise = Promise.resolve();
 let authInvitesWritePromise = Promise.resolve();
 let manualInventoryWritePromise = Promise.resolve();
@@ -191,6 +195,8 @@ await fs.mkdir(uploadRoot, { recursive: true });
 await fs.mkdir(tmpRoot, { recursive: true });
 await fs.mkdir(path.dirname(marketplaceDescriptionsDbPath), { recursive: true });
 await fs.mkdir(path.dirname(chatMessagesPath), { recursive: true });
+await fs.mkdir(path.dirname(chatReadStatePath), { recursive: true });
+await fs.mkdir(path.dirname(userPreferencesPath), { recursive: true });
 await fs.mkdir(path.dirname(manualInventoryPath), { recursive: true });
 await fs.mkdir(path.dirname(albumSeenPath), { recursive: true });
 await fs.mkdir(path.dirname(authUsersPath), { recursive: true });
@@ -610,11 +616,47 @@ app.post("/api/gallery/dealerships/:dealershipId/seen", requireAuth, async (req,
   }
 });
 
-app.get("/api/me", requireAuth, (req, res) => {
-  res.json({
-    ok: true,
-    user: publicAuthUser(req.authUser),
-  });
+app.get("/api/me", requireAuth, async (req, res, next) => {
+  try {
+    const preferenceState = await userPreferencesForUser(req.authUser);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      user: publicAuthUser(req.authUser),
+      preferences: preferenceState.preferences,
+      preferencesUpdatedAt: preferenceState.updatedAt,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/me/preferences", requireAuth, async (req, res, next) => {
+  try {
+    const preferenceState = await userPreferencesForUser(req.authUser);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      preferences: preferenceState.preferences,
+      updatedAt: preferenceState.updatedAt,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/me/preferences", requireAuth, async (req, res, next) => {
+  try {
+    const preferenceState = await saveUserPreferences(req.authUser, req.body?.preferences || req.body);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      preferences: preferenceState.preferences,
+      updatedAt: preferenceState.updatedAt,
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/api/push/config", requireAuth, (_req, res) => {
@@ -1174,10 +1216,42 @@ async function deleteAlbumMediaCollection(req, res, next) {
 app.get("/api/chat/messages", requireAuth, async (req, res, next) => {
   try {
     const limit = Math.min(200, chatMessageLimit, positiveInteger(req.query.limit, chatResponseLimit));
+    const [messages, readState] = await Promise.all([
+      readChatMessages(),
+      chatReadStateForUser(req.authUser),
+    ]);
     res.setHeader("Cache-Control", "private, no-store");
     res.json({
       ok: true,
-      messages: (await readChatMessages()).slice(-limit),
+      messages: messages.slice(-limit),
+      readState,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/chat/read-state", requireAuth, async (req, res, next) => {
+  try {
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      readState: await chatReadStateForUser(req.authUser),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/chat/read-state", requireAuth, async (req, res, next) => {
+  try {
+    const marker = normalizeChatReadMarker(req.body?.marker || req.body);
+    if (!marker) throw httpError(400, "A valid chat read marker is required.");
+    const readState = await markChatReadState(req.authUser, marker);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      readState,
     });
   } catch (error) {
     next(error);
@@ -4069,6 +4143,199 @@ async function appendChatMessage(text, user) {
   });
 
   return chatWritePromise;
+}
+
+async function chatReadStateForUser(user) {
+  const username = normalizeAuthUsername(user?.username);
+  if (!username) return emptyChatReadState();
+  const store = await readChatReadStateStore();
+  return publicChatReadState(store.users[username]);
+}
+
+async function markChatReadState(user, marker) {
+  const username = normalizeAuthUsername(user?.username);
+  const normalizedMarker = normalizeChatReadMarker(marker);
+  if (!username || !normalizedMarker) throw httpError(400, "A valid chat read marker is required.");
+  const messages = await readChatMessages();
+
+  return updateChatReadStateStore((store) => {
+    const previous = publicChatReadState(store.users[username]);
+    if (previous.marker && chatReadMarkerCompare(previous.marker, normalizedMarker, messages) >= 0) {
+      return previous;
+    }
+
+    const readState = {
+      marker: normalizedMarker,
+      readAt: new Date().toISOString(),
+    };
+    store.users[username] = readState;
+    return publicChatReadState(readState);
+  });
+}
+
+async function readChatReadStateStore() {
+  return normalizeChatReadStateStore(await readJson(chatReadStatePath, { users: {} }));
+}
+
+async function updateChatReadStateStore(mutator) {
+  chatReadStateWritePromise = chatReadStateWritePromise.catch(() => {}).then(async () => {
+    const store = await readChatReadStateStore();
+    const result = await mutator(store);
+    await writeJson(chatReadStatePath, store);
+    return result;
+  });
+  return chatReadStateWritePromise;
+}
+
+function normalizeChatReadStateStore(value) {
+  const users = value?.users && typeof value.users === "object" ? value.users : {};
+  const normalized = { users: {} };
+  for (const [rawUsername, rawState] of Object.entries(users)) {
+    const username = normalizeAuthUsername(rawUsername);
+    if (!username) continue;
+    const readState = publicChatReadState(rawState);
+    if (readState.marker || readState.readAt) normalized.users[username] = readState;
+  }
+  return normalized;
+}
+
+function publicChatReadState(value) {
+  const marker = normalizeChatReadMarker(value?.marker || value);
+  return {
+    marker,
+    readAt: validIsoString(value?.readAt),
+  };
+}
+
+function emptyChatReadState() {
+  return {
+    marker: null,
+    readAt: "",
+  };
+}
+
+function normalizeChatReadMarker(marker) {
+  if (!marker || typeof marker !== "object") return null;
+  const id = normalizeSpace(marker.id).slice(0, 120);
+  const createdAt = validIsoString(marker.createdAt);
+  if (!id && !createdAt) return null;
+  return { id, createdAt };
+}
+
+function chatReadMarkerCompare(left, right, messages) {
+  const leftMarker = normalizeChatReadMarker(left);
+  const rightMarker = normalizeChatReadMarker(right);
+  if (!leftMarker && !rightMarker) return 0;
+  if (!leftMarker) return -1;
+  if (!rightMarker) return 1;
+
+  const leftIndex = chatMessageIndexForMarker(leftMarker, messages);
+  const rightIndex = chatMessageIndexForMarker(rightMarker, messages);
+  if (leftIndex >= 0 && rightIndex >= 0 && leftIndex !== rightIndex) {
+    return leftIndex > rightIndex ? 1 : -1;
+  }
+
+  const leftTime = Date.parse(leftMarker.createdAt || "");
+  const rightTime = Date.parse(rightMarker.createdAt || "");
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime > rightTime ? 1 : -1;
+  }
+
+  if (leftMarker.id && rightMarker.id && leftMarker.id === rightMarker.id) return 0;
+  return 0;
+}
+
+function chatMessageIndexForMarker(marker, messages) {
+  if (!marker?.id || !Array.isArray(messages)) return -1;
+  return messages.findIndex((message) => message.id === marker.id);
+}
+
+async function userPreferencesForUser(user) {
+  const username = normalizeAuthUsername(user?.username);
+  if (!username) return emptyUserPreferenceState();
+  const store = await readUserPreferencesStore();
+  return publicUserPreferenceState(store.users[username]);
+}
+
+async function saveUserPreferences(user, preferences) {
+  const username = normalizeAuthUsername(user?.username);
+  if (!username) throw httpError(401, "Authentication required.");
+  const normalizedPreferences = normalizeUserPreferences(preferences);
+  return updateUserPreferencesStore((store) => {
+    const preferenceState = {
+      preferences: normalizedPreferences,
+      updatedAt: new Date().toISOString(),
+    };
+    store.users[username] = preferenceState;
+    return publicUserPreferenceState(preferenceState);
+  });
+}
+
+async function readUserPreferencesStore() {
+  return normalizeUserPreferencesStore(await readJson(userPreferencesPath, { users: {} }));
+}
+
+async function updateUserPreferencesStore(mutator) {
+  userPreferencesWritePromise = userPreferencesWritePromise.catch(() => {}).then(async () => {
+    const store = await readUserPreferencesStore();
+    const result = await mutator(store);
+    await writeJson(userPreferencesPath, store);
+    return result;
+  });
+  return userPreferencesWritePromise;
+}
+
+function normalizeUserPreferencesStore(value) {
+  const users = value?.users && typeof value.users === "object" ? value.users : {};
+  const normalized = { users: {} };
+  for (const [rawUsername, rawState] of Object.entries(users)) {
+    const username = normalizeAuthUsername(rawUsername);
+    if (!username) continue;
+    const preferenceState = publicUserPreferenceState(rawState);
+    if (preferenceState.preferences) normalized.users[username] = preferenceState;
+  }
+  return normalized;
+}
+
+function publicUserPreferenceState(value) {
+  if (!value || typeof value !== "object") return emptyUserPreferenceState();
+  return {
+    preferences: normalizeUserPreferences(value.preferences || value),
+    updatedAt: validIsoString(value.updatedAt),
+  };
+}
+
+function emptyUserPreferenceState() {
+  return {
+    preferences: null,
+    updatedAt: "",
+  };
+}
+
+function normalizeUserPreferences(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const galleryStatusFilter = normalizeSpace(source.galleryStatusFilter).toLowerCase();
+  return {
+    selectedDealershipId: normalizePreferenceText(source.selectedDealershipId, 40),
+    selectedInventoryTypeId: normalizePreferenceText(source.selectedInventoryTypeId, 40),
+    selectedMake: normalizePreferenceText(source.selectedMake, 80),
+    selectedModel: normalizePreferenceText(source.selectedModel, 80),
+    selectedVin: normalizePreferenceText(source.selectedVin, 120),
+    carSearch: normalizePreferenceText(source.carSearch, 160),
+    showPostedInventory: Boolean(source.showPostedInventory),
+    galleryDealershipId: normalizePreferenceText(source.galleryDealershipId, 80),
+    expandedAlbumId: normalizePreferenceText(source.expandedAlbumId, 120),
+    gallerySearch: normalizePreferenceText(source.gallerySearch, 160),
+    galleryStatusFilter: ["active", "inactive", "all"].includes(galleryStatusFilter) ? galleryStatusFilter : "active",
+    galleryMakeFilter: normalizePreferenceText(source.galleryMakeFilter, 80),
+    galleryModelFilter: normalizePreferenceText(source.galleryModelFilter, 80),
+    galleryYearFilter: normalizePreferenceText(source.galleryYearFilter, 20),
+    galleryUploaderFilter: normalizePreferenceText(source.galleryUploaderFilter, 80),
+  };
+}
+
+function normalizePreferenceText(value, maxLength = 120) {
+  return normalizeSpace(value).slice(0, maxLength);
 }
 
 function broadcastChatMessage(message) {

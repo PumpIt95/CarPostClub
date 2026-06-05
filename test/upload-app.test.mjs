@@ -1214,6 +1214,124 @@ test("vehicle gallery unread state is tracked per user", async () => {
   }
 });
 
+test("chat read state is tracked per account across sessions", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const firstViewer = await createApprovedAccount(harness, {
+      username: "first.chat.viewer",
+      displayName: "First Chat Viewer",
+      password: "first-chat-viewer-123",
+    });
+    const secondViewer = await createApprovedAccount(harness, {
+      username: "second.chat.viewer",
+      displayName: "Second Chat Viewer",
+      password: "second-chat-viewer-123",
+    });
+    const firstViewerPhoneCookie = await login(harness.baseUrl, firstViewer.username, firstViewer.password);
+
+    const firstPost = await postJson(harness, "/api/chat/messages", { text: "Read this on desktop" });
+    assert.equal(firstPost.status, 201);
+    const firstMarker = {
+      id: firstPost.body.message.id,
+      createdAt: firstPost.body.message.createdAt,
+    };
+
+    const firstBeforeRead = await getJsonWithCookie(harness, firstViewer.cookie, "/api/chat/messages");
+    assert.equal(firstBeforeRead.messages.length, 1);
+    assert.equal(firstBeforeRead.readState.marker, null);
+
+    const firstRead = await putJsonWithCookie(harness, firstViewer.cookie, "/api/chat/read-state", { marker: firstMarker });
+    assert.equal(firstRead.status, 200);
+    assert.deepEqual(firstRead.body.readState.marker, firstMarker);
+    assert.ok(firstRead.body.readState.readAt);
+
+    const firstPhoneMessages = await getJsonWithCookie(harness, firstViewerPhoneCookie, "/api/chat/messages");
+    assert.deepEqual(firstPhoneMessages.readState.marker, firstMarker);
+
+    const secondMessages = await getJsonWithCookie(harness, secondViewer.cookie, "/api/chat/messages");
+    assert.equal(secondMessages.readState.marker, null);
+
+    const secondPost = await postJsonWithCookie(harness, secondViewer.cookie, "/api/chat/messages", { text: "New message after desktop read" });
+    assert.equal(secondPost.status, 201);
+    const secondMarker = {
+      id: secondPost.body.message.id,
+      createdAt: secondPost.body.message.createdAt,
+    };
+
+    const firstPhoneRead = await putJsonWithCookie(harness, firstViewerPhoneCookie, "/api/chat/read-state", { marker: secondMarker });
+    assert.equal(firstPhoneRead.status, 200);
+    assert.deepEqual(firstPhoneRead.body.readState.marker, secondMarker);
+
+    const staleDesktopWrite = await putJsonWithCookie(harness, firstViewer.cookie, "/api/chat/read-state", { marker: firstMarker });
+    assert.equal(staleDesktopWrite.status, 200);
+    assert.deepEqual(staleDesktopWrite.body.readState.marker, secondMarker);
+
+    const firstAfterStaleWrite = await getJsonWithCookie(harness, firstViewer.cookie, "/api/chat/read-state");
+    assert.deepEqual(firstAfterStaleWrite.readState.marker, secondMarker);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("gallery and vehicle preferences are tracked per account across sessions", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const firstViewer = await createApprovedAccount(harness, {
+      username: "first.pref.viewer",
+      displayName: "First Pref Viewer",
+      password: "first-pref-viewer-123",
+    });
+    const secondViewer = await createApprovedAccount(harness, {
+      username: "second.pref.viewer",
+      displayName: "Second Pref Viewer",
+      password: "second-pref-viewer-123",
+    });
+    const firstViewerPhoneCookie = await login(harness.baseUrl, firstViewer.username, firstViewer.password);
+
+    const firstInitial = await getJsonWithCookie(harness, firstViewer.cookie, "/api/me");
+    assert.equal(firstInitial.preferences, null);
+
+    const preferences = {
+      selectedDealershipId: "15",
+      selectedInventoryTypeId: "2",
+      selectedMake: "Kia",
+      selectedModel: "Seltos",
+      selectedVin: TEST_CAR.vin,
+      carSearch: "u6247a",
+      showPostedInventory: true,
+      galleryDealershipId: "15",
+      expandedAlbumId: TEST_ALBUM_ID,
+      gallerySearch: "seltos photos",
+      galleryStatusFilter: "all",
+      galleryMakeFilter: "Kia",
+      galleryModelFilter: "Seltos",
+      galleryYearFilter: "2026",
+      galleryUploaderFilter: firstViewer.displayName,
+    };
+
+    const saved = await putJsonWithCookie(harness, firstViewer.cookie, "/api/me/preferences", { preferences });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(saved.body.preferences, preferences);
+    assert.ok(saved.body.updatedAt);
+
+    const firstPhoneMe = await getJsonWithCookie(harness, firstViewerPhoneCookie, "/api/me");
+    assert.deepEqual(firstPhoneMe.preferences, preferences);
+    assert.ok(firstPhoneMe.preferencesUpdatedAt);
+
+    const firstPhonePreferences = await getJsonWithCookie(harness, firstViewerPhoneCookie, "/api/me/preferences");
+    assert.deepEqual(firstPhonePreferences.preferences, preferences);
+
+    const secondMe = await getJsonWithCookie(harness, secondViewer.cookie, "/api/me");
+    assert.equal(secondMe.preferences, null);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("multiple approved accounts can use live chat while duplicate vehicle uploads are blocked", async () => {
   const harness = await startTestServer();
   const testAccounts = [
@@ -1515,6 +1633,22 @@ async function postJson(harness, pathname, body) {
 async function postJsonWithCookie(harness, cookie, pathname, body) {
   const response = await fetch(`${harness.baseUrl}${pathname}`, {
     method: "POST",
+    headers: {
+      Cookie: cookie,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  return {
+    status: response.status,
+    body: await response.json(),
+  };
+}
+
+async function putJsonWithCookie(harness, cookie, pathname, body) {
+  const response = await fetch(`${harness.baseUrl}${pathname}`, {
+    method: "PUT",
     headers: {
       Cookie: cookie,
       Accept: "application/json",
