@@ -54,6 +54,7 @@ const state = {
   uploading: false,
   photoShareBusy: false,
   photoShareCache: {},
+  photoShareActiveAlbumId: "",
   uploadCelebrationTimer: 0,
   chatSending: false,
   lastSessionCheckAt: 0,
@@ -82,6 +83,8 @@ const hapticNotificationTypes = {
   error: "ERROR",
 };
 const photoSharePreparationTimeoutMs = Number(window.__CARPOSTCLUB_PHOTO_SHARE_PREPARATION_TIMEOUT_MS || 20000);
+const photoSharePreparationConcurrency = 2;
+const photoShareDebugEnabled = new URLSearchParams(window.location.search).get("debugShare") === "1";
 const hapticSelector = [
   "button:not(:disabled)",
   "a[href]",
@@ -2716,6 +2719,7 @@ async function handleAlbumListClick(event) {
     haptic("tap");
     state.galleryDealershipId = "";
     state.expandedAlbumId = "";
+    clearInactivePhotoSharePreparations("");
     persistAccountPreferences();
     renderAlbumList();
     return;
@@ -2759,13 +2763,16 @@ async function handleAlbumListClick(event) {
 
 async function toggleAlbum(albumId) {
   if (state.expandedAlbumId === albumId) {
+    clearInactivePhotoSharePreparations("");
     state.expandedAlbumId = "";
     persistAccountPreferences();
     renderAlbumList();
     return;
   }
 
+  clearInactivePhotoSharePreparations(albumId);
   state.expandedAlbumId = albumId;
+  state.photoShareActiveAlbumId = albumId;
   const album = albumById(albumId);
   if (album?.unread) state.openedUnreadAlbumIds.add(albumId);
   const existingDetails = state.albumDetails[albumId] || {};
@@ -2812,7 +2819,7 @@ async function loadAlbumDetails(albumId, { force = false, includeDraft = false }
         loading: false,
       };
       updateAlbumSummary(photosResponse.album);
-      if (state.page === "gallery") prepareAlbumShareFiles(albumId, photosResponse.photos || []);
+      if (albumPhotoShareCanPrepare(albumId)) prepareAlbumShareFiles(albumId, photosResponse.photos || []);
       if (needsDraft) renderAlbumList();
     } else {
       state.albumDetails[albumId] = { ...state.albumDetails[albumId], loading: false };
@@ -2926,6 +2933,11 @@ function downloadAlbumZip(album) {
 async function shareAlbumPhotos(albumId) {
   if (state.photoShareBusy) return;
   try {
+    photoShareDebug("share-start", {
+      albumId,
+      platform: photoSharePlatformMode(),
+      available: iPhonePhotoShareAvailable(),
+    });
     if (!iPhonePhotoShareAvailable()) {
       const details = await loadAlbumDetails(albumId);
       const album = albumById(albumId) || details.album;
@@ -2933,6 +2945,7 @@ async function shareAlbumPhotos(albumId) {
       return;
     }
 
+    clearInactivePhotoSharePreparations(albumId);
     const details = Array.isArray(state.albumDetails[albumId]?.photos)
       ? state.albumDetails[albumId]
       : await loadAlbumDetails(albumId);
@@ -2942,11 +2955,6 @@ async function shareAlbumPhotos(albumId) {
 
     const files = albumPhotoShareFiles(albumId, photos);
     if (!files.length) {
-      const preparationError = albumPhotoShareError(albumId, photos);
-      if (preparationError) {
-        showError(`${preparationError.message || preparationError} Open a photo below, then press and hold it to save to Photos.`);
-        return;
-      }
       prepareAlbumShareFiles(albumId, photos, { force: true, notify: true });
       showStatus(`Preparing ${photos.length} ${plural(photos.length, "photo")} for the iPhone share sheet. Keep this album open, then tap Share Photos again.`);
       renderAlbumList();
@@ -2984,6 +2992,7 @@ async function shareAlbumPhotos(albumId) {
 
     showStatus("This iOS/browser cannot share these photo files. Open a photo below, then press and hold it to save to Photos.");
   } catch (error) {
+    photoShareDebug("share-error", { albumId, message: error?.message || String(error) });
     throw error;
   } finally {
     state.photoShareBusy = false;
@@ -2994,17 +3003,51 @@ async function shareAlbumPhotos(albumId) {
 async function trySharePhotoFiles(files, album) {
   if (!photoFileSharingSupported() || !files.length) return { status: "unsupported" };
   const shareData = { files };
+  photoShareDebug("share-files-check", {
+    albumId: album?.id || "",
+    files: photoShareFileSummary(files),
+  });
   try {
-    if (navigator.canShare?.(shareData) === false) return { status: "unsupported" };
+    if (navigator.canShare) {
+      const canShare = navigator.canShare(shareData);
+      photoShareDebug("navigator-can-share", {
+        albumId: album?.id || "",
+        canShare,
+        files: photoShareFileSummary(files),
+      });
+      if (canShare === false) return { status: "unsupported" };
+    }
   } catch {
+    photoShareDebug("navigator-can-share-error", {
+      albumId: album?.id || "",
+      files: photoShareFileSummary(files),
+    });
     return { status: "unsupported" };
   }
 
   try {
     await navigator.share(shareData);
+    photoShareDebug("navigator-share-result", {
+      albumId: album?.id || "",
+      status: "shared",
+      files: photoShareFileSummary(files),
+    });
     return { status: "shared" };
   } catch (error) {
-    if (error?.name === "AbortError") return { status: "cancelled" };
+    if (error?.name === "AbortError") {
+      photoShareDebug("navigator-share-result", {
+        albumId: album?.id || "",
+        status: "cancelled",
+        files: photoShareFileSummary(files),
+      });
+      return { status: "cancelled" };
+    }
+    photoShareDebug("navigator-share-result", {
+      albumId: album?.id || "",
+      status: "failed",
+      message: error?.message || String(error),
+      files: photoShareFileSummary(files),
+    });
     return { status: "failed", error };
   }
 }
@@ -3050,7 +3093,8 @@ async function albumPhotoShareFile(photo, { signal } = {}) {
   return new File([fileBlob], photoShareFilename(photo, type), { type });
 }
 
-async function albumPhotoShareFileWithTimeout(photo, timeoutMs = photoSharePreparationTimeoutMs) {
+async function albumPhotoShareFileWithTimeout(photo, { signal = null, timeoutMs = photoSharePreparationTimeoutMs } = {}) {
+  if (signal?.aborted) throw photoShareAbortError();
   const controller = window.AbortController ? new AbortController() : null;
   let timeout = 0;
   const timeoutError = new Error(`Timed out preparing ${photo.originalName || photo.filename || "photo"}.`);
@@ -3060,12 +3104,25 @@ async function albumPhotoShareFileWithTimeout(photo, timeoutMs = photoSharePrepa
       reject(timeoutError);
     }, timeoutMs);
   });
+  let removeAbortListener = () => {};
+  const abortPromise = signal
+    ? new Promise((_, reject) => {
+      const abort = () => {
+        controller?.abort();
+        reject(photoShareAbortError());
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", abort);
+    })
+    : null;
   try {
     return await Promise.race([
       albumPhotoShareFile(photo, { signal: controller?.signal }),
       timeoutPromise,
-    ]);
+      abortPromise,
+    ].filter(Boolean));
   } finally {
+    removeAbortListener();
     window.clearTimeout(timeout);
   }
 }
@@ -3087,6 +3144,7 @@ function albumPhotoShareKey(photos) {
 }
 
 function albumPhotoShareEntry(albumId, photos) {
+  if (!albumPhotoShareCanPrepare(albumId)) return null;
   const key = albumPhotoShareKey(photos);
   const entry = state.photoShareCache[albumId];
   return entry?.key === key ? entry : null;
@@ -3106,29 +3164,55 @@ function albumPhotoShareError(albumId, photos) {
 }
 
 function prepareAlbumShareFiles(albumId, photos, { force = false, notify = false } = {}) {
-  if (!iPhonePhotoShareAvailable()) return null;
+  if (!albumPhotoShareCanPrepare(albumId)) return null;
   const imagePhotos = imageAlbumPhotos(photos);
   if (!albumId || !imagePhotos.length) return null;
+  clearInactivePhotoSharePreparations(albumId);
   const key = albumPhotoShareKey(imagePhotos);
   const existing = state.photoShareCache[albumId];
   if (!force && existing?.key === key && (existing.promise || existing.files?.length)) return existing;
+  if (existing) clearAlbumPhotoSharePreparation(albumId, "replace");
 
+  const controller = window.AbortController ? new AbortController() : null;
   const entry = {
+    albumId,
     key,
     files: [],
     error: null,
+    errors: [],
     promise: null,
+    controller,
+    cancelled: false,
   };
   state.photoShareCache[albumId] = entry;
-  entry.promise = Promise.allSettled(imagePhotos.map((photo) => albumPhotoShareFileWithTimeout(photo)))
+  state.photoShareActiveAlbumId = albumId;
+  photoShareDebug("prep-start", {
+    albumId,
+    platform: photoSharePlatformMode(),
+    photoCount: imagePhotos.length,
+    concurrency: photoSharePreparationConcurrency,
+    names: imagePhotos.map((photo) => photo.originalName || photo.filename || "photo"),
+  });
+  entry.promise = preparePhotoShareFilesWithConcurrency(imagePhotos, entry)
     .then((results) => {
+      if (state.photoShareCache[albumId] !== entry) return [];
       const files = results
         .filter((result) => result.status === "fulfilled")
         .map((result) => result.value);
-      const firstError = results.find((result) => result.status === "rejected")?.reason || null;
+      const errors = results
+        .filter((result) => result.status === "rejected")
+        .map((result) => result.reason);
+      const firstError = errors[0] || null;
       entry.files = files;
-      entry.error = firstError && !files.length ? firstError : null;
+      entry.errors = errors;
+      entry.error = firstError || null;
       entry.promise = null;
+      photoShareDebug("prep-complete", {
+        albumId,
+        files: photoShareFileSummary(files),
+        failedCount: errors.length,
+        errors: errors.map((error) => error?.message || String(error)),
+      });
       if (notify && files.length === imagePhotos.length) {
         showStatus(`Photos are ready. Tap Share Photos to open the iPhone share sheet.`);
       } else if (notify && files.length) {
@@ -3139,14 +3223,118 @@ function prepareAlbumShareFiles(albumId, photos, { force = false, notify = false
       return files;
     })
     .catch((error) => {
+      if (state.photoShareCache[albumId] !== entry) return [];
       entry.files = [];
       entry.error = error;
+      entry.errors = [error];
       entry.promise = null;
+      photoShareDebug("prep-error", {
+        albumId,
+        message: error?.message || String(error),
+      });
       if (notify) showError(error);
       return [];
     })
-    .finally(() => renderAlbumList());
+    .finally(() => {
+      if (state.photoShareCache[albumId] === entry) renderAlbumList();
+    });
   return entry;
+}
+
+async function preparePhotoShareFilesWithConcurrency(photos, entry) {
+  const results = new Array(photos.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(photoSharePreparationConcurrency, photos.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (!entry.controller?.signal?.aborted) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= photos.length) return;
+      const photo = photos[index];
+      try {
+        const file = await albumPhotoShareFileWithTimeout(photo, {
+          signal: entry.controller?.signal,
+        });
+        results[index] = { status: "fulfilled", value: file };
+        photoShareDebug("prep-file-success", {
+          albumId: entry.albumId,
+          index,
+          files: photoShareFileSummary([file]),
+        });
+      } catch (error) {
+        if (entry.cancelled && error?.name === "AbortError") return;
+        results[index] = { status: "rejected", reason: error };
+        photoShareDebug("prep-file-failure", {
+          albumId: entry.albumId,
+          index,
+          name: photo.originalName || photo.filename || "photo",
+          message: error?.message || String(error),
+        });
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results.filter(Boolean);
+}
+
+function albumPhotoShareCanPrepare(albumId) {
+  return Boolean(
+    state.page === "gallery"
+    && iPhonePhotoShareAvailable()
+    && albumId
+    && state.expandedAlbumId === albumId
+  );
+}
+
+function clearInactivePhotoSharePreparations(activeAlbumId = "") {
+  for (const albumId of Object.keys(state.photoShareCache)) {
+    if (albumId !== activeAlbumId) clearAlbumPhotoSharePreparation(albumId, "inactive-album");
+  }
+  state.photoShareActiveAlbumId = activeAlbumId;
+}
+
+function clearAlbumPhotoSharePreparation(albumId, reason = "clear") {
+  const entry = state.photoShareCache[albumId];
+  if (!entry) return;
+  entry.cancelled = true;
+  entry.controller?.abort();
+  delete state.photoShareCache[albumId];
+  photoShareDebug("prep-cleared", { albumId, reason });
+}
+
+function photoShareAbortError() {
+  try {
+    return new DOMException("Photo sharing preparation was cancelled.", "AbortError");
+  } catch {
+    const error = new Error("Photo sharing preparation was cancelled.");
+    error.name = "AbortError";
+    return error;
+  }
+}
+
+function photoSharePlatformMode() {
+  return {
+    userAgent: navigator.userAgent || "",
+    platform: navigator.platform || "",
+    maxTouchPoints: Number(navigator.maxTouchPoints || 0),
+    appleMobile: isAppleMobileDevice(),
+    fileSharingSupported: photoFileSharingSupported(),
+    standalone: Boolean(navigator.standalone || window.matchMedia?.("(display-mode: standalone)")?.matches),
+  };
+}
+
+function photoShareFileSummary(files) {
+  return {
+    count: files.length,
+    names: files.map((file) => file.name || ""),
+    types: files.map((file) => file.type || ""),
+    sizes: files.map((file) => file.size || 0),
+  };
+}
+
+function photoShareDebug(event, details = {}) {
+  if (!photoShareDebugEnabled) return;
+  console.debug("[CarPostClub Share Photos]", event, details);
 }
 
 function triggerFileDownload(href, downloadName) {

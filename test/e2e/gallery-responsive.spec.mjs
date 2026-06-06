@@ -139,6 +139,77 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
   }
 });
 
+test("iPhone Share Photos shares one prepared image", async ({ page }) => {
+  const harness = await startTestServer();
+  const car = INVENTORY_CARS[0];
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const upload = await uploadPhotos(harness, {
+      dealershipId: car.dealershipId,
+      inventoryTypeId: car.inventoryTypeId,
+      vin: car.vin,
+      photos: [
+        {
+          filename: "iphone-one.png",
+          type: "image/png",
+          body: pngBytes(0)
+        }
+      ]
+    });
+    expect(upload.status).toBe(201);
+
+    await enableIPhoneShareMocks(page);
+    const { shareButton } = await openGalleryAlbum(page, harness, car);
+    await expect(shareButton).toHaveText("Share Photos", { timeout: 10000 });
+
+    await shareButton.click();
+    const shareCall = await firstShareCall(page);
+    expect(shareCall.fileCount).toBe(1);
+    expect(shareCall.names).toEqual(["iphone-one.png"]);
+    await expect(page.locator("#statusBar")).toContainText("Shared 1 photo");
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("iPhone Share Photos shares multiple prepared images", async ({ page }) => {
+  const harness = await startTestServer();
+  const car = INVENTORY_CARS[0];
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const upload = await uploadPhotos(harness, {
+      dealershipId: car.dealershipId,
+      inventoryTypeId: car.inventoryTypeId,
+      vin: car.vin,
+      photos: [
+        {
+          filename: "iphone-front.png",
+          type: "image/png",
+          body: pngBytes(0)
+        },
+        {
+          filename: "iphone-rear.png",
+          type: "image/png",
+          body: pngBytes(1)
+        }
+      ]
+    });
+    expect(upload.status).toBe(201);
+
+    await enableIPhoneShareMocks(page);
+    const { shareButton } = await openGalleryAlbum(page, harness, car);
+    await expect(shareButton).toHaveText("Share Photos", { timeout: 10000 });
+
+    await shareButton.click();
+    const shareCall = await firstShareCall(page);
+    expect(shareCall.fileCount).toBe(2);
+    expect(shareCall.names.sort()).toEqual(["iphone-front.png", "iphone-rear.png"]);
+    await expect(page.locator("#statusBar")).toContainText("Shared 2 photos");
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("iPhone Share Photos does not stay stuck when a photo preparation request stalls", async ({ page }) => {
   const harness = await startTestServer();
   const car = INVENTORY_CARS[0];
@@ -173,39 +244,7 @@ test("iPhone Share Photos does not stay stuck when a photo preparation request s
     });
     expect(upload.status).toBe(201);
 
-    await page.addInitScript(() => {
-      Object.defineProperty(window.navigator, "userAgent", {
-        configurable: true,
-        get: () => "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
-      });
-      Object.defineProperty(window.navigator, "platform", {
-        configurable: true,
-        get: () => "iPhone"
-      });
-      Object.defineProperty(window.navigator, "maxTouchPoints", {
-        configurable: true,
-        get: () => 5
-      });
-      Object.defineProperty(window, "__CARPOSTCLUB_PHOTO_SHARE_PREPARATION_TIMEOUT_MS", {
-        configurable: true,
-        value: 150
-      });
-      Object.defineProperty(window.navigator, "canShare", {
-        configurable: true,
-        value: (data) => Boolean(data?.files?.length)
-      });
-      Object.defineProperty(window.navigator, "share", {
-        configurable: true,
-        value: async (data) => {
-          window.__carpostclubShareCalls = window.__carpostclubShareCalls || [];
-          window.__carpostclubShareCalls.push({
-            fileCount: data.files.length,
-            names: data.files.map((file) => file.name),
-            types: data.files.map((file) => file.type)
-          });
-        }
-      });
-    });
+    await enableIPhoneShareMocks(page, { timeoutMs: 150 });
 
     let stalledFetches = 0;
     await page.route(/\/api\/albums\/[^/]+\/media\//, async (route) => {
@@ -217,17 +256,7 @@ test("iPhone Share Photos does not stay stuck when a photo preparation request s
       await route.continue();
     });
 
-    await page.setViewportSize({ width: 390, height: 844 });
-    await loginWithPage(page, harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
-    await page.goto(`${harness.baseUrl}/gallery`);
-    await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
-
-    await page.locator(".gallery-folder-card", { hasText: "O'Regan's Kia Halifax" }).click();
-    const albumCard = page.locator(".album-card", { hasText: car.stockNumber }).first();
-    await expect(albumCard).toBeVisible();
-    await albumCard.locator(".album-summary-button").click();
-
-    const shareButton = albumCard.locator(".album-detail-actions button").first();
+    const { shareButton } = await openGalleryAlbum(page, harness, car);
     await expect(shareButton).toHaveText("Preparing Photos");
     await expect(shareButton).toHaveText("Share Photos", { timeout: 6000 });
     await expect(shareButton).toBeEnabled();
@@ -242,6 +271,183 @@ test("iPhone Share Photos does not stay stuck when a photo preparation request s
     expect(consoleMessages).toEqual([]);
     expect(pageErrors).toEqual([]);
   } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("iPhone Share Photos can retry after all preparation fails", async ({ page }) => {
+  const harness = await startTestServer();
+  const car = INVENTORY_CARS[0];
+  let failPreparation = true;
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const upload = await uploadPhotos(harness, {
+      dealershipId: car.dealershipId,
+      inventoryTypeId: car.inventoryTypeId,
+      vin: car.vin,
+      photos: [
+        {
+          filename: "retry-front.png",
+          type: "image/png",
+          body: pngBytes(0)
+        },
+        {
+          filename: "retry-rear.png",
+          type: "image/png",
+          body: pngBytes(1)
+        }
+      ]
+    });
+    expect(upload.status).toBe(201);
+
+    await enableIPhoneShareMocks(page, { timeoutMs: 200 });
+    await page.route(/\/api\/albums\/[^/]+\/media\//, async (route) => {
+      if (route.request().resourceType() === "fetch" && failPreparation) {
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+
+    const { shareButton } = await openGalleryAlbum(page, harness, car);
+    await expect(shareButton).toHaveText("Share Photos", { timeout: 6000 });
+    await shareButton.click();
+    await expect(page.locator("#statusBar")).toContainText("Open a photo below", { timeout: 6000 });
+
+    failPreparation = false;
+    await shareButton.click();
+    await expect(shareButton).toHaveText("Share Photos", { timeout: 10000 });
+    await shareButton.click();
+
+    const shareCall = await firstShareCall(page);
+    expect(shareCall.fileCount).toBe(2);
+    expect(shareCall.names.sort()).toEqual(["retry-front.png", "retry-rear.png"]);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("switching albums clears old iPhone share preparation", async ({ page }) => {
+  const harness = await startTestServer();
+  const firstCar = INVENTORY_CARS[0];
+  const secondCar = INVENTORY_CARS[1];
+  let firstAlbumId = "";
+  let stalledOldFetches = 0;
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const firstUpload = await uploadPhotos(harness, {
+      dealershipId: firstCar.dealershipId,
+      inventoryTypeId: firstCar.inventoryTypeId,
+      vin: firstCar.vin,
+      photos: [
+        {
+          filename: "old-front.png",
+          type: "image/png",
+          body: pngBytes(0)
+        },
+        {
+          filename: "old-rear.png",
+          type: "image/png",
+          body: pngBytes(1)
+        }
+      ]
+    });
+    expect(firstUpload.status).toBe(201);
+    firstAlbumId = firstUpload.body.albumId;
+
+    const secondUpload = await uploadPhotos(harness, {
+      dealershipId: secondCar.dealershipId,
+      inventoryTypeId: secondCar.inventoryTypeId,
+      vin: secondCar.vin,
+      photos: [
+        {
+          filename: "new-front.png",
+          type: "image/png",
+          body: pngBytes(1)
+        },
+        {
+          filename: "new-rear.png",
+          type: "image/png",
+          body: pngBytes(2)
+        }
+      ]
+    });
+    expect(secondUpload.status).toBe(201);
+
+    await enableIPhoneShareMocks(page, { timeoutMs: 5000 });
+    await page.route(/\/api\/albums\/[^/]+\/media\//, async (route) => {
+      if (route.request().resourceType() === "fetch" && route.request().url().includes(encodeURIComponent(firstAlbumId))) {
+        stalledOldFetches += 1;
+        await new Promise(() => {});
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await loginWithPage(page, harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
+    await page.goto(`${harness.baseUrl}/gallery`);
+    await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
+    await page.locator(".gallery-folder-card", { hasText: "O'Regan's Kia Halifax" }).click();
+
+    const firstCard = page.locator(".album-card", { hasText: firstCar.stockNumber }).first();
+    await firstCard.locator(".album-summary-button").click();
+    await expect(firstCard.locator(".album-detail-actions button").first()).toHaveText("Preparing Photos");
+
+    const secondCard = page.locator(".album-card", { hasText: secondCar.stockNumber }).first();
+    await secondCard.locator(".album-summary-button").click();
+    const secondShareButton = secondCard.locator(".album-detail-actions button").first();
+    await expect(secondShareButton).toHaveText("Share Photos", { timeout: 10000 });
+    await secondShareButton.click();
+
+    const shareCall = await firstShareCall(page);
+    expect(shareCall.fileCount).toBe(2);
+    expect(shareCall.names.sort()).toEqual(["new-front.png", "new-rear.png"]);
+    expect(stalledOldFetches).toBeGreaterThan(0);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("desktop gallery keeps Download Photos ZIP behavior", async ({ browser }) => {
+  const harness = await startTestServer();
+  const context = await browser.newContext({
+    acceptDownloads: true,
+    viewport: { width: 1280, height: 720 }
+  });
+  const page = await context.newPage();
+  const car = INVENTORY_CARS[0];
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const upload = await uploadPhotos(harness, {
+      dealershipId: car.dealershipId,
+      inventoryTypeId: car.inventoryTypeId,
+      vin: car.vin,
+      photos: [
+        {
+          filename: "desktop-front.png",
+          type: "image/png",
+          body: pngBytes(0)
+        }
+      ]
+    });
+    expect(upload.status).toBe(201);
+
+    await loginWithPage(page, harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
+    await page.goto(`${harness.baseUrl}/gallery`);
+    await page.locator(".gallery-folder-card", { hasText: "O'Regan's Kia Halifax" }).click();
+    const albumCard = page.locator(".album-card", { hasText: car.stockNumber }).first();
+    await albumCard.locator(".album-summary-button").click();
+    const downloadButton = albumCard.locator(".album-detail-actions button").first();
+    await expect(downloadButton).toHaveText("Download Photos");
+
+    const downloadPromise = page.waitForEvent("download");
+    await downloadButton.click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/\.zip$/);
+    expect(await download.failure()).toBeNull();
+  } finally {
+    await context.close();
     await stopTestServer(harness);
   }
 });
@@ -346,6 +552,62 @@ test("live upload events refresh gallery without reload and keep duplicate lock 
     await stopTestServer(harness);
   }
 });
+
+async function enableIPhoneShareMocks(page, { timeoutMs = 1000, singleFileOnly = false } = {}) {
+  await page.addInitScript(({ timeoutMs, singleFileOnly }) => {
+    Object.defineProperty(window.navigator, "userAgent", {
+      configurable: true,
+      get: () => "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
+    });
+    Object.defineProperty(window.navigator, "platform", {
+      configurable: true,
+      get: () => "iPhone"
+    });
+    Object.defineProperty(window.navigator, "maxTouchPoints", {
+      configurable: true,
+      get: () => 5
+    });
+    Object.defineProperty(window, "__CARPOSTCLUB_PHOTO_SHARE_PREPARATION_TIMEOUT_MS", {
+      configurable: true,
+      value: timeoutMs
+    });
+    Object.defineProperty(window.navigator, "canShare", {
+      configurable: true,
+      value: (data) => Boolean(data?.files?.length) && (!singleFileOnly || data.files.length <= 1)
+    });
+    Object.defineProperty(window.navigator, "share", {
+      configurable: true,
+      value: async (data) => {
+        window.__carpostclubShareCalls = window.__carpostclubShareCalls || [];
+        window.__carpostclubShareCalls.push({
+          fileCount: data.files.length,
+          names: data.files.map((file) => file.name),
+          types: data.files.map((file) => file.type),
+          sizes: data.files.map((file) => file.size)
+        });
+      }
+    });
+  }, { timeoutMs, singleFileOnly });
+}
+
+async function openGalleryAlbum(page, harness, car, { folderName = "O'Regan's Kia Halifax" } = {}) {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await loginWithPage(page, harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
+  await page.goto(`${harness.baseUrl}/gallery`);
+  await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
+  await page.locator(".gallery-folder-card", { hasText: folderName }).click();
+  const albumCard = page.locator(".album-card", { hasText: car.stockNumber }).first();
+  await expect(albumCard).toBeVisible();
+  await albumCard.locator(".album-summary-button").click();
+  const shareButton = albumCard.locator(".album-detail-actions button").first();
+  await expect(shareButton).toHaveText(/Preparing Photos|Share Photos|Download Photos/);
+  return { albumCard, shareButton };
+}
+
+async function firstShareCall(page) {
+  await expect.poll(() => page.evaluate(() => window.__carpostclubShareCalls?.[0]?.fileCount || 0)).toBeGreaterThan(0);
+  return page.evaluate(() => window.__carpostclubShareCalls[0]);
+}
 
 async function seedUnreadAlbums(harness) {
   for (const [index, car] of INVENTORY_CARS.entries()) {
