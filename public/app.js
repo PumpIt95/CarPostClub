@@ -81,6 +81,7 @@ const hapticNotificationTypes = {
   warning: "WARNING",
   error: "ERROR",
 };
+const photoSharePreparationTimeoutMs = Number(window.__CARPOSTCLUB_PHOTO_SHARE_PREPARATION_TIMEOUT_MS || 20000);
 const hapticSelector = [
   "button:not(:disabled)",
   "a[href]",
@@ -2941,6 +2942,11 @@ async function shareAlbumPhotos(albumId) {
 
     const files = albumPhotoShareFiles(albumId, photos);
     if (!files.length) {
+      const preparationError = albumPhotoShareError(albumId, photos);
+      if (preparationError) {
+        showError(`${preparationError.message || preparationError} Open a photo below, then press and hold it to save to Photos.`);
+        return;
+      }
       prepareAlbumShareFiles(albumId, photos, { force: true, notify: true });
       showStatus(`Preparing ${photos.length} ${plural(photos.length, "photo")} for the iPhone share sheet. Keep this album open, then tap Share Photos again.`);
       renderAlbumList();
@@ -2952,7 +2958,10 @@ async function shareAlbumPhotos(albumId) {
     const allResult = await trySharePhotoFiles(files, album);
     if (allResult.status === "shared") {
       haptic("success");
-      showStatus(`Shared ${files.length} ${plural(files.length, "photo")}. Choose Save Images or Photos in the share sheet.`);
+      const partialMessage = files.length < photos.length
+        ? ` Shared ${files.length} of ${photos.length} prepared photos because this browser could not prepare every image.`
+        : "";
+      showStatus(`Shared ${files.length} ${plural(files.length, "photo")}. Choose Save Images or Photos in the share sheet.${partialMessage}`);
       return;
     }
     if (allResult.status === "cancelled") {
@@ -3032,13 +3041,33 @@ function imageAlbumPhotos(photos) {
   });
 }
 
-async function albumPhotoShareFile(photo) {
-  const response = await fetch(photo.url, { credentials: "same-origin" });
+async function albumPhotoShareFile(photo, { signal } = {}) {
+  const response = await fetch(photo.url, { credentials: "same-origin", signal });
   if (!response.ok) throw new Error(`Could not prepare ${photo.originalName || photo.filename || "photo"}.`);
   const blob = await response.blob();
   const type = blob.type || photo.contentType || "image/jpeg";
   const fileBlob = blob.type ? blob : new Blob([blob], { type });
   return new File([fileBlob], photoShareFilename(photo, type), { type });
+}
+
+async function albumPhotoShareFileWithTimeout(photo, timeoutMs = photoSharePreparationTimeoutMs) {
+  const controller = window.AbortController ? new AbortController() : null;
+  let timeout = 0;
+  const timeoutError = new Error(`Timed out preparing ${photo.originalName || photo.filename || "photo"}.`);
+  const timeoutPromise = new Promise((_, reject) => {
+    timeout = window.setTimeout(() => {
+      controller?.abort();
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      albumPhotoShareFile(photo, { signal: controller?.signal }),
+      timeoutPromise,
+    ]);
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function photoShareFilename(photo, type = "") {
@@ -3072,6 +3101,10 @@ function albumPhotoShareFiles(albumId, photos) {
   return Array.isArray(entry?.files) ? entry.files : [];
 }
 
+function albumPhotoShareError(albumId, photos) {
+  return albumPhotoShareEntry(albumId, photos)?.error || null;
+}
+
 function prepareAlbumShareFiles(albumId, photos, { force = false, notify = false } = {}) {
   if (!iPhonePhotoShareAvailable()) return null;
   const imagePhotos = imageAlbumPhotos(photos);
@@ -3087,12 +3120,22 @@ function prepareAlbumShareFiles(albumId, photos, { force = false, notify = false
     promise: null,
   };
   state.photoShareCache[albumId] = entry;
-  entry.promise = Promise.all(imagePhotos.map(albumPhotoShareFile))
-    .then((files) => {
+  entry.promise = Promise.allSettled(imagePhotos.map((photo) => albumPhotoShareFileWithTimeout(photo)))
+    .then((results) => {
+      const files = results
+        .filter((result) => result.status === "fulfilled")
+        .map((result) => result.value);
+      const firstError = results.find((result) => result.status === "rejected")?.reason || null;
       entry.files = files;
-      entry.error = null;
+      entry.error = firstError && !files.length ? firstError : null;
       entry.promise = null;
-      if (notify) showStatus(`Photos are ready. Tap Share Photos to open the iPhone share sheet.`);
+      if (notify && files.length === imagePhotos.length) {
+        showStatus(`Photos are ready. Tap Share Photos to open the iPhone share sheet.`);
+      } else if (notify && files.length) {
+        showStatus(`Prepared ${files.length} of ${imagePhotos.length} photos. Tap Share Photos to share the ready photos; long-press previews for any that failed.`);
+      } else if (notify && firstError) {
+        showError(`${firstError.message || firstError} Open a photo below, then press and hold it to save to Photos.`);
+      }
       return files;
     })
     .catch((error) => {

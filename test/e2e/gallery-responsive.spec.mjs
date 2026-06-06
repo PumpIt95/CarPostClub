@@ -139,6 +139,113 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
   }
 });
 
+test("iPhone Share Photos does not stay stuck when a photo preparation request stalls", async ({ page }) => {
+  const harness = await startTestServer();
+  const car = INVENTORY_CARS[0];
+  const consoleMessages = [];
+  const pageErrors = [];
+
+  page.on("console", (message) => {
+    if (["error", "warning"].includes(message.type())) {
+      consoleMessages.push(`${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const upload = await uploadPhotos(harness, {
+      dealershipId: car.dealershipId,
+      inventoryTypeId: car.inventoryTypeId,
+      vin: car.vin,
+      photos: [
+        {
+          filename: "share-front.png",
+          type: "image/png",
+          body: pngBytes(0)
+        },
+        {
+          filename: "share-rear.png",
+          type: "image/png",
+          body: pngBytes(1)
+        }
+      ]
+    });
+    expect(upload.status).toBe(201);
+
+    await page.addInitScript(() => {
+      Object.defineProperty(window.navigator, "userAgent", {
+        configurable: true,
+        get: () => "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
+      });
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        get: () => "iPhone"
+      });
+      Object.defineProperty(window.navigator, "maxTouchPoints", {
+        configurable: true,
+        get: () => 5
+      });
+      Object.defineProperty(window, "__CARPOSTCLUB_PHOTO_SHARE_PREPARATION_TIMEOUT_MS", {
+        configurable: true,
+        value: 150
+      });
+      Object.defineProperty(window.navigator, "canShare", {
+        configurable: true,
+        value: (data) => Boolean(data?.files?.length)
+      });
+      Object.defineProperty(window.navigator, "share", {
+        configurable: true,
+        value: async (data) => {
+          window.__carpostclubShareCalls = window.__carpostclubShareCalls || [];
+          window.__carpostclubShareCalls.push({
+            fileCount: data.files.length,
+            names: data.files.map((file) => file.name),
+            types: data.files.map((file) => file.type)
+          });
+        }
+      });
+    });
+
+    let stalledFetches = 0;
+    await page.route(/\/api\/albums\/[^/]+\/media\//, async (route) => {
+      if (route.request().resourceType() === "fetch" && stalledFetches === 0) {
+        stalledFetches += 1;
+        await new Promise(() => {});
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await loginWithPage(page, harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
+    await page.goto(`${harness.baseUrl}/gallery`);
+    await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
+
+    await page.locator(".gallery-folder-card", { hasText: "O'Regan's Kia Halifax" }).click();
+    const albumCard = page.locator(".album-card", { hasText: car.stockNumber }).first();
+    await expect(albumCard).toBeVisible();
+    await albumCard.locator(".album-summary-button").click();
+
+    const shareButton = albumCard.locator(".album-detail-actions button").first();
+    await expect(shareButton).toHaveText("Preparing Photos");
+    await expect(shareButton).toHaveText("Share Photos", { timeout: 6000 });
+    await expect(shareButton).toBeEnabled();
+
+    await shareButton.click();
+    await expect.poll(() => page.evaluate(() => window.__carpostclubShareCalls?.[0]?.fileCount || 0)).toBe(1);
+    await expect(page.locator("#statusBar")).toContainText("Shared 1 photo");
+    await assertGalleryFits(page);
+    await assertControlTextFits(page);
+
+    expect(stalledFetches).toBe(1);
+    expect(consoleMessages).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("upload vehicle search and manual source mode stay mutually exclusive", async ({ page }) => {
   const harness = await startTestServer();
   try {
