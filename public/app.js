@@ -848,7 +848,7 @@ function connectAlbumStream() {
   if (!("EventSource" in window)) {
     window.clearTimeout(state.albumReconnectTimer);
     state.albumReconnectTimer = window.setTimeout(() => {
-      refreshAlbumsAfterLiveUpload().catch((error) => console.warn(error));
+      refreshAlbumsAfterLiveUpload().catch(reportBackgroundAlbumRefreshError);
       connectAlbumStream();
     }, 10000);
     return;
@@ -879,13 +879,13 @@ function resumeAlbumStream() {
   window.clearTimeout(state.albumReconnectTimer);
   state.albumReconnectTimer = null;
   if (state.albumEventSource) return;
-  refreshAlbumsAfterLiveUpload().catch((error) => console.warn(error));
+  refreshAlbumsAfterLiveUpload().catch(reportBackgroundAlbumRefreshError);
   connectAlbumStream();
 }
 
 function handleAlbumStreamMessage(event) {
   try {
-    handleUploadLiveEvent(JSON.parse(event.data)).catch((error) => console.warn(error));
+    handleUploadLiveEvent(JSON.parse(event.data)).catch(reportBackgroundAlbumRefreshError);
   } catch {
     // Ignore malformed album events and keep the live connection open.
   }
@@ -893,7 +893,17 @@ function handleAlbumStreamMessage(event) {
 
 function handleServiceWorkerMessage(event) {
   if (event.data?.type !== "carpostclub:push") return;
-  handleUploadLiveEvent(event.data.payload).catch((error) => console.warn(error));
+  handleUploadLiveEvent(event.data.payload).catch(reportBackgroundAlbumRefreshError);
+}
+
+function reportBackgroundAlbumRefreshError(error) {
+  if (isTransientFetchError(error)) return;
+  console.warn(error);
+}
+
+function isTransientFetchError(error) {
+  return error?.name === "AbortError"
+    || (error instanceof TypeError && /Failed to fetch/i.test(error.message || ""));
 }
 
 async function handleUploadLiveEvent(payload) {
@@ -2228,8 +2238,8 @@ function renderAlbumDetail(album) {
 
   if (state.page === "gallery") {
     actions.append(
-      albumPlaceholderActionButton("Download Photos", {
-        action: "share-album-photos",
+      albumPlaceholderActionButton(galleryPhotoActionButtonLabel(), {
+        action: "download-or-share-album-photos",
         albumId: album.id,
         disabled: !canUseSavedAlbum || !hasMedia || state.photoShareBusy,
       }),
@@ -2262,12 +2272,27 @@ function renderAlbumDetail(album) {
     media.replaceChildren(...photos.map(renderAlbumMediaThumb));
   }
 
-  detail.append(actions, statusLine, media);
+  const saveHint = renderAlbumSaveHint(photos);
+  detail.append(actions, statusLine);
   if (state.page === "gallery") {
-    detail.insertBefore(renderAlbumPostingKit(album, albumDetails), media);
-    detail.insertBefore(renderAlbumDescription(albumDetails), media);
+    detail.append(renderAlbumPostingKit(album, albumDetails), renderAlbumDescription(albumDetails));
   }
+  if (saveHint) detail.append(saveHint);
+  detail.append(media);
   return detail;
+}
+
+function renderAlbumSaveHint(photos) {
+  if (!imageAlbumPhotos(photos).length) return null;
+  const hint = document.createElement("p");
+  hint.className = "album-save-hint";
+  hint.textContent = "iPhone fallback: tap a photo to open it full size, then press and hold it and choose Save to Photos.";
+  return hint;
+}
+
+function galleryPhotoActionButtonLabel() {
+  if (state.photoShareBusy) return "Preparing Photos";
+  return iPhonePhotoShareAvailable() ? "Share Photos" : "Download Photos";
 }
 
 function appendUploadAlbumActions(actions, album, { canUseSavedAlbum, hasMedia }) {
@@ -2574,6 +2599,9 @@ function renderAlbumMediaThumb(photo) {
     videoLabel.textContent = "Video";
     preview.append(videoLabel);
   } else {
+    preview.classList.add("is-image");
+    preview.title = `Open ${mediaName} full size. On iPhone, press and hold the full-size image to save to Photos.`;
+    preview.setAttribute("aria-label", preview.title);
     const image = document.createElement("img");
     image.src = photo.thumbnailUrl || photo.url;
     image.alt = mediaName;
@@ -2582,7 +2610,10 @@ function renderAlbumMediaThumb(photo) {
     image.addEventListener("error", () => {
       if (image.src !== photo.url) image.src = photo.url;
     }, { once: true });
-    preview.append(image);
+    const saveBadge = document.createElement("span");
+    saveBadge.className = "album-media-save-badge";
+    saveBadge.textContent = "Open to save";
+    preview.append(image, saveBadge);
   }
 
   const name = document.createElement("span");
@@ -2700,9 +2731,12 @@ async function handleAlbumListClick(event) {
       const details = await loadAlbumDetails(albumId);
       const album = albumById(albumId) || details.album;
       await downloadAlbumFiles(album, details.photos || []);
+    } else if (target.dataset.action === "download-or-share-album-photos") {
+      haptic("tap");
+      await downloadOrShareAlbumPhotos(albumId);
     } else if (target.dataset.action === "share-album-photos") {
       haptic("tap");
-      await shareAlbumPhotos(albumId);
+      await downloadOrShareAlbumPhotos(albumId);
     } else if (target.dataset.action === "copy-album-text") {
       haptic("tap");
       await copyAlbumText(albumId, target.dataset.copyKind || "details");
@@ -2857,42 +2891,73 @@ async function downloadAlbumFiles(album, photos) {
   showStatus(`Starting ${downloads.length} media ${plural(downloads.length, "download")}.`);
 }
 
-async function shareAlbumPhotos(albumId) {
-  if (state.photoShareBusy) return;
-  if (!photoFileSharingSupported()) {
-    throw new Error("Saving photos uses your phone's share sheet. Open CarPostClub on a phone browser that supports sharing photo files.");
+async function downloadOrShareAlbumPhotos(albumId) {
+  if (iPhonePhotoShareAvailable()) {
+    await shareAlbumPhotos(albumId);
+    return;
   }
 
+  const details = await loadAlbumDetails(albumId);
+  const album = albumById(albumId) || details.album;
+  downloadAlbumZip(album);
+}
+
+function downloadAlbumZip(album) {
+  if (!album?.id) return;
+  const downloadName = `${slugifyClient(album.name || album.id)}.zip`;
+  triggerFileDownload(`/api/albums/${encodeURIComponent(album.id)}/download`, downloadName);
+  showStatus("Starting photo ZIP download.");
+}
+
+async function shareAlbumPhotos(albumId) {
+  if (state.photoShareBusy) return;
   state.photoShareBusy = true;
   renderAlbumList();
   try {
+    if (!iPhonePhotoShareAvailable()) {
+      const details = await loadAlbumDetails(albumId);
+      const album = albumById(albumId) || details.album;
+      downloadAlbumZip(album);
+      return;
+    }
+
     const details = await loadAlbumDetails(albumId);
     const album = albumById(albumId) || details.album;
     const photos = imageAlbumPhotos(details.photos || []);
     if (!photos.length) throw new Error("No photos are saved in this upload yet.");
 
-    showStatus(`Preparing ${photos.length} ${plural(photos.length, "photo")} for Photos.`);
+    showStatus(`Preparing ${photos.length} ${plural(photos.length, "photo")} for the iPhone share sheet.`);
     const files = [];
     for (const photo of photos) {
       files.push(await albumPhotoShareFile(photo));
     }
 
-    if (!navigator.canShare({ files })) {
-      throw new Error("This phone cannot save this photo set from the browser share sheet.");
-    }
-
-    await navigator.share({
-      files,
-      title: album?.name || "CarPostClub photos",
-      text: `${files.length} ${plural(files.length, "photo")} from ${album?.vehicle?.stockNumber || album?.name || "CarPostClub"}`,
-    });
-    haptic("success");
-    showStatus(`Shared ${files.length} ${plural(files.length, "photo")}. Choose Save Images or Photos in the share sheet.`);
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      showStatus("Photo save cancelled.");
+    const allResult = await trySharePhotoFiles(files, album);
+    if (allResult.status === "shared") {
+      haptic("success");
+      showStatus(`Shared ${files.length} ${plural(files.length, "photo")}. Choose Save Images or Photos in the share sheet.`);
       return;
     }
+    if (allResult.status === "cancelled") {
+      showStatus("Photo sharing cancelled.");
+      return;
+    }
+
+    if (files.length > 1) {
+      showStatus("This iOS/browser cannot share all photos at once. Trying the first photo only.");
+      const singleResult = await trySharePhotoFiles([files[0]], album);
+      if (singleResult.status === "shared") {
+        showStatus("Shared 1 photo. This iOS/browser refused the full set; use the previews below to long-press save the rest.");
+        return;
+      }
+      if (singleResult.status === "cancelled") {
+        showStatus("Photo sharing cancelled.");
+        return;
+      }
+    }
+
+    showStatus("This iOS/browser cannot share these photo files. Open a photo below, then press and hold it to save to Photos.");
+  } catch (error) {
     throw error;
   } finally {
     state.photoShareBusy = false;
@@ -2900,11 +2965,42 @@ async function shareAlbumPhotos(albumId) {
   }
 }
 
+async function trySharePhotoFiles(files, album) {
+  if (!photoFileSharingSupported() || !files.length) return { status: "unsupported" };
+  try {
+    if (navigator.canShare?.({ files }) === false) return { status: "unsupported" };
+  } catch {
+    return { status: "unsupported" };
+  }
+
+  try {
+    await navigator.share({
+      files,
+      title: album?.name || "CarPostClub photos",
+      text: `${files.length} ${plural(files.length, "photo")} from ${album?.vehicle?.stockNumber || album?.name || "CarPostClub"}`,
+    });
+    return { status: "shared" };
+  } catch (error) {
+    if (error?.name === "AbortError") return { status: "cancelled" };
+    return { status: "failed", error };
+  }
+}
+
+function iPhonePhotoShareAvailable() {
+  return Boolean(isAppleMobileDevice() && photoFileSharingSupported());
+}
+
+function isAppleMobileDevice() {
+  const userAgent = navigator.userAgent || "";
+  const platform = navigator.platform || "";
+  return /iP(hone|od|ad)/.test(userAgent)
+    || (platform === "MacIntel" && Number(navigator.maxTouchPoints || 0) > 1);
+}
+
 function photoFileSharingSupported() {
   return Boolean(
     window.File
     && navigator.share
-    && navigator.canShare
   );
 }
 
