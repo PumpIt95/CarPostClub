@@ -196,7 +196,7 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /uploadPageUrlForAlbum/);
   assert.match(source, /window\.location\.href = uploadPageUrlForAlbum\(album\)/);
   assert.match(source, /inventoryStatusBadge/);
-  assert.match(source, /albumPlaceholderActionButton\(galleryPhotoActionButtonLabel\(\),/);
+  assert.match(source, /albumPlaceholderActionButton\(galleryPhotoActionButtonLabel\(album\.id, photos,/);
   assert.match(source, /albumPlaceholderActionButton\("Delete Upload"/);
   assert.match(source, /download-or-share-album-photos/);
   assert.match(source, /async function downloadOrShareAlbumPhotos\(albumId\)/);
@@ -204,7 +204,7 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /\/api\/albums\/\$\{encodeURIComponent\(album\.id\)\}\/download/);
   assert.match(source, /share-album-photos/);
   assert.match(source, /async function shareAlbumPhotos\(albumId\)/);
-  assert.match(source, /function galleryPhotoActionButtonLabel\(\)/);
+  assert.match(source, /function galleryPhotoActionButtonLabel\(albumId = "", photos = \[\], \{ loading = false \} = \{\}\)/);
   assert.match(source, /Share Photos/);
   assert.match(source, /Download Photos/);
   assert.match(source, /function iPhonePhotoShareAvailable\(\)/);
@@ -217,9 +217,18 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /navigator\.share/);
   assert.match(source, /navigator\.canShare/);
   assert.match(source, /async function trySharePhotoFiles\(files, album\)/);
-  assert.match(source, /navigator\.canShare\?\.\(\{ files \}\) === false/);
+  assert.match(source, /const shareData = \{ files \}/);
+  assert.match(source, /navigator\.canShare\?\.\(shareData\) === false/);
   assert.match(source, /await trySharePhotoFiles\(\[files\[0\]\], album\)/);
   assert.match(source, /refused the full set/);
+  assert.match(source, /photoShareCache/);
+  assert.match(source, /prepareAlbumShareFiles\(albumId, photosResponse\.photos \|\| \[\]\)/);
+  assert.match(source, /albumPhotoShareFiles\(albumId, photos\)/);
+  assert.match(source, /Keep this album open, then tap Share Photos again/);
+  assert.match(source, /Tap Share Photos to open the iPhone share sheet/);
+  assert.match(source, /new File\(\[new Uint8Array\(\[0\]\)\], "photo\.jpg"/);
+  assert.match(source, /cleaned = cleaned\.replace\(/);
+  assert.match(source, /"\.jpg"/);
   assert.match(source, /Open a photo below, then press and hold it to save to Photos/);
   assert.match(source, /new File/);
   assert.match(source, /fetch\(photo\.url, \{ credentials: "same-origin" \}\)/);

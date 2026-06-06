@@ -53,6 +53,7 @@ const state = {
   manualFormOpen: false,
   uploading: false,
   photoShareBusy: false,
+  photoShareCache: {},
   uploadCelebrationTimer: 0,
   chatSending: false,
   lastSessionCheckAt: 0,
@@ -2232,16 +2233,19 @@ function renderAlbumDetail(album) {
       : [];
   const hasMedia = photos.length > 0 || album.mediaCount > 0;
   const canUseSavedAlbum = Boolean(album.id && !album.isPending);
+  const preparingShareFiles = state.page === "gallery"
+    && iPhonePhotoShareAvailable()
+    && (albumDetails.loading || albumPhotoSharePreparing(album.id, photos));
 
   const actions = document.createElement("div");
   actions.className = "album-detail-actions";
 
   if (state.page === "gallery") {
     actions.append(
-      albumPlaceholderActionButton(galleryPhotoActionButtonLabel(), {
+      albumPlaceholderActionButton(galleryPhotoActionButtonLabel(album.id, photos, { loading: albumDetails.loading }), {
         action: "download-or-share-album-photos",
         albumId: album.id,
-        disabled: !canUseSavedAlbum || !hasMedia || state.photoShareBusy,
+        disabled: !canUseSavedAlbum || !hasMedia || state.photoShareBusy || preparingShareFiles,
       }),
       albumPlaceholderActionButton("Delete Upload", { danger: true, disabled: true }),
     );
@@ -2290,8 +2294,8 @@ function renderAlbumSaveHint(photos) {
   return hint;
 }
 
-function galleryPhotoActionButtonLabel() {
-  if (state.photoShareBusy) return "Preparing Photos";
+function galleryPhotoActionButtonLabel(albumId = "", photos = [], { loading = false } = {}) {
+  if (state.photoShareBusy || (iPhonePhotoShareAvailable() && (loading || albumPhotoSharePreparing(albumId, photos)))) return "Preparing Photos";
   return iPhonePhotoShareAvailable() ? "Share Photos" : "Download Photos";
 }
 
@@ -2763,6 +2767,14 @@ async function toggleAlbum(albumId) {
   state.expandedAlbumId = albumId;
   const album = albumById(albumId);
   if (album?.unread) state.openedUnreadAlbumIds.add(albumId);
+  const existingDetails = state.albumDetails[albumId] || {};
+  if (!Array.isArray(existingDetails.photos)) {
+    state.albumDetails[albumId] = {
+      ...existingDetails,
+      loading: true,
+      draftLoading: state.page === "gallery" && !existingDetails.draft,
+    };
+  }
   persistAccountPreferences();
   renderAlbumList();
   markGalleryAlbumSeen(albumId).catch((error) => console.warn(error));
@@ -2799,6 +2811,7 @@ async function loadAlbumDetails(albumId, { force = false, includeDraft = false }
         loading: false,
       };
       updateAlbumSummary(photosResponse.album);
+      if (state.page === "gallery") prepareAlbumShareFiles(albumId, photosResponse.photos || []);
       if (needsDraft) renderAlbumList();
     } else {
       state.albumDetails[albumId] = { ...state.albumDetails[albumId], loading: false };
@@ -2911,8 +2924,6 @@ function downloadAlbumZip(album) {
 
 async function shareAlbumPhotos(albumId) {
   if (state.photoShareBusy) return;
-  state.photoShareBusy = true;
-  renderAlbumList();
   try {
     if (!iPhonePhotoShareAvailable()) {
       const details = await loadAlbumDetails(albumId);
@@ -2921,17 +2932,23 @@ async function shareAlbumPhotos(albumId) {
       return;
     }
 
-    const details = await loadAlbumDetails(albumId);
+    const details = Array.isArray(state.albumDetails[albumId]?.photos)
+      ? state.albumDetails[albumId]
+      : await loadAlbumDetails(albumId);
     const album = albumById(albumId) || details.album;
     const photos = imageAlbumPhotos(details.photos || []);
     if (!photos.length) throw new Error("No photos are saved in this upload yet.");
 
-    showStatus(`Preparing ${photos.length} ${plural(photos.length, "photo")} for the iPhone share sheet.`);
-    const files = [];
-    for (const photo of photos) {
-      files.push(await albumPhotoShareFile(photo));
+    const files = albumPhotoShareFiles(albumId, photos);
+    if (!files.length) {
+      prepareAlbumShareFiles(albumId, photos, { force: true, notify: true });
+      showStatus(`Preparing ${photos.length} ${plural(photos.length, "photo")} for the iPhone share sheet. Keep this album open, then tap Share Photos again.`);
+      renderAlbumList();
+      return;
     }
 
+    state.photoShareBusy = true;
+    renderAlbumList();
     const allResult = await trySharePhotoFiles(files, album);
     if (allResult.status === "shared") {
       haptic("success");
@@ -2967,18 +2984,15 @@ async function shareAlbumPhotos(albumId) {
 
 async function trySharePhotoFiles(files, album) {
   if (!photoFileSharingSupported() || !files.length) return { status: "unsupported" };
+  const shareData = { files };
   try {
-    if (navigator.canShare?.({ files }) === false) return { status: "unsupported" };
+    if (navigator.canShare?.(shareData) === false) return { status: "unsupported" };
   } catch {
     return { status: "unsupported" };
   }
 
   try {
-    await navigator.share({
-      files,
-      title: album?.name || "CarPostClub photos",
-      text: `${files.length} ${plural(files.length, "photo")} from ${album?.vehicle?.stockNumber || album?.name || "CarPostClub"}`,
-    });
+    await navigator.share(shareData);
     return { status: "shared" };
   } catch (error) {
     if (error?.name === "AbortError") return { status: "cancelled" };
@@ -2998,10 +3012,15 @@ function isAppleMobileDevice() {
 }
 
 function photoFileSharingSupported() {
-  return Boolean(
-    window.File
-    && navigator.share
-  );
+  if (!window.File || !navigator.share) return false;
+  if (!navigator.canShare) return true;
+  try {
+    return navigator.canShare({
+      files: [new File([new Uint8Array([0])], "photo.jpg", { type: "image/jpeg" })],
+    });
+  } catch {
+    return false;
+  }
 }
 
 function imageAlbumPhotos(photos) {
@@ -3019,12 +3038,72 @@ async function albumPhotoShareFile(photo) {
   const blob = await response.blob();
   const type = blob.type || photo.contentType || "image/jpeg";
   const fileBlob = blob.type ? blob : new Blob([blob], { type });
-  return new File([fileBlob], photoShareFilename(photo), { type });
+  return new File([fileBlob], photoShareFilename(photo, type), { type });
 }
 
-function photoShareFilename(photo) {
+function photoShareFilename(photo, type = "") {
   const name = photo.downloadName || photo.originalName || photo.filename || "carpostclub-photo.jpg";
-  return String(name).replace(/[\\/:*?"<>|]+/g, "-").slice(0, 160) || "carpostclub-photo.jpg";
+  let cleaned = String(name).replace(/[\\/:*?"<>|]+/g, "-").slice(0, 160) || "carpostclub-photo.jpg";
+  if (String(type || "").toLowerCase() === "image/jpeg") {
+    cleaned = cleaned.replace(/\.(jpe?g)$/i, ".jpg");
+    if (!/\.(jpe?g)$/i.test(cleaned)) cleaned = `${cleaned.replace(/\.[^.]+$/, "")}.jpg`;
+  }
+  return cleaned;
+}
+
+function albumPhotoShareKey(photos) {
+  return imageAlbumPhotos(photos)
+    .map((photo) => [photo.filename, photo.bytes || "", photo.contentType || ""].join(":"))
+    .join("|");
+}
+
+function albumPhotoShareEntry(albumId, photos) {
+  const key = albumPhotoShareKey(photos);
+  const entry = state.photoShareCache[albumId];
+  return entry?.key === key ? entry : null;
+}
+
+function albumPhotoSharePreparing(albumId, photos) {
+  return Boolean(albumPhotoShareEntry(albumId, photos)?.promise);
+}
+
+function albumPhotoShareFiles(albumId, photos) {
+  const entry = albumPhotoShareEntry(albumId, photos);
+  return Array.isArray(entry?.files) ? entry.files : [];
+}
+
+function prepareAlbumShareFiles(albumId, photos, { force = false, notify = false } = {}) {
+  if (!iPhonePhotoShareAvailable()) return null;
+  const imagePhotos = imageAlbumPhotos(photos);
+  if (!albumId || !imagePhotos.length) return null;
+  const key = albumPhotoShareKey(imagePhotos);
+  const existing = state.photoShareCache[albumId];
+  if (!force && existing?.key === key && (existing.promise || existing.files?.length)) return existing;
+
+  const entry = {
+    key,
+    files: [],
+    error: null,
+    promise: null,
+  };
+  state.photoShareCache[albumId] = entry;
+  entry.promise = Promise.all(imagePhotos.map(albumPhotoShareFile))
+    .then((files) => {
+      entry.files = files;
+      entry.error = null;
+      entry.promise = null;
+      if (notify) showStatus(`Photos are ready. Tap Share Photos to open the iPhone share sheet.`);
+      return files;
+    })
+    .catch((error) => {
+      entry.files = [];
+      entry.error = error;
+      entry.promise = null;
+      if (notify) showError(error);
+      return [];
+    })
+    .finally(() => renderAlbumList());
+  return entry;
 }
 
 function triggerFileDownload(href, downloadName) {
