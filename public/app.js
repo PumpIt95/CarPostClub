@@ -2279,14 +2279,16 @@ function renderAlbumDetail(album) {
         action: "download-or-share-album-photos",
         albumId: album.id,
         disabled: !canUseSavedAlbum || !hasMedia || state.photoShareBusy || preparingShareFiles,
-      }),
-      albumPlaceholderActionButton("Delete Upload", {
+      })
+    );
+    if (canManageAlbumMedia()) {
+      actions.append(albumPlaceholderActionButton("Delete Upload", {
         danger: true,
         action: "delete-album-media",
         albumId: album.id,
-        disabled: !canManageAlbumMedia() || !canUseSavedAlbum || !hasMedia,
-      }),
-    );
+        disabled: !canUseSavedAlbum || !hasMedia,
+      }));
+    }
   } else if (!album.isSelected && canUseSavedAlbum) {
     const openButton = document.createElement("button");
     openButton.className = "icon-text-button subtle";

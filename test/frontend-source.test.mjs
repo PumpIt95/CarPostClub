@@ -120,7 +120,7 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="galleryModelFilter"/);
   assert.match(html, /id="galleryYearFilter"/);
   assert.match(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260609-gallery-delete-upload-cleanup-v53/);
+  assert.match(html, /\/app\.js\?v=20260609-gallery-delete-admin-only-v54/);
   assert.match(html, /\/styles\.css\?v=20260604-upload-selection-v43/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
@@ -197,9 +197,10 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /window\.location\.href = uploadPageUrlForAlbum\(album\)/);
   assert.match(source, /inventoryStatusBadge/);
   assert.match(source, /albumPlaceholderActionButton\(galleryPhotoActionButtonLabel\(album\.id, photos,/);
+  assert.match(source, /if \(canManageAlbumMedia\(\)\) \{\s+actions\.append\(albumPlaceholderActionButton\("Delete Upload"/);
   assert.match(source, /albumPlaceholderActionButton\("Delete Upload"/);
   assert.match(source, /action: "delete-album-media"/);
-  assert.match(source, /disabled: !canManageAlbumMedia\(\) \|\| !canUseSavedAlbum \|\| !hasMedia/);
+  assert.match(source, /disabled: !canUseSavedAlbum \|\| !hasMedia/);
   assert.match(source, /Delete uploaded media for \$\{label\}\? This deletes the uploaded media for that vehicle and cannot be undone\./);
   assert.match(source, /Deleted upload for \$\{label\}\./);
   assert.match(source, /renderGalleryCleanupButton/);
@@ -462,7 +463,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v53/);
+  assert.match(serviceWorker, /carpostclub-pwa-v54/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
