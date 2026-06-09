@@ -616,6 +616,8 @@ app.post("/api/gallery/dealerships/:dealershipId/seen", requireAuth, async (req,
   }
 });
 
+app.post("/api/gallery/remove-sold-uploads", requireAdmin, removeSoldUploads);
+
 app.get("/api/me", requireAuth, async (req, res, next) => {
   try {
     const preferenceState = await userPreferencesForUser(req.authUser);
@@ -1196,21 +1198,107 @@ async function deleteAlbumMedia(req, res, next) {
   }
 }
 
+async function removeAlbumMediaCollection(albumId) {
+  albumId = cleanAlbumId(albumId);
+  const album = await readAlbum(albumId);
+  if (!album) throw httpError(404, "Album not found.");
+  const photos = await listAlbumPhotos(albumId);
+  await Promise.all(photos.map((photo) => deleteStoredMedia(albumId, photo.filename)));
+  await updatePhotoMetadata(albumId, (metadata) => {
+    for (const filename of Object.keys(metadata)) delete metadata[filename];
+  });
+  await removeMarketplaceCopyStore(albumId);
+  return { album, deleted: photos.length, photos };
+}
+
 async function deleteAlbumMediaCollection(req, res, next) {
   try {
     const albumId = cleanAlbumId(req.params.albumId);
-    const album = await readAlbum(albumId);
-    if (!album) throw httpError(404, "Album not found.");
-    const photos = await listAlbumPhotos(albumId);
-    await Promise.all(photos.map((photo) => deleteStoredMedia(albumId, photo.filename)));
-    await updatePhotoMetadata(albumId, (metadata) => {
-      for (const filename of Object.keys(metadata)) delete metadata[filename];
-    });
-    await removeMarketplaceCopyStore(albumId);
-    res.json({ ok: true, deleted: photos.length });
+    const result = await removeAlbumMediaCollection(albumId);
+    res.json({ ok: true, deleted: result.deleted });
   } catch (error) {
     next(error);
   }
+}
+
+async function removeSoldUploads(req, res, next) {
+  try {
+    const dealership = cleanOptionalDealership(req.body?.dealershipId || req.query?.dealershipId);
+    const uploadedAlbums = await listAlbums();
+    const scopedAlbums = dealership
+      ? uploadedAlbums.filter((album) => albumDealershipKey(album) === dealership.id)
+      : uploadedAlbums;
+    const result = {
+      ok: true,
+      scanned: scopedAlbums.length,
+      matched: 0,
+      deleted: [],
+      skipped: [],
+      errors: [],
+      albums: [],
+    };
+
+    for (const album of scopedAlbums) {
+      const status = await inventoryStatusForAlbum(album);
+      const summary = soldUploadCleanupSummary(album, status);
+      const skipReason = soldUploadCleanupSkipReason(album, status);
+      if (skipReason) {
+        const skipped = { ...summary, reason: skipReason };
+        result.skipped.push(skipped);
+        result.albums.push({ ...skipped, action: "skipped" });
+        continue;
+      }
+
+      result.matched += 1;
+      try {
+        const deleted = await removeAlbumMediaCollection(album.id);
+        const deletedSummary = {
+          ...summary,
+          reason: status?.status === "missing" ? "inventory_missing" : "inventory_inactive",
+          deletedMedia: deleted.deleted,
+        };
+        result.deleted.push(deletedSummary);
+        result.albums.push({ ...deletedSummary, action: "deleted" });
+      } catch (error) {
+        const errorSummary = {
+          ...summary,
+          reason: "delete_failed",
+          error: error instanceof Error ? error.message : String(error),
+        };
+        result.errors.push(errorSummary);
+        result.albums.push({ ...errorSummary, action: "error" });
+      }
+    }
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+function soldUploadCleanupSkipReason(album, status = {}) {
+  if (!album?.mediaCount) return "no_media";
+  if (status.source === "manual") return "manual_inventory";
+  if (status.source !== "oregans") return "not_oregans_inventory";
+  if (status.status === "unknown" || status.active == null || status.error) return "inventory_status_unknown";
+  if (status.status === "missing" || status.active === false) return "";
+  return "inventory_active";
+}
+
+function soldUploadCleanupSummary(album, status = {}) {
+  const vehicle = album?.vehicle || {};
+  return {
+    albumId: album?.id || "",
+    stockNumber: normalizeSpace(vehicle.stockNumber || album?.inventoryNumber),
+    title: normalizeSpace(vehicle.title || album?.name),
+    dealership: normalizeSpace(vehicle.dealershipName || album?.dealership?.name),
+    dealershipId: normalizeSpace(vehicle.dealershipId || album?.dealership?.id),
+    source: normalizeSpace(status.source || vehicle.source || "oregans"),
+    status: normalizeSpace(status.status || "unknown"),
+    active: status.active ?? null,
+    mediaCount: Number(album?.mediaCount || 0),
+    checkedAt: status.checkedAt || null,
+  };
 }
 
 app.get("/api/chat/messages", requireAuth, async (req, res, next) => {

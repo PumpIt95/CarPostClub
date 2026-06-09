@@ -45,6 +45,7 @@ const state = {
   initialOpenAlbum: false,
   expandedAlbumId: safeStorageGet("carpostclub.expandedAlbumId"),
   albumsLoading: false,
+  galleryCleanupBusy: false,
   openedUnreadAlbumIds: new Set(),
   inventoryFetchedAt: "",
   failedUploadFiles: [],
@@ -1708,7 +1709,9 @@ function renderGalleryAlbumList() {
     els.albumCount.textContent = state.albumsLoading ? "..." : String(folders.length);
     els.albumEmpty.textContent = "No dealership folders yet";
     els.albumEmpty.hidden = state.albumsLoading || folders.length > 0;
-    els.albumList.replaceChildren(...folders.map(renderGalleryFolderCard));
+    els.albumList.replaceChildren(
+      ...[renderGalleryCleanupBar(), ...folders.map(renderGalleryFolderCard)].filter(Boolean),
+    );
     return;
   }
 
@@ -2065,7 +2068,33 @@ function renderGalleryFolderHeader(folder) {
   crumb.textContent = `Dealership folders / ${folder.name}`;
 
   bar.append(back, crumb);
+  const cleanupButton = renderGalleryCleanupButton({
+    dealershipId: folder.id,
+    label: "Remove sold uploads here",
+  });
+  if (cleanupButton) bar.append(cleanupButton);
   return bar;
+}
+
+function renderGalleryCleanupBar() {
+  const cleanupButton = renderGalleryCleanupButton({ label: "Remove sold uploads" });
+  if (!cleanupButton) return null;
+  const bar = document.createElement("div");
+  bar.className = "gallery-cleanup-actions";
+  bar.append(cleanupButton);
+  return bar;
+}
+
+function renderGalleryCleanupButton({ dealershipId = "", label = "Remove sold uploads" } = {}) {
+  if (!canManageAlbumMedia()) return null;
+  const button = document.createElement("button");
+  button.className = "icon-text-button subtle danger gallery-cleanup-button";
+  button.type = "button";
+  button.dataset.action = "remove-sold-uploads";
+  if (dealershipId) button.dataset.dealershipId = dealershipId;
+  button.disabled = state.galleryCleanupBusy;
+  button.textContent = state.galleryCleanupBusy ? "Checking sold uploads" : label;
+  return button;
 }
 
 function folderInitials(name) {
@@ -2251,7 +2280,12 @@ function renderAlbumDetail(album) {
         albumId: album.id,
         disabled: !canUseSavedAlbum || !hasMedia || state.photoShareBusy || preparingShareFiles,
       }),
-      albumPlaceholderActionButton("Delete Upload", { danger: true, disabled: true }),
+      albumPlaceholderActionButton("Delete Upload", {
+        danger: true,
+        action: "delete-album-media",
+        albumId: album.id,
+        disabled: !canManageAlbumMedia() || !canUseSavedAlbum || !hasMedia,
+      }),
     );
   } else if (!album.isSelected && canUseSavedAlbum) {
     const openButton = document.createElement("button");
@@ -2722,6 +2756,15 @@ async function handleAlbumListClick(event) {
     clearInactivePhotoSharePreparations("");
     persistAccountPreferences();
     renderAlbumList();
+    return;
+  }
+  if (target.dataset.action === "remove-sold-uploads") {
+    haptic("warning");
+    try {
+      await removeSoldUploads(target.dataset.dealershipId || "");
+    } catch (error) {
+      showError(error);
+    }
     return;
   }
 
@@ -3512,8 +3555,8 @@ async function deleteAlbumMedia(albumId) {
   const count = details.photos?.length || album?.mediaCount || 0;
   if (!album?.id || !count) return;
 
-  const label = album.vehicle?.stockNumber || album.name || "this album";
-  const confirmed = window.confirm(`Are you sure you want to delete all ${count} media ${plural(count, "asset")} for ${label}? This cannot be undone.`);
+  const label = albumDeleteUploadLabel(album);
+  const confirmed = window.confirm(`Delete uploaded media for ${label}? This deletes the uploaded media for that vehicle and cannot be undone.`);
   if (!confirmed) return;
 
   try {
@@ -3532,10 +3575,48 @@ async function deleteAlbumMedia(albumId) {
     await loadAlbums();
     renderAlbumList();
     haptic("success");
-    showStatus(`Deleted ${response.deleted ?? count} media ${plural(response.deleted ?? count, "asset")}.`);
+    showStatus(`Deleted upload for ${label}.`);
   } catch (error) {
     throw error;
   }
+}
+
+async function removeSoldUploads(dealershipId = "") {
+  if (state.galleryCleanupBusy) return;
+  const confirmed = window.confirm("This will delete uploads for vehicles no longer active online. Manual and unknown-status uploads will be skipped. Continue?");
+  if (!confirmed) return;
+
+  state.galleryCleanupBusy = true;
+  renderAlbumList();
+  try {
+    const response = await apiJson("/api/gallery/remove-sold-uploads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(dealershipId ? { dealershipId } : {}),
+    });
+    await loadAlbums();
+    renderAlbumList();
+    haptic("success");
+    showStatus(soldUploadsCleanupMessage(response));
+  } finally {
+    state.galleryCleanupBusy = false;
+    renderAlbumList();
+  }
+}
+
+function soldUploadsCleanupMessage(response = {}) {
+  const deletedCount = Array.isArray(response.deleted) ? response.deleted.length : Number(response.deleted || 0);
+  const skippedCount = Array.isArray(response.skipped) ? response.skipped.length : Number(response.skipped || 0);
+  const errorCount = Array.isArray(response.errors) ? response.errors.length : Number(response.errors || 0);
+  const errorMessage = errorCount ? ` ${errorCount} ${plural(errorCount, "error")} needs review.` : "";
+  if (!deletedCount) return `No sold/offline uploads found.${errorMessage}`;
+  return `Removed ${deletedCount} sold ${plural(deletedCount, "upload")}. Skipped ${skippedCount} active/manual/unknown ${plural(skippedCount, "album")}.${errorMessage}`;
+}
+
+function albumDeleteUploadLabel(album) {
+  const stockNumber = album?.vehicle?.stockNumber || album?.inventoryNumber || "";
+  const title = album?.vehicle?.title || album?.name || "";
+  return [stockNumber, title].filter(Boolean).join(" / ") || "this vehicle";
 }
 
 async function deleteAlbumPhoto(albumId, filename, label = "this media asset") {
