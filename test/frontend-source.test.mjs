@@ -80,6 +80,10 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="logoutForm"/);
   assert.match(html, /id="installButton"/);
   assert.match(html, /id="notificationButton"/);
+  assert.match(html, /id="notificationPanel"/);
+  assert.match(html, /id="notificationList"/);
+  assert.match(html, /id="notificationPrompt"/);
+  assert.match(html, /id="notificationUnread"/);
   assert.doesNotMatch(html, /id="shortcutButton"/i);
   assert.doesNotMatch(html, /id="shortcutPanel"/i);
   assert.doesNotMatch(html, /Photos Shortcut/i);
@@ -120,8 +124,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="galleryModelFilter"/);
   assert.match(html, /id="galleryYearFilter"/);
   assert.match(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260609-gallery-delete-admin-only-v54/);
-  assert.match(html, /\/styles\.css\?v=20260604-upload-selection-v43/);
+  assert.match(html, /\/app\.js\?v=20260609-inventory-lifecycle-v56/);
+  assert.match(html, /\/styles\.css\?v=20260609-inventory-lifecycle-v56/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -203,13 +207,13 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /disabled: !canUseSavedAlbum \|\| !hasMedia/);
   assert.match(source, /Delete uploaded media for \$\{label\}\? This deletes the uploaded media for that vehicle and cannot be undone\./);
   assert.match(source, /Deleted upload for \$\{label\}\./);
-  assert.match(source, /renderGalleryCleanupButton/);
-  assert.match(source, /Remove sold uploads/);
-  assert.match(source, /Remove sold uploads here/);
-  assert.match(source, /remove-sold-uploads/);
-  assert.match(source, /\/api\/gallery\/remove-sold-uploads/);
-  assert.match(source, /Manual and unknown-status uploads will be skipped/);
-  assert.match(source, /No sold\/offline uploads found/);
+  assert.doesNotMatch(source, /renderGalleryCleanupButton/);
+  assert.doesNotMatch(source, /Remove sold uploads/);
+  assert.doesNotMatch(source, /Remove sold uploads here/);
+  assert.doesNotMatch(source, /remove-sold-uploads/);
+  assert.doesNotMatch(source, /\/api\/gallery\/remove-sold-uploads/);
+  assert.doesNotMatch(source, /Manual and unknown-status uploads will be skipped/);
+  assert.doesNotMatch(source, /No sold\/offline uploads found/);
   assert.match(source, /download-or-share-album-photos/);
   assert.match(source, /async function downloadOrShareAlbumPhotos\(albumId\)/);
   assert.match(source, /function downloadAlbumZip\(album\)/);
@@ -341,9 +345,20 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /beforeinstallprompt/);
   assert.match(source, /Notification\.requestPermission/);
   assert.match(source, /pushManager\.subscribe/);
+  assert.match(source, /pushPromptStorageKey = "carpostclub\.pushPromptAsked"/);
+  assert.match(source, /function ensurePushSubscription\(/);
+  assert.match(source, /allowSubscribe: Notification\.permission === "granted"/);
+  assert.match(source, /function pushSubscriptionMatchesPublicKey\(/);
+  assert.match(source, /function enablePushNotifications\(/);
+  assert.match(source, /function setNotificationsOpen\(/);
+  assert.match(source, /function renderNotificationPanel\(/);
+  assert.match(source, /function renderPushPrompt\(/);
+  assert.match(source, /function markNotificationsRead\(/);
+  assert.match(source, /\/api\/notifications/);
   assert.match(source, /\/api\/push\/config/);
   assert.match(source, /\/api\/push\/subscriptions/);
   assert.match(source, /\/api\/push\/test/);
+  assert.doesNotMatch(source, /Turn off notifications/);
   assert.doesNotMatch(source, /\/api\/shortcut/i);
   assert.doesNotMatch(source, /setShortcutPanelOpen/i);
   assert.doesNotMatch(source, /shortcutImportUrl/i);
@@ -428,6 +443,9 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /clearUploadButton/);
   assert.match(source, /state\.selectedMake = "";\n    state\.selectedModel = "";\n    state\.carSearch = "";\n    safeStorageRemove\("carpostclub\.carSearch"\);\n    clearSelectedCarSelection\(\);/);
   assert.match(source, /thumbnailUrl/);
+  assert.match(source, /coverThumbnailUrl/);
+  assert.match(source, /albumCoverThumbnailUrl/);
+  assert.match(source, /image\.src = photo\.thumbnailUrl \|\| ""/);
   assert.match(source, /loading = "lazy"/);
   assert.match(source, /photoUploaderLabel/);
   assert.match(source, /renderAlbumMediaThumb/);
@@ -463,7 +481,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v54/);
+  assert.match(serviceWorker, /carpostclub-pwa-v56/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -487,10 +505,104 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(serviceWorker, /carpostclub:push/);
   assert.match(serviceWorker, /notificationclick/);
   assert.match(serviceWorker, /notificationActions/);
+  assert.match(serviceWorker, /pushsubscriptionchange/);
+  assert.match(serviceWorker, /refreshPushSubscription/);
+  assert.match(serviceWorker, /\/api\/push\/config/);
+  assert.match(serviceWorker, /credentials: "include"/);
   assert.match(serviceWorker, /messageId/);
+  assert.match(serviceWorker, /notificationId/);
   assert.match(serviceWorker, /albumId/);
   assert.match(serviceWorker, /mediaCount/);
   assert.match(serviceWorker, /Open chat/);
+});
+
+test("service worker repairs changed push subscriptions with authenticated endpoints", async () => {
+  const serviceWorker = await fs.readFile(serviceWorkerPath, "utf8");
+  const handlers = new Map();
+  const calls = [];
+  const newSubscription = {
+    endpoint: "https://push.example.test/send/new",
+    keys: { p256dh: "B".repeat(88), auth: "A".repeat(22) },
+    toJSON() {
+      return {
+        endpoint: this.endpoint,
+        keys: this.keys,
+      };
+    },
+  };
+  const context = {
+    URL,
+    Uint8Array,
+    JSON,
+    atob: (value) => Buffer.from(value, "base64").toString("binary"),
+    fetch: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url === "/api/push/config") {
+        return {
+          ok: true,
+          json: async () => ({ publicKey: "AQID" }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ ok: true }),
+      };
+    },
+    caches: {
+      keys: async () => [],
+      delete: async () => true,
+      open: async () => ({
+        addAll: async () => {},
+        match: async () => null,
+        put: async () => {},
+      }),
+    },
+    Response: {
+      error: () => ({ status: 0, marker: "response-error" }),
+    },
+    self: {
+      location: { origin: "https://carpostclub.test" },
+      addEventListener: (type, handler) => {
+        handlers.set(type, handler);
+      },
+      clients: {
+        claim: async () => {},
+        matchAll: async () => [],
+        openWindow: async () => null,
+      },
+      registration: {
+        pushManager: {
+          subscribe: async () => newSubscription,
+        },
+        showNotification: async () => {},
+      },
+      skipWaiting: async () => {},
+    },
+  };
+  vm.runInNewContext(serviceWorker, context);
+
+  const handler = handlers.get("pushsubscriptionchange");
+  assert.equal(typeof handler, "function");
+
+  const event = {
+    oldSubscription: { endpoint: "https://push.example.test/send/old" },
+    waitUntil(promise) {
+      this.promise = promise;
+    },
+  };
+  handler(event);
+  await event.promise;
+
+  assert.equal(calls[0].url, "/api/push/config");
+  assert.equal(calls[0].options.credentials, "include");
+  assert.equal(calls[1].url, "/api/push/subscriptions");
+  assert.equal(calls[1].options.method, "DELETE");
+  assert.equal(calls[1].options.credentials, "include");
+  assert.equal(JSON.parse(calls[1].options.body).endpoint, event.oldSubscription.endpoint);
+  assert.equal(calls[2].url, "/api/push/subscriptions");
+  assert.equal(calls[2].options.method, "POST");
+  assert.equal(calls[2].options.credentials, "include");
+  assert.equal(JSON.parse(calls[2].options.body).subscription.endpoint, newSubscription.endpoint);
 });
 
 test("service worker offline fallback handles page navigations but not API requests", async () => {
@@ -693,6 +805,7 @@ test("album media thumbs keep media inside album tiles", async () => {
   assert.match(styles, /\.album-media-save-badge/);
   assert.match(styles, /-webkit-touch-callout: default/);
   assert.match(source, /renderAlbumMediaThumb/);
+  assert.match(source, /coverThumbnailUrl/);
   assert.match(source, /photoUploaderLabel/);
   assert.match(source, /photo\.downloadUrl/);
   assert.match(source, /deleteAlbumPhoto/);
@@ -734,9 +847,14 @@ test("uploaded package albums show inventory status and mobile download controls
   assert.match(styles, /\.album-description/);
   assert.match(styles, /white-space: pre-wrap/);
   assert.match(styles, /\.album-card\.is-selected/);
+  assert.match(styles, /\.album-card\.is-source-removed/);
   assert.match(styles, /\.album-detail-actions \.icon-text-button\.danger/);
   assert.match(styles, /\.inventory-status-badge\.is-active/);
   assert.match(styles, /\.inventory-status-badge\.is-missing/);
+  assert.match(styles, /\.inventory-status-badge\.is-source-removed/);
+  assert.match(source, /source_removed/);
+  assert.match(source, /facebookAction === "mark_sold"/);
+  assert.match(source, /mark any matching Konner John Marketplace listing sold; do not delete it/i);
   assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.album-detail-actions\s*\{[\s\S]*grid-template-columns: 1fr 1fr/);
   assert.doesNotMatch(styles, /\.album-marketplace/);
 });
@@ -770,7 +888,7 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260604-upload-selection-v43/);
+  assert.match(source, /\/styles\.css\?v=20260609-inventory-lifecycle-v56/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });

@@ -854,6 +854,22 @@ textarea:focus {
   border-left-width: 4px;
 }
 
+.album-card.is-source-removed {
+  border-color: #b7bcc2;
+  background: #f0f2f3;
+}
+
+.album-card.is-source-removed .album-cover,
+.album-card.is-source-removed .album-summary-copy {
+  filter: grayscale(1);
+  opacity: 0.62;
+}
+
+.album-card.is-source-removed .album-status-line {
+  color: var(--color-midnight-graphite);
+  font-weight: var(--font-weight-semibold);
+}
+
 .album-summary-button {
   display: grid;
   width: 100%;
@@ -975,6 +991,12 @@ textarea:focus {
 .inventory-status-badge.is-missing {
   border-color: var(--color-flame-orange);
   background: #fff4ef;
+}
+
+.inventory-status-badge.is-source-removed {
+  border-color: #6f7782;
+  color: var(--color-midnight-graphite);
+  background: #e4e7ea;
 }
 
 .inventory-status-badge.is-manual {
@@ -1738,6 +1760,25 @@ textarea:focus {
   content: "";
 }
 
+.notification-unread {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  max-width: 28px;
+  height: 18px;
+  border: 1px solid var(--color-midnight-graphite);
+  padding: 0 4px;
+  color: var(--color-cloud-white);
+  background: var(--color-flame-orange);
+  font-size: 10px;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .chat-unread {
   position: absolute;
   top: 2px;
@@ -1755,6 +1796,171 @@ textarea:focus {
   line-height: 1;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.notification-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-16);
+  border: 1px solid var(--color-midnight-graphite);
+  border-left-width: 4px;
+  margin-bottom: var(--spacing-16);
+  padding: var(--spacing-12) var(--spacing-16);
+  color: var(--color-midnight-graphite);
+  background: #eef6ff;
+}
+
+.notification-prompt > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notification-prompt strong,
+.notification-prompt span {
+  display: block;
+}
+
+.notification-prompt span {
+  color: var(--color-steel-gray);
+  font-size: 13px;
+}
+
+.notification-prompt-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--spacing-8);
+}
+
+.notification-prompt-actions .icon-button {
+  width: 48px;
+  height: 48px;
+}
+
+.notification-panel {
+  position: fixed;
+  top: max(var(--spacing-24), env(safe-area-inset-top));
+  right: max(var(--spacing-24), env(safe-area-inset-right));
+  z-index: 70;
+  display: none;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  width: min(430px, calc(100vw - 32px));
+  max-height: min(620px, calc(100svh - 48px));
+  border: 1px solid var(--color-midnight-graphite);
+  color: var(--color-ash-black);
+  background: var(--color-cloud-white);
+  box-shadow: 8px 8px 0 rgba(17, 17, 17, 0.16);
+}
+
+.notification-panel.is-open {
+  display: grid;
+}
+
+.notification-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-16);
+  border-bottom: 1px solid var(--color-midnight-graphite);
+  padding: var(--spacing-16);
+}
+
+.notification-panel-header > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.notification-panel-header p,
+.notification-panel-opt-in p {
+  margin: 0;
+  color: var(--color-steel-gray);
+  font-size: 13px;
+}
+
+.notification-panel-header .icon-button {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+}
+
+.notification-panel-opt-in {
+  display: grid;
+  gap: var(--spacing-8);
+  border-bottom: 1px solid var(--color-stone-gray);
+  padding: var(--spacing-12) var(--spacing-16);
+  background: #fff4ef;
+}
+
+.notification-panel-opt-in .icon-text-button {
+  justify-self: start;
+}
+
+.notification-list {
+  display: grid;
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.notification-item {
+  display: grid;
+  gap: 6px;
+  border-bottom: 1px solid var(--color-stone-gray);
+  padding: var(--spacing-12) var(--spacing-16);
+  color: var(--color-midnight-graphite);
+  background: var(--color-cloud-white);
+  text-decoration: none;
+}
+
+.notification-item:hover {
+  background: #eef6ff;
+}
+
+.notification-item.is-unread {
+  border-left: 4px solid var(--color-flame-orange);
+  padding-left: 12px;
+}
+
+.notification-item-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacing-12);
+  min-width: 0;
+}
+
+.notification-item-header strong,
+.notification-item-body,
+.notification-item-meta {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.notification-item-header time,
+.notification-item-meta {
+  color: var(--color-smoke-gray);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+}
+
+.notification-item-header time {
+  flex: 0 0 auto;
+}
+
+.notification-item-body {
+  color: var(--color-steel-gray);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.notification-empty {
+  padding: var(--spacing-24);
+  color: var(--color-smoke-gray);
+  text-align: center;
 }
 
 .chat-panel {
@@ -2103,20 +2309,30 @@ textarea:focus {
   background: var(--color-cloud-white);
 }
 
+.admin-dealership-form,
 .admin-password-form {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: var(--spacing-8);
   border-top: 1px solid var(--color-stone-gray);
   padding-top: var(--spacing-16);
 }
 
+.admin-dealership-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.admin-password-form {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
+.admin-dealership-form label,
 .admin-password-form label {
   display: grid;
   gap: 4px;
 }
 
+.admin-dealership-form span,
 .admin-password-form span {
   color: var(--color-steel-gray);
   font-size: 12px;
@@ -2149,6 +2365,7 @@ textarea:focus {
 }
 
 .admin-user-actions button,
+.admin-dealership-form button,
 .admin-password-form button,
 .admin-user-card > form button {
   min-height: 40px;
@@ -2410,6 +2627,38 @@ textarea:focus {
 
   .admin-password-form {
     grid-template-columns: 1fr;
+  }
+
+  .admin-dealership-form {
+    grid-template-columns: 1fr;
+  }
+
+  .notification-prompt {
+    display: grid;
+  }
+
+  .notification-prompt-actions {
+    display: grid;
+    grid-template-columns: 1fr 48px;
+  }
+
+  .notification-panel {
+    inset: 0;
+    z-index: 100;
+    width: 100vw;
+    max-height: none;
+    height: 100svh;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .notification-panel-header {
+    min-height: 64px;
+    padding: max(12px, env(safe-area-inset-top)) var(--spacing-16) 12px;
+  }
+
+  body.notification-panel-active {
+    overflow: hidden;
   }
 
   .chat-panel {

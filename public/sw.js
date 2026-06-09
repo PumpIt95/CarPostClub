@@ -1,6 +1,6 @@
 const APP_ICON = "/icons/carpostclub-icon-192.png";
 const APP_BADGE = "/icons/carpostclub-apple-touch-icon.png";
-const CACHE_VERSION = "carpostclub-pwa-v54";
+const CACHE_VERSION = "carpostclub-pwa-v56";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/offline.html",
@@ -69,6 +69,7 @@ self.addEventListener("push", (event) => {
     data: {
       url: payload.url || "/",
       kind: payload.kind || "",
+      notificationId: payload.notificationId || payload.messageId || "",
       messageId: payload.messageId || "",
       albumId: payload.albumId || "",
       mediaCount: payload.mediaCount || 0,
@@ -104,6 +105,10 @@ self.addEventListener("notificationclick", (event) => {
   })());
 });
 
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(refreshPushSubscription(event));
+});
+
 function parsePushPayload(event) {
   if (!event.data) return {};
   try {
@@ -130,6 +135,58 @@ function notificationActions(payload) {
       title: "Open chat",
     },
   ];
+}
+
+async function refreshPushSubscription(event) {
+  try {
+    const publicKey = await fetchPushPublicKey();
+    if (!publicKey) return;
+
+    const subscription = event.newSubscription || await self.registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey),
+    });
+
+    const oldEndpoint = event.oldSubscription?.endpoint || "";
+    if (oldEndpoint && oldEndpoint !== subscription.endpoint) {
+      await fetch("/api/push/subscriptions", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ endpoint: oldEndpoint }),
+      }).catch(() => null);
+    }
+
+    await fetch("/api/push/subscriptions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ subscription: serializePushSubscription(subscription) }),
+    });
+  } catch {
+    // The page will repair the subscription on the next authenticated app load.
+  }
+}
+
+async function fetchPushPublicKey() {
+  const response = await fetch("/api/push/config", {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!response.ok) return "";
+  const config = await response.json().catch(() => null);
+  return typeof config?.publicKey === "string" ? config.publicKey : "";
+}
+
+function serializePushSubscription(subscription) {
+  return typeof subscription?.toJSON === "function" ? subscription.toJSON() : subscription;
+}
+
+function urlBase64ToUint8Array(value) {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const base64 = `${value}${padding}`.replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map((char) => char.charCodeAt(0)));
 }
 
 async function broadcastPushPayload(payload) {

@@ -28,6 +28,10 @@ const state = {
   pushPublicKey: "",
   pushSubscription: null,
   pushBusy: false,
+  notifications: [],
+  notificationUnreadCount: 0,
+  notificationsOpen: false,
+  notificationsLoading: false,
   selectedDealershipId: safeStorageGet("carpostclub.selectedDealershipId", "15"),
   selectedInventoryTypeId: safeStorageGet("carpostclub.selectedInventoryTypeId", "2"),
   selectedMake: safeStorageGet("carpostclub.selectedMake"),
@@ -45,7 +49,6 @@ const state = {
   initialOpenAlbum: false,
   expandedAlbumId: safeStorageGet("carpostclub.expandedAlbumId"),
   albumsLoading: false,
-  galleryCleanupBusy: false,
   openedUnreadAlbumIds: new Set(),
   inventoryFetchedAt: "",
   failedUploadFiles: [],
@@ -83,6 +86,7 @@ const hapticNotificationTypes = {
   warning: "WARNING",
   error: "ERROR",
 };
+const pushPromptStorageKey = "carpostclub.pushPromptAsked";
 const photoSharePreparationTimeoutMs = Number(window.__CARPOSTCLUB_PHOTO_SHARE_PREPARATION_TIMEOUT_MS || 20000);
 const photoSharePreparationConcurrency = 2;
 const photoShareDebugEnabled = new URLSearchParams(window.location.search).get("debugShare") === "1";
@@ -149,11 +153,22 @@ const els = {
   manualVin: document.querySelector("#manualVin"),
   manualYear: document.querySelector("#manualYear"),
   modelFilterSelect: document.querySelector("#modelFilterSelect"),
+  notificationButton: document.querySelector("#notificationButton"),
+  notificationClose: document.querySelector("#notificationClose"),
+  notificationEmpty: document.querySelector("#notificationEmpty"),
+  notificationList: document.querySelector("#notificationList"),
+  notificationPanel: document.querySelector("#notificationPanel"),
+  notificationPanelEnable: document.querySelector("#notificationPanelEnable"),
+  notificationPanelOptIn: document.querySelector("#notificationPanelOptIn"),
+  notificationPanelStatus: document.querySelector("#notificationPanelStatus"),
+  notificationPrompt: document.querySelector("#notificationPrompt"),
+  notificationPromptDismiss: document.querySelector("#notificationPromptDismiss"),
+  notificationPromptEnable: document.querySelector("#notificationPromptEnable"),
+  notificationUnread: document.querySelector("#notificationUnread"),
   oregansSourceButton: document.querySelector("#oregansSourceButton"),
   pickerPanel: document.querySelector(".picker-panel"),
   cancelManualCarButton: document.querySelector("#cancelManualCarButton"),
   pickerSubhead: document.querySelector("#pickerSubhead"),
-  notificationButton: document.querySelector("#notificationButton"),
   postedInventoryHint: document.querySelector("#postedInventoryHint"),
   galleryPageLink: document.querySelector("#galleryPageLink"),
   galleryFilterBar: document.querySelector("#galleryFilterBar"),
@@ -188,6 +203,7 @@ async function init() {
   applyPageMode();
   bindEvents();
   await loadCurrentUser().catch(() => {});
+  loadNotifications().catch((error) => console.warn(error));
   initChat().catch((error) => showError(error));
   initAlbumEvents();
   initPwa().catch((error) => {
@@ -433,7 +449,22 @@ function bindEvents() {
   els.logoutForm?.addEventListener("submit", handleLogoutSubmit);
 
   els.installButton?.addEventListener("click", installPwa);
-  els.notificationButton?.addEventListener("click", togglePushNotifications);
+  els.notificationButton?.addEventListener("click", () => setNotificationsOpen(!state.notificationsOpen, { feedback: true }));
+  els.notificationClose?.addEventListener("click", () => setNotificationsOpen(false, { feedback: true }));
+  els.notificationPromptEnable?.addEventListener("click", enablePushNotificationsFromPrompt);
+  els.notificationPanelEnable?.addEventListener("click", enablePushNotificationsFromPrompt);
+  els.notificationPromptDismiss?.addEventListener("click", dismissPushPrompt);
+  els.notificationList?.addEventListener("click", handleNotificationListClick);
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.notificationsOpen) setNotificationsOpen(false, { feedback: true });
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!state.notificationsOpen) return;
+    if (els.notificationPanel?.contains(event.target) || els.notificationButton?.contains(event.target)) return;
+    setNotificationsOpen(false);
+  });
 
   window.addEventListener("popstate", () => {
     const shouldOpenChat = new URLSearchParams(window.location.search).get("openChat") === "1";
@@ -564,12 +595,13 @@ async function initPwa() {
   state.serviceWorkerRegistration = await navigator.serviceWorker.ready;
 
   if (pushNotificationsSupported()) {
-    const config = await apiJson("/api/push/config");
-    state.pushPublicKey = config.publicKey || "";
-    state.pushSubscription = await state.serviceWorkerRegistration.pushManager.getSubscription();
-    if (state.pushSubscription && state.pushPublicKey) {
-      savePushSubscription(state.pushSubscription).catch(() => {});
-    }
+    await loadPushConfig();
+    state.pushSubscription = await ensurePushSubscription({
+      allowSubscribe: Notification.permission === "granted",
+    }).catch((error) => {
+      console.warn(error);
+      return null;
+    });
   }
 
   renderPwaControls();
@@ -586,7 +618,13 @@ async function installPwa() {
   if (choice?.outcome === "accepted") showStatus("CarPostClub install started.");
 }
 
-async function togglePushNotifications() {
+async function enablePushNotificationsFromPrompt(event) {
+  event?.preventDefault?.();
+  setPushPromptAsked(true);
+  await enablePushNotifications();
+}
+
+async function enablePushNotifications() {
   if (state.pushBusy) return;
   haptic("tap");
   state.pushBusy = true;
@@ -601,35 +639,18 @@ async function togglePushNotifications() {
       state.serviceWorkerRegistration = await navigator.serviceWorker.ready;
     }
 
-    let subscription = await state.serviceWorkerRegistration.pushManager.getSubscription();
-    if (subscription) {
-      await deletePushSubscription(subscription);
-      await subscription.unsubscribe();
-      state.pushSubscription = null;
-      haptic("success");
-      showStatus("Push notifications turned off.");
-      return;
-    }
+    await loadPushConfig();
 
-    if (!state.pushPublicKey) {
-      const config = await apiJson("/api/push/config");
-      state.pushPublicKey = config.publicKey || "";
-    }
-    if (!state.pushPublicKey) throw new Error("Push notifications are not configured.");
-
-    const permission = await Notification.requestPermission();
+    const permission = Notification.permission === "granted"
+      ? "granted"
+      : await Notification.requestPermission();
     if (permission !== "granted") {
       throw new Error(permission === "denied"
         ? "Notifications are blocked. Allow them in this browser's site settings."
         : "Notification permission was not granted.");
     }
 
-    subscription = await state.serviceWorkerRegistration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(state.pushPublicKey),
-    });
-    await savePushSubscription(subscription);
-    state.pushSubscription = subscription;
+    await ensurePushSubscription({ allowSubscribe: true });
     haptic("success");
     showStatus("Push notifications turned on.");
     apiJson("/api/push/test", { method: "POST" }).catch(() => {});
@@ -639,6 +660,12 @@ async function togglePushNotifications() {
     state.pushBusy = false;
     renderPwaControls();
   }
+}
+
+function dismissPushPrompt() {
+  haptic("tap");
+  setPushPromptAsked(true);
+  renderPwaControls();
 }
 
 async function handleLogoutSubmit(event) {
@@ -701,6 +728,65 @@ function pushNotificationsSupported() {
     && "Notification" in window;
 }
 
+async function loadPushConfig() {
+  if (state.pushPublicKey) return state.pushPublicKey;
+  const config = await apiJson("/api/push/config");
+  state.pushPublicKey = config.publicKey || "";
+  if (!state.pushPublicKey) throw new Error("Push notifications are not configured.");
+  return state.pushPublicKey;
+}
+
+async function ensurePushSubscription({ allowSubscribe = false } = {}) {
+  if (!pushNotificationsSupported()) return null;
+  if (!state.serviceWorkerRegistration) {
+    state.serviceWorkerRegistration = await navigator.serviceWorker.ready;
+  }
+  await loadPushConfig();
+
+  let subscription = await state.serviceWorkerRegistration.pushManager.getSubscription();
+  const hadSubscription = Boolean(subscription);
+  if (subscription && !pushSubscriptionMatchesPublicKey(subscription)) {
+    await deletePushSubscription(subscription).catch(() => {});
+    await subscription.unsubscribe().catch(() => false);
+    subscription = null;
+  }
+
+  if (!subscription && (allowSubscribe || hadSubscription) && Notification.permission === "granted") {
+    subscription = await state.serviceWorkerRegistration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(state.pushPublicKey),
+    });
+  }
+
+  if (subscription) {
+    await savePushSubscription(subscription);
+    state.pushSubscription = subscription;
+  } else {
+    state.pushSubscription = null;
+  }
+
+  renderPwaControls();
+  return subscription;
+}
+
+function pushSubscriptionMatchesPublicKey(subscription) {
+  const key = subscription?.options?.applicationServerKey;
+  if (!key || !state.pushPublicKey) return true;
+  const expected = urlBase64ToUint8Array(state.pushPublicKey);
+  const actual = new Uint8Array(key);
+  if (actual.length !== expected.length) return false;
+  return actual.every((value, index) => value === expected[index]);
+}
+
+function pushPromptAsked() {
+  return safeStorageGet(pushPromptStorageKey) === "true";
+}
+
+function setPushPromptAsked(asked) {
+  if (asked) safeStorageSet(pushPromptStorageKey, "true");
+  else safeStorageRemove(pushPromptStorageKey);
+}
+
 async function savePushSubscription(subscription) {
   const serialized = typeof subscription.toJSON === "function" ? subscription.toJSON() : subscription;
   const response = await apiJson("/api/push/subscriptions", {
@@ -726,22 +812,224 @@ function renderPwaControls() {
     els.installButton.disabled = !canInstall;
   }
 
+  renderNotificationPanel();
+  renderPushPrompt();
+
   if (!els.notificationButton) return;
   const supported = pushNotificationsSupported();
   const permission = supported ? Notification.permission : "unsupported";
   const subscribed = Boolean(state.pushSubscription);
-  els.notificationButton.hidden = !supported;
-  els.notificationButton.disabled = state.pushBusy || permission === "denied" || !state.serviceWorkerRegistration;
+  const unread = Math.min(99, Math.max(0, state.notificationUnreadCount));
+  els.notificationButton.hidden = false;
+  els.notificationButton.disabled = state.pushBusy;
   els.notificationButton.classList.toggle("is-on", subscribed);
+  els.notificationButton.setAttribute("aria-expanded", String(state.notificationsOpen));
+  if (els.notificationUnread) {
+    els.notificationUnread.hidden = unread <= 0;
+    els.notificationUnread.textContent = unread === 99 && state.notificationUnreadCount > 99 ? "99+" : String(unread);
+  }
   const label = state.pushBusy
     ? "Updating notifications"
-    : subscribed
-      ? "Turn off notifications"
+    : unread > 0
+      ? `Notifications, ${state.notificationUnreadCount} unread`
       : permission === "denied"
         ? "Notifications blocked"
-        : "Turn on notifications";
+        : "Notifications";
   els.notificationButton.setAttribute("aria-label", label);
   els.notificationButton.title = label;
+}
+
+async function loadNotifications() {
+  if (!state.currentUser) return;
+  state.notificationsLoading = true;
+  renderNotificationPanel();
+  try {
+    const response = await apiJson("/api/notifications?limit=50");
+    applyNotificationsResponse(response);
+  } finally {
+    state.notificationsLoading = false;
+    renderPwaControls();
+  }
+}
+
+async function markNotificationsRead(ids = null) {
+  if (!state.currentUser) return;
+  if (!ids && state.notificationUnreadCount <= 0) return;
+  const response = await apiJson("/api/notifications/read", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(ids ? { ids } : {}),
+  });
+  applyNotificationsResponse(response);
+  renderPwaControls();
+}
+
+function applyNotificationsResponse(response) {
+  state.notifications = Array.isArray(response?.notifications)
+    ? response.notifications.map(normalizeNotification).filter(Boolean)
+    : [];
+  const unread = Number(response?.unreadCount);
+  state.notificationUnreadCount = Number.isFinite(unread)
+    ? Math.max(0, Math.floor(unread))
+    : state.notifications.filter((notification) => !notification.readAt).length;
+}
+
+function normalizeNotification(notification) {
+  if (!notification || typeof notification !== "object") return null;
+  const id = String(notification.id || notification.notificationId || notification.messageId || "").trim();
+  if (!id) return null;
+  const url = cleanNotificationUrl(notification.url);
+  return {
+    id,
+    title: String(notification.title || "CarPostClub").trim() || "CarPostClub",
+    body: String(notification.body || "").trim(),
+    url,
+    kind: String(notification.kind || "").trim(),
+    tag: String(notification.tag || "").trim(),
+    messageId: String(notification.messageId || "").trim(),
+    albumId: String(notification.albumId || "").trim(),
+    mediaCount: Number.isFinite(Number(notification.mediaCount)) ? Math.max(0, Math.floor(Number(notification.mediaCount))) : 0,
+    author: String(notification.author || "").trim(),
+    createdAt: normalizeDateString(notification.createdAt),
+    receivedAt: normalizeDateString(notification.receivedAt || notification.createdAt),
+    readAt: normalizeDateString(notification.readAt),
+  };
+}
+
+function cleanNotificationUrl(value) {
+  const text = String(value || "").trim();
+  return text.startsWith("/") && !text.startsWith("//") ? text : "/";
+}
+
+function normalizeDateString(value) {
+  const time = Date.parse(value || "");
+  return Number.isFinite(time) ? new Date(time).toISOString() : "";
+}
+
+function setNotificationsOpen(isOpen, { feedback = false } = {}) {
+  if (feedback) haptic("tap");
+  state.notificationsOpen = Boolean(isOpen);
+  document.body.classList.toggle("notification-panel-active", state.notificationsOpen);
+  renderNotificationPanel();
+  renderPwaControls();
+
+  if (state.notificationsOpen) {
+    loadNotifications()
+      .then(() => markNotificationsRead())
+      .catch((error) => console.warn(error));
+  }
+}
+
+function renderNotificationPanel() {
+  if (!els.notificationPanel) return;
+  els.notificationPanel.hidden = !state.notificationsOpen;
+  els.notificationPanel.classList.toggle("is-open", state.notificationsOpen);
+  els.notificationPanel.setAttribute("aria-hidden", String(!state.notificationsOpen));
+
+  const supported = pushNotificationsSupported();
+  const permission = supported ? Notification.permission : "unsupported";
+  const subscribed = Boolean(state.pushSubscription);
+  if (els.notificationPanelStatus) {
+    els.notificationPanelStatus.textContent = state.pushBusy
+      ? "Updating push notifications..."
+      : subscribed
+        ? "Push notifications are on for this device."
+        : permission === "denied"
+          ? "Notifications are blocked in this browser's site settings."
+          : supported
+            ? "Push notifications are off for this device."
+            : "Push notifications are not supported in this browser.";
+  }
+  if (els.notificationPanelOptIn) {
+    els.notificationPanelOptIn.hidden = !supported || subscribed || permission === "denied";
+  }
+  if (els.notificationPanelEnable) {
+    els.notificationPanelEnable.disabled = state.pushBusy || !supported || subscribed || permission === "denied";
+  }
+
+  renderNotificationList();
+}
+
+function renderPushPrompt() {
+  if (!els.notificationPrompt) return;
+  const supported = pushNotificationsSupported();
+  const permission = supported ? Notification.permission : "unsupported";
+  const shouldAsk = supported
+    && Boolean(state.serviceWorkerRegistration)
+    && !state.pushSubscription
+    && permission === "default"
+    && !pushPromptAsked();
+  els.notificationPrompt.hidden = !shouldAsk;
+  if (els.notificationPromptEnable) els.notificationPromptEnable.disabled = state.pushBusy;
+}
+
+function renderNotificationList() {
+  if (!els.notificationList) return;
+  if (state.notifications.length) {
+    els.notificationList.replaceChildren(...state.notifications.map(renderNotificationItem));
+  } else {
+    els.notificationList.replaceChildren();
+  }
+  if (els.notificationEmpty) {
+    els.notificationEmpty.hidden = state.notificationsLoading || state.notifications.length > 0;
+    els.notificationEmpty.textContent = state.notificationsLoading ? "Loading notifications..." : "No notifications yet";
+  }
+}
+
+function renderNotificationItem(notification) {
+  const link = document.createElement("a");
+  link.className = "notification-item";
+  link.classList.toggle("is-unread", !notification.readAt);
+  link.href = notification.url || "/";
+  link.dataset.notificationId = notification.id;
+  link.setAttribute("role", "listitem");
+
+  const header = document.createElement("span");
+  header.className = "notification-item-header";
+
+  const title = document.createElement("strong");
+  title.textContent = notification.title;
+
+  const time = document.createElement("time");
+  const timestamp = notification.receivedAt || notification.createdAt;
+  time.dateTime = timestamp;
+  time.textContent = formatNotificationTime(timestamp);
+  header.append(title, time);
+
+  const body = document.createElement("span");
+  body.className = "notification-item-body";
+  body.textContent = notification.body || "Open CarPostClub.";
+
+  const meta = document.createElement("span");
+  meta.className = "notification-item-meta";
+  meta.textContent = notificationMetaLabel(notification);
+
+  link.append(header, body, meta);
+  return link;
+}
+
+function formatNotificationTime(value) {
+  const time = Date.parse(value || "");
+  return Number.isFinite(time) ? formatDate(new Date(time).toISOString()) : "";
+}
+
+function notificationMetaLabel(notification) {
+  const labels = [];
+  if (notification.kind === "chat") labels.push("Chat");
+  else if (notification.kind === "upload") labels.push("Upload");
+  else if (notification.kind === "inventory_removed") labels.push("Inventory");
+  if (notification.mediaCount) labels.push(`${notification.mediaCount} ${plural(notification.mediaCount, "file")}`);
+  if (notification.author) labels.push(notification.author);
+  return labels.join(" - ") || "CarPostClub";
+}
+
+function handleNotificationListClick(event) {
+  const link = event.target.closest?.(".notification-item");
+  if (!link) return;
+  haptic("select");
+  const id = link.dataset.notificationId;
+  if (id) markNotificationsRead([id]).catch((error) => console.warn(error));
+  setNotificationsOpen(false);
 }
 
 function openInitialPanel() {
@@ -899,6 +1187,7 @@ function handleAlbumStreamMessage(event) {
 
 function handleServiceWorkerMessage(event) {
   if (event.data?.type !== "carpostclub:push") return;
+  loadNotifications().catch((error) => console.warn(error));
   handleUploadLiveEvent(event.data.payload).catch(reportBackgroundAlbumRefreshError);
 }
 
@@ -1709,9 +1998,7 @@ function renderGalleryAlbumList() {
     els.albumCount.textContent = state.albumsLoading ? "..." : String(folders.length);
     els.albumEmpty.textContent = "No dealership folders yet";
     els.albumEmpty.hidden = state.albumsLoading || folders.length > 0;
-    els.albumList.replaceChildren(
-      ...[renderGalleryCleanupBar(), ...folders.map(renderGalleryFolderCard)].filter(Boolean),
-    );
+    els.albumList.replaceChildren(...folders.map(renderGalleryFolderCard));
     return;
   }
 
@@ -2012,9 +2299,9 @@ function renderGalleryFolderCard(folder) {
     image.loading = "lazy";
     image.decoding = "async";
     cover.append(image);
-  } else if (latestAlbum?.coverUrl) {
+  } else if (albumCoverThumbnailUrl(latestAlbum)) {
     const image = document.createElement("img");
-    image.src = latestAlbum.coverUrl;
+    image.src = albumCoverThumbnailUrl(latestAlbum);
     image.alt = "";
     image.loading = "lazy";
     image.decoding = "async";
@@ -2068,33 +2355,7 @@ function renderGalleryFolderHeader(folder) {
   crumb.textContent = `Dealership folders / ${folder.name}`;
 
   bar.append(back, crumb);
-  const cleanupButton = renderGalleryCleanupButton({
-    dealershipId: folder.id,
-    label: "Remove sold uploads here",
-  });
-  if (cleanupButton) bar.append(cleanupButton);
   return bar;
-}
-
-function renderGalleryCleanupBar() {
-  const cleanupButton = renderGalleryCleanupButton({ label: "Remove sold uploads" });
-  if (!cleanupButton) return null;
-  const bar = document.createElement("div");
-  bar.className = "gallery-cleanup-actions";
-  bar.append(cleanupButton);
-  return bar;
-}
-
-function renderGalleryCleanupButton({ dealershipId = "", label = "Remove sold uploads" } = {}) {
-  if (!canManageAlbumMedia()) return null;
-  const button = document.createElement("button");
-  button.className = "icon-text-button subtle danger gallery-cleanup-button";
-  button.type = "button";
-  button.dataset.action = "remove-sold-uploads";
-  if (dealershipId) button.dataset.dealershipId = dealershipId;
-  button.disabled = state.galleryCleanupBusy;
-  button.textContent = state.galleryCleanupBusy ? "Checking sold uploads" : label;
-  return button;
 }
 
 function folderInitials(name) {
@@ -2134,6 +2395,7 @@ function selectedAlbumTile() {
     isSelected: true,
     name: car.title || "Selected vehicle",
     coverUrl: "",
+    coverThumbnailUrl: "",
     mediaCount: 0,
     updatedAt: "",
     dealership: car.dealership || selectedDealership(),
@@ -2175,11 +2437,32 @@ function vehicleFromCar(car) {
 }
 
 function selectedCarInventoryStatus(car) {
-  if (car?.source === "manual") return { status: "manual", label: "Manual inventory." };
+  if (car?.source === "manual") {
+    return {
+      status: "manual",
+      label: "Manual inventory.",
+      lifecycle: {
+        sourceStatus: "manual",
+        packageStatus: "needs_photos",
+        facebookState: "do_not_post",
+        facebookAction: "manual_review",
+        shouldMarkFacebookSold: false,
+        canPostToFacebook: false,
+      },
+    };
+  }
   return {
     status: "active",
     checkedAt: state.inventoryFetchedAt,
     label: inventoryFreshnessLabel(),
+    lifecycle: {
+      sourceStatus: "source_active",
+      packageStatus: "needs_photos",
+      facebookState: "needs_photos",
+      facebookAction: "capture_photos",
+      shouldMarkFacebookSold: false,
+      canPostToFacebook: false,
+    },
   };
 }
 
@@ -2193,6 +2476,7 @@ function renderAlbumCard(album) {
   article.classList.toggle("is-open", isOpen);
   article.classList.toggle("is-selected", Boolean(album.isSelected));
   article.classList.toggle("is-unread", isGalleryPage && galleryAlbumIsUnread(album));
+  article.classList.toggle("is-source-removed", album.inventoryStatus?.lifecycle?.sourceStatus === "source_removed" || album.inventoryStatus?.active === false);
 
   const summary = document.createElement("button");
   summary.className = "album-summary-button";
@@ -2204,9 +2488,10 @@ function renderAlbumCard(album) {
 
   const cover = document.createElement("span");
   cover.className = "album-cover";
-  if (album.coverUrl) {
+  const coverThumbnailUrl = albumCoverThumbnailUrl(album);
+  if (coverThumbnailUrl) {
     const image = document.createElement("img");
-    image.src = album.coverUrl;
+    image.src = coverThumbnailUrl;
     image.alt = "";
     image.loading = "lazy";
     image.decoding = "async";
@@ -2626,6 +2911,10 @@ function albumActionLink(album, label, href, available) {
   return link;
 }
 
+function albumCoverThumbnailUrl(album) {
+  return album?.coverThumbnailUrl || "";
+}
+
 function renderAlbumMediaThumb(photo) {
   const item = document.createElement("div");
   item.className = "album-media-item";
@@ -2647,13 +2936,10 @@ function renderAlbumMediaThumb(photo) {
     preview.title = `Open ${mediaName} full size. On iPhone, press and hold the full-size image to save to Photos.`;
     preview.setAttribute("aria-label", preview.title);
     const image = document.createElement("img");
-    image.src = photo.thumbnailUrl || photo.url;
+    image.src = photo.thumbnailUrl || "";
     image.alt = mediaName;
     image.loading = "lazy";
     image.decoding = "async";
-    image.addEventListener("error", () => {
-      if (image.src !== photo.url) image.src = photo.url;
-    }, { once: true });
     const saveBadge = document.createElement("span");
     saveBadge.className = "album-media-save-badge";
     saveBadge.textContent = "Open to save";
@@ -2702,10 +2988,12 @@ function inventoryStatusBadge(status) {
   badge.className = "inventory-status-badge";
   const statusName = status?.status || "unknown";
   badge.classList.add(`is-${statusName}`);
+  const sourceStatus = String(status?.lifecycle?.sourceStatus || "").replace(/_/g, "-");
+  if (sourceStatus) badge.classList.add(`is-${sourceStatus}`);
   badge.textContent = statusName === "active"
     ? "Active"
     : statusName === "missing"
-      ? "No longer active"
+      ? "Source removed"
       : statusName === "manual"
         ? "Manual"
         : "Unknown";
@@ -2719,7 +3007,10 @@ function inventoryStatusLabel(status) {
     return `Active in O'Regan's inventory as of ${formatDate(status.checkedAt)}.`;
   }
   if (status.status === "missing") {
-    return `No longer active in O'Regan's inventory as of ${formatDate(status.checkedAt)}.`;
+    const base = `No longer active in O'Regan's inventory as of ${formatDate(status.checkedAt)}.`;
+    return status.lifecycle?.facebookAction === "mark_sold"
+      ? `${base} Facebook sync action: mark any matching Konner John Marketplace listing sold; do not delete it.`
+      : base;
   }
   return status.label || "Inventory status unavailable.";
 }
@@ -2760,16 +3051,6 @@ async function handleAlbumListClick(event) {
     renderAlbumList();
     return;
   }
-  if (target.dataset.action === "remove-sold-uploads") {
-    haptic("warning");
-    try {
-      await removeSoldUploads(target.dataset.dealershipId || "");
-    } catch (error) {
-      showError(error);
-    }
-    return;
-  }
-
   const albumId = target.dataset.albumId;
   if (!albumId) return;
 
@@ -3581,38 +3862,6 @@ async function deleteAlbumMedia(albumId) {
   } catch (error) {
     throw error;
   }
-}
-
-async function removeSoldUploads(dealershipId = "") {
-  if (state.galleryCleanupBusy) return;
-  const confirmed = window.confirm("This will delete uploads for vehicles no longer active online. Manual and unknown-status uploads will be skipped. Continue?");
-  if (!confirmed) return;
-
-  state.galleryCleanupBusy = true;
-  renderAlbumList();
-  try {
-    const response = await apiJson("/api/gallery/remove-sold-uploads", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(dealershipId ? { dealershipId } : {}),
-    });
-    await loadAlbums();
-    renderAlbumList();
-    haptic("success");
-    showStatus(soldUploadsCleanupMessage(response));
-  } finally {
-    state.galleryCleanupBusy = false;
-    renderAlbumList();
-  }
-}
-
-function soldUploadsCleanupMessage(response = {}) {
-  const deletedCount = Array.isArray(response.deleted) ? response.deleted.length : Number(response.deleted || 0);
-  const skippedCount = Array.isArray(response.skipped) ? response.skipped.length : Number(response.skipped || 0);
-  const errorCount = Array.isArray(response.errors) ? response.errors.length : Number(response.errors || 0);
-  const errorMessage = errorCount ? ` ${errorCount} ${plural(errorCount, "error")} needs review.` : "";
-  if (!deletedCount) return `No sold/offline uploads found.${errorMessage}`;
-  return `Removed ${deletedCount} sold ${plural(deletedCount, "upload")}. Skipped ${skippedCount} active/manual/unknown ${plural(skippedCount, "album")}.${errorMessage}`;
 }
 
 function albumDeleteUploadLabel(album) {

@@ -87,6 +87,10 @@ function assertCleanMarketplaceDescription(description) {
   assert.ok((description.match(/gasoline/gi) || []).length <= 1);
 }
 
+function marketplaceDocumentDescriptionBody(documentText) {
+  return String(documentText || "").match(/\nDescription:\n([\s\S]*)$/)?.[1]?.trim() || "";
+}
+
 test("photo uploads require an O'Regan's dealership and car selection", async () => {
   const harness = await startTestServer();
 
@@ -140,6 +144,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     const me = await getJson(harness, "/api/me");
     assert.equal(me.user.username, TEST_USERNAME);
     assert.equal(me.user.role, "admin");
+    assert.equal(me.user.dealershipId, "15");
+    assert.equal(me.user.dealershipLabel, "Kia");
 
     const pushConfig = await getJson(harness, "/api/push/config");
     assert.equal(pushConfig.ok, true);
@@ -164,6 +170,20 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(testPush.status, 200);
     assert.equal(testPush.body.delivery.requested, 1);
     assert.equal(testPush.body.delivery.skipped, 1);
+    assert.equal(testPush.body.delivery.logged, 1);
+
+    const pushNotifications = await getJson(harness, "/api/notifications");
+    assert.equal(pushNotifications.ok, true);
+    assert.equal(pushNotifications.unreadCount, 1);
+    assert.equal(pushNotifications.notifications.length, 1);
+    assert.equal(pushNotifications.notifications[0].title, "CarPostClub");
+    assert.equal(pushNotifications.notifications[0].body, "Push notifications are ready.");
+    assert.equal(pushNotifications.notifications[0].url, "/");
+
+    const readNotifications = await postJson(harness, "/api/notifications/read", {});
+    assert.equal(readNotifications.status, 200);
+    assert.equal(readNotifications.body.marked, 1);
+    assert.equal(readNotifications.body.unreadCount, 0);
 
     const deletedPush = await deleteJson(harness, "/api/push/subscriptions", {
       endpoint: pushSubscription.endpoint,
@@ -201,6 +221,17 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.match(invite.body, /New invite link/);
     assert.match(invite.body, /valid for 24 hours/i);
 
+    const missingDealershipSignup = await requestSignup(harness.baseUrl, {
+      invite: invite.token,
+      displayName: NEW_DISPLAY_NAME,
+      username: NEW_USERNAME,
+      dealershipId: "",
+      password: NEW_PASSWORD,
+      confirmPassword: NEW_PASSWORD,
+    });
+    assert.equal(missingDealershipSignup.status, 400);
+    assert.match(missingDealershipSignup.body, /Choose Kia, VW, GM, or Nissan/i);
+
     const signup = await requestSignup(harness.baseUrl, {
       invite: invite.token,
       displayName: NEW_DISPLAY_NAME,
@@ -225,10 +256,29 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.match(adminPageAfterSignupText, new RegExp(NEW_USERNAME.replace(".", "\\.")));
     assert.match(adminPageAfterSignupText, /Reset password/);
     assert.match(adminPageAfterSignupText, /Deactivate/);
+    assert.match(adminPageAfterSignupText, /Kia/);
     assert.match(adminPageAfterSignupText, /1 signup/);
     const storedInvites = JSON.parse(await fs.readFile(path.join(harness.tempRoot, "auth-invites.json"), "utf8"));
     assert.equal(storedInvites.invites[0].useCount, 1);
     assert.equal(storedInvites.invites[0].acceptedUsers[0].username, NEW_USERNAME);
+    assert.equal(storedInvites.invites[0].acceptedUsers[0].dealership.id, "15");
+    const storedUsers = JSON.parse(await fs.readFile(path.join(harness.tempRoot, "auth-users.json"), "utf8"));
+    const storedNewUser = storedUsers.users.find((user) => user.username === NEW_USERNAME);
+    assert.equal(storedNewUser.dealershipId, "15");
+
+    const dealershipUpdate = await fetch(`${harness.baseUrl}/admin/users/${encodeURIComponent(NEW_USERNAME)}/dealership`, {
+      method: "POST",
+      headers: {
+        Cookie: harness.cookie,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ dealershipId: "18" }),
+      redirect: "manual",
+    });
+    assert.equal(dealershipUpdate.status, 303);
+    const storedUsersAfterDealership = JSON.parse(await fs.readFile(path.join(harness.tempRoot, "auth-users.json"), "utf8"));
+    const storedUpdatedUser = storedUsersAfterDealership.users.find((user) => user.username === NEW_USERNAME);
+    assert.equal(storedUpdatedUser.dealershipId, "18");
 
     const adminPageTextAfterInvite = adminPageAfterSignupText;
     assert.match(adminPageTextAfterInvite, /Reset password/);
@@ -238,6 +288,9 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     });
     assert.equal(approvedAccess.status, 200);
     assert.equal(approvedAccess.body.ok, true);
+    const approvedMe = await getJsonWithCookie(harness, approvedCookie, "/api/me");
+    assert.equal(approvedMe.user.dealershipId, "18");
+    assert.equal(approvedMe.user.dealershipLabel, "GM");
 
     const approvedPasswordPush = await postJsonWithCookie(harness, approvedCookie, "/api/push/subscriptions", {
       subscription: pushSubscriptionFor("photo-tech-password"),
@@ -256,7 +309,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260604-upload-selection-v43/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260609-inventory-lifecycle-v56/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -638,7 +691,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(photoTechMarketplaceDraft.body.draft.descriptionSource, "template-upload");
     assert.notEqual(uploadedMarketplaceDraft.draft.description, photoTechMarketplaceDraft.body.draft.description);
     assert.match(photoTechMarketplaceDraft.body.draft.description, /O'Regan's Kia Halifax/);
-    assert.match(photoTechMarketplaceDraft.body.draft.description, /ask for Konner/i);
+    assert.match(photoTechMarketplaceDraft.body.draft.description, /ask for Photo Tech/i);
+    assert.match(photoTechMarketplaceDraft.body.draft.copyText, /Ask for: Photo Tech/);
     assertCleanMarketplaceDescription(photoTechMarketplaceDraft.body.draft.description);
 
     const regeneratedMarketplaceDraft = await postJson(harness, "/api/marketplace-draft/regenerate", {
@@ -681,6 +735,14 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
     );
     assert.equal(afterUpload.photos.length, 4);
+    assert.equal(afterUpload.album.coverPhoto.originalName, "front.jpg");
+    assert.equal(afterUpload.photos[0].originalName, "front.jpg");
+    assert.deepEqual(afterUpload.photos.map((photo) => photo.originalName), [
+      "front.jpg",
+      "interior.png",
+      "lot-tag.jpg",
+      "walkaround.mp4",
+    ]);
 
     const firstPhoto = afterUpload.photos.find((photo) => photo.originalName === "front.jpg");
     assert.ok(firstPhoto);
@@ -768,11 +830,21 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(testAlbum.photoCount, 3);
     assert.equal(testAlbum.videoCount, 1);
     assert.equal(testAlbum.mediaCount, 4);
+    assert.equal(testAlbum.coverPhoto.originalName, "front.jpg");
+    assert.match(testAlbum.coverUrl, /\/api\/albums\/[^/]+\/media\//);
+    assert.match(testAlbum.coverThumbnailUrl, /\/api\/albums\/[^/]+\/media\/[^/]+\/thumbnail$/);
+    assert.notEqual(testAlbum.coverThumbnailUrl, testAlbum.coverUrl);
     assert.equal(testAlbum.createdBy.username, TEST_USERNAME);
     assert.deepEqual(testAlbum.uploadedByUsers.map((user) => user.username), [TEST_USERNAME]);
     assert.equal(testAlbum.inventoryStatus.active, true);
     assert.match(testAlbum.inventoryStatus.label, /Active in O'Regan's inventory as of/);
+    assert.equal(testAlbum.inventoryStatus.lifecycle.sourceStatus, "source_active");
+    assert.equal(testAlbum.inventoryStatus.lifecycle.packageStatus, "facebook_ready");
+    assert.equal(testAlbum.inventoryStatus.lifecycle.facebookState, "ready_to_post");
+    assert.equal(testAlbum.inventoryStatus.lifecycle.facebookAction, "post_if_not_live");
+    assert.equal(testAlbum.inventoryStatus.lifecycle.canPostToFacebook, true);
     assert.equal(savedManualAlbum.inventoryStatus.status, "manual");
+    assert.equal(savedManualAlbum.inventoryStatus.lifecycle.facebookAction, "manual_review");
     assert.equal(savedManualAlbum.createdBy.username, TEST_USERNAME);
     assert.equal(savedManualAlbum.descriptionPreview, MANUAL_CAR.descriptionPreview);
 
@@ -790,6 +862,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.match(descriptionText, /Prepared for: admin/);
     assert.match(descriptionText, /Ready to post: Yes/);
     assert.match(descriptionText, /Inventory status: Active in O'Regan's inventory as of/);
+    assert.match(descriptionText, /Facebook sync: Post to Konner John Marketplace if it is not already live\./);
 
     const photoTechDescriptionDownload = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/description.txt`, {
       headers: { Cookie: approvedCookie },
@@ -797,7 +870,39 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(photoTechDescriptionDownload.status, 200);
     const photoTechDescriptionText = await photoTechDescriptionDownload.text();
     assert.match(photoTechDescriptionText, /Prepared for: Photo Tech/);
+    assert.match(photoTechDescriptionText, /Ready to post: Yes/);
+    assert.doesNotMatch(photoTechDescriptionText, /Missing fields: Description/);
+    assert.match(photoTechDescriptionText, /Ask for: Photo Tech/);
+    const photoTechDescriptionBody = marketplaceDocumentDescriptionBody(photoTechDescriptionText);
+    assert.match(photoTechDescriptionBody, /ask for Photo Tech/i);
+    assert.doesNotMatch(photoTechDescriptionText, /Ask for: Konner/);
+    assertCleanMarketplaceDescription(photoTechDescriptionBody);
     assert.notEqual(descriptionText, photoTechDescriptionText);
+
+    const lateUsers = [];
+    for (let index = 1; index <= 5; index += 1) {
+      lateUsers.push(await createApprovedAccount(harness, {
+        displayName: `Late Poster ${index}`,
+        username: `late.poster.${index}`,
+        password: `late-password-${index}`,
+      }));
+    }
+    for (const lateUser of lateUsers) {
+      const lateDescriptionDownload = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/description.txt`, {
+        headers: { Cookie: lateUser.cookie },
+      });
+      assert.equal(lateDescriptionDownload.status, 200);
+      const lateDescriptionText = await lateDescriptionDownload.text();
+      assert.match(lateDescriptionText, new RegExp(`Prepared for: ${lateUser.displayName}`));
+      assert.match(lateDescriptionText, /Ready to post: Yes/);
+      assert.doesNotMatch(lateDescriptionText, /Missing fields: Description/);
+      assert.match(lateDescriptionText, new RegExp(`Ask for: ${lateUser.displayName}`));
+      const lateDescriptionBody = marketplaceDocumentDescriptionBody(lateDescriptionText);
+      assert.match(lateDescriptionBody, new RegExp(`ask for ${lateUser.displayName}`, "i"));
+      assert.doesNotMatch(lateDescriptionText, /Ask for: Konner/);
+      assert.doesNotMatch(lateDescriptionText, /Ask for: Photo Tech/);
+      assertCleanMarketplaceDescription(lateDescriptionBody);
+    }
 
     const albumDownload = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/download`, {
       headers: { Cookie: harness.cookie },
@@ -937,6 +1042,41 @@ test("vehicle album lookup reuses existing media when live inventory titles drif
   }
 });
 
+test("album cover prefers a front exterior photo over dash and detail images", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const uploaded = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [
+        { filename: "dash.jpg", type: "image/jpeg", body: jpegBytes("dash") },
+        { filename: "front-exterior.jpg", type: "image/jpeg", body: jpegBytes("front-exterior") },
+        { filename: "lot-tag.jpg", type: "image/jpeg", body: jpegBytes("lot-tag") },
+      ],
+    });
+    assert.equal(uploaded.status, 201);
+    assert.equal(uploaded.body.album.coverPhoto.originalName, "front-exterior.jpg");
+
+    const album = await getJson(
+      harness,
+      `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
+    );
+    assert.equal(album.album.coverPhoto.originalName, "front-exterior.jpg");
+    assert.equal(album.photos[0].originalName, "front-exterior.jpg");
+    assert.match(album.album.coverThumbnailUrl, /\/thumbnail$/);
+
+    const uploadIndexByName = new Map(album.photos.map((photo) => [photo.originalName, photo.uploadIndex]));
+    assert.equal(uploadIndexByName.get("dash.jpg"), 0);
+    assert.equal(uploadIndexByName.get("front-exterior.jpg"), 1);
+    assert.equal(uploadIndexByName.get("lot-tag.jpg"), 2);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("album inventory status marks O'Regan's vehicles that disappear from the feed", async () => {
   const harness = await startTestServer({ inventoryCars: [] });
 
@@ -992,119 +1132,33 @@ test("album inventory status marks O'Regan's vehicles that disappear from the fe
     assert.equal(album.inventoryStatus.active, false);
     assert.equal(album.inventoryStatus.status, "missing");
     assert.match(album.inventoryStatus.label, /No longer active in O'Regan's inventory as of/);
+    assert.equal(album.inventoryStatus.lifecycle.sourceStatus, "source_removed");
+    assert.equal(album.inventoryStatus.lifecycle.packageStatus, "source_removed_package");
+    assert.equal(album.inventoryStatus.lifecycle.facebookState, "stale_on_facebook");
+    assert.equal(album.inventoryStatus.lifecycle.facebookAction, "mark_sold");
+    assert.equal(album.inventoryStatus.lifecycle.shouldMarkFacebookSold, true);
+    assert.equal(album.inventoryStatus.lifecycle.canPostToFacebook, false);
+
+    const descriptionDownload = await fetch(`${harness.baseUrl}/api/albums/${TEST_ALBUM_ID}/description.txt`, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(descriptionDownload.status, 200);
+    const descriptionText = await descriptionDownload.text();
+    assert.match(descriptionText, /Facebook sync: Mark any matching Konner John Marketplace listing sold; do not delete it\./);
   } finally {
     await stopTestServer(harness);
   }
 });
 
-test("sold upload cleanup deletes only missing O'Regan's albums and skips active or manual uploads", async () => {
-  const harness = await startTestServer({ inventoryCars: [TEST_CAR, SOLD_CAR] });
-
-  try {
-    harness.cookie = await login(harness.baseUrl);
-    const activeUpload = await uploadPhotos(harness, {
-      dealershipId: "15",
-      inventoryTypeId: "2",
-      vin: TEST_CAR.vin,
-      photos: [{ filename: "active-front.jpg", type: "image/jpeg", body: jpegBytes("active-front") }],
-    });
-    assert.equal(activeUpload.status, 201);
-    const soldUpload = await uploadPhotos(harness, {
-      dealershipId: "15",
-      inventoryTypeId: "2",
-      vin: SOLD_CAR.vin,
-      photos: [{ filename: "sold-front.jpg", type: "image/jpeg", body: jpegBytes("sold-front") }],
-    });
-    assert.equal(soldUpload.status, 201);
-    const manualCreated = await postJson(harness, "/api/manual-inventory/cars", MANUAL_CAR);
-    assert.equal(manualCreated.status, 201);
-    const manualUpload = await uploadPhotos(harness, {
-      dealershipId: "15",
-      inventoryTypeId: "2",
-      inventoryKey: manualCreated.body.car.inventoryKey,
-      photos: [{ filename: "manual-cleanup-front.jpg", type: "image/jpeg", body: jpegBytes("manual-cleanup-front") }],
-    });
-    assert.equal(manualUpload.status, 201);
-
-    await writeInventoryMock(harness, [TEST_CAR]);
-    const cleanup = await postJson(harness, "/api/gallery/remove-sold-uploads", {});
-    assert.equal(cleanup.status, 200);
-    assert.equal(cleanup.body.ok, true);
-    assert.equal(cleanup.body.scanned, 3);
-    assert.equal(cleanup.body.matched, 1);
-    assert.deepEqual(cleanup.body.deleted.map((album) => album.albumId), [soldUpload.body.album.id]);
-    assert.equal(cleanup.body.deleted[0].stockNumber, SOLD_CAR.stockNumber);
-    assert.equal(cleanup.body.deleted[0].status, "missing");
-    assert.equal(cleanup.body.deleted[0].reason, "inventory_missing");
-    assert.equal(cleanup.body.deleted[0].deletedMedia, 1);
-    assert.ok(cleanup.body.skipped.some((album) =>
-      album.albumId === activeUpload.body.album.id && album.reason === "inventory_active"
-    ));
-    assert.ok(cleanup.body.skipped.some((album) =>
-      album.albumId === manualUpload.body.album.id && album.reason === "manual_inventory"
-    ));
-    assert.equal(cleanup.body.errors.length, 0);
-
-    await assert.rejects(
-      fs.access(path.join(harness.uploadRoot, soldUpload.body.album.id, soldUpload.body.photos[0].filename)),
-      { code: "ENOENT" },
-    );
-    const soldMetadata = JSON.parse(await fs.readFile(path.join(harness.uploadRoot, soldUpload.body.album.id, ".photos.json"), "utf8"));
-    assert.deepEqual(soldMetadata, {});
-
-    const albumsAfterCleanup = await getJson(harness, "/api/albums");
-    assert.ok(albumsAfterCleanup.albums.some((album) => album.id === activeUpload.body.album.id));
-    assert.ok(albumsAfterCleanup.albums.some((album) => album.id === manualUpload.body.album.id));
-    assert.ok(!albumsAfterCleanup.albums.some((album) => album.id === soldUpload.body.album.id));
-
-    const scopedCleanup = await postJson(harness, "/api/gallery/remove-sold-uploads", { dealershipId: "15" });
-    assert.equal(scopedCleanup.status, 200);
-    assert.equal(scopedCleanup.body.scanned, 2);
-    assert.equal(scopedCleanup.body.deleted.length, 0);
-  } finally {
-    await stopTestServer(harness);
-  }
-});
-
-test("sold upload cleanup skips albums when O'Regan's inventory status is unknown", async () => {
-  const harness = await startTestServer({ inventoryCars: [TEST_CAR] });
-
-  try {
-    harness.cookie = await login(harness.baseUrl);
-    const upload = await uploadPhotos(harness, {
-      dealershipId: "15",
-      inventoryTypeId: "2",
-      vin: TEST_CAR.vin,
-      photos: [{ filename: "unknown-front.jpg", type: "image/jpeg", body: jpegBytes("unknown-front") }],
-    });
-    assert.equal(upload.status, 201);
-
-    await fs.writeFile(harness.inventoryMockFile, "not-json\n");
-    const cleanup = await postJson(harness, "/api/gallery/remove-sold-uploads", {});
-    assert.equal(cleanup.status, 200);
-    assert.equal(cleanup.body.deleted.length, 0);
-    assert.equal(cleanup.body.skipped.length, 1);
-    assert.equal(cleanup.body.skipped[0].albumId, upload.body.album.id);
-    assert.equal(cleanup.body.skipped[0].reason, "inventory_status_unknown");
-    assert.equal(cleanup.body.skipped[0].status, "unknown");
-
-    await fs.access(path.join(harness.uploadRoot, upload.body.album.id, upload.body.photos[0].filename));
-    const albumsAfterCleanup = await getJson(harness, "/api/albums");
-    assert.ok(albumsAfterCleanup.albums.some((album) => album.id === upload.body.album.id));
-  } finally {
-    await stopTestServer(harness);
-  }
-});
-
-test("non-admin users cannot call destructive gallery cleanup or delete routes", async () => {
+test("non-admin users cannot call destructive gallery delete routes", async () => {
   const harness = await startTestServer({ inventoryCars: [TEST_CAR] });
 
   try {
     harness.cookie = await login(harness.baseUrl);
     const viewer = await createApprovedAccount(harness, {
-      username: "cleanup.viewer",
-      displayName: "Cleanup Viewer",
-      password: "cleanup-viewer-123",
+      username: "delete.viewer",
+      displayName: "Delete Viewer",
+      password: "delete-viewer-123",
     });
     const upload = await uploadPhotos(harness, {
       dealershipId: "15",
@@ -1113,10 +1167,6 @@ test("non-admin users cannot call destructive gallery cleanup or delete routes",
       photos: [{ filename: "blocked-delete-front.jpg", type: "image/jpeg", body: jpegBytes("blocked-delete-front") }],
     });
     assert.equal(upload.status, 201);
-
-    const cleanup = await postJsonWithCookie(harness, viewer.cookie, "/api/gallery/remove-sold-uploads", {});
-    assert.equal(cleanup.status, 403);
-    assert.match(cleanup.body.error, /Admin access required/i);
 
     const deleteAll = await deleteJsonWithCookie(harness, viewer.cookie, `/api/albums/${upload.body.album.id}/media`, {});
     assert.equal(deleteAll.status, 403);
@@ -1627,6 +1677,7 @@ async function startTestServer({ env = {}, inventoryCars = [TEST_CAR] } = {}) {
       CARPOSTCLUB_AUTH_USERNAME: TEST_USERNAME,
       CARPOSTCLUB_AUTH_PASSWORD: TEST_PASSWORD,
       CARPOSTCLUB_AUTH_PASSWORD_HASH: "",
+      CARPOSTCLUB_AUTH_DEALERSHIP_ID: "15",
       CARPOSTCLUB_AUTH_SESSION_SECRET: "test-session-secret",
       CARPOSTCLUB_AUTH_COOKIE_SECURE: "false",
       CARPOSTCLUB_PUSH_DELIVERY_DISABLED: "true",
@@ -1702,7 +1753,7 @@ async function requestSignup(baseUrl, body) {
   const response = await fetch(`${baseUrl}/signup`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(body),
+    body: new URLSearchParams({ dealershipId: "15", ...body }),
     redirect: "manual",
   });
   return {

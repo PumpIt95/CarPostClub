@@ -81,6 +81,8 @@ const manualInventoryPath = path.resolve(process.env.MANUAL_INVENTORY_PATH || pa
 const albumSeenPath = path.resolve(process.env.CARPOSTCLUB_ALBUM_SEEN_PATH || process.env.KONNER_ALBUM_SEEN_PATH || process.env.ALBUM_SEEN_PATH || path.join(path.dirname(uploadRoot), "album-seen.json"));
 const pushSubscriptionsPath = path.resolve(process.env.CARPOSTCLUB_PUSH_SUBSCRIPTIONS_PATH || process.env.KONNER_PUSH_SUBSCRIPTIONS_PATH || process.env.PUSH_SUBSCRIPTIONS_PATH || path.join(path.dirname(uploadRoot), "push-subscriptions.json"));
 const pushVapidKeysPath = path.resolve(process.env.CARPOSTCLUB_PUSH_VAPID_KEYS_PATH || process.env.KONNER_PUSH_VAPID_KEYS_PATH || process.env.PUSH_VAPID_KEYS_PATH || path.join(path.dirname(uploadRoot), "push-vapid-keys.json"));
+const notificationLogPath = path.resolve(process.env.CARPOSTCLUB_NOTIFICATION_LOG_PATH || process.env.KONNER_NOTIFICATION_LOG_PATH || process.env.NOTIFICATION_LOG_PATH || path.join(path.dirname(uploadRoot), "notification-log.json"));
+const inventoryLifecyclePath = path.resolve(process.env.CARPOSTCLUB_INVENTORY_LIFECYCLE_PATH || process.env.KONNER_INVENTORY_LIFECYCLE_PATH || process.env.INVENTORY_LIFECYCLE_PATH || path.join(path.dirname(uploadRoot), "inventory-lifecycle.json"));
 const releaseManifestPath = process.env.CARPOSTCLUB_RELEASE_MANIFEST || process.env.KONNER_RELEASE_MANIFEST || path.join(appRoot, "release-manifest.json");
 const maxFileBytes = positiveInteger(process.env.MAX_FILE_BYTES, 250 * 1024 * 1024);
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 100);
@@ -100,6 +102,7 @@ const pushSubject = process.env.CARPOSTCLUB_PUSH_SUBJECT || process.env.KONNER_P
 const pushTtlSeconds = positiveInteger(process.env.CARPOSTCLUB_PUSH_TTL_SECONDS || process.env.KONNER_PUSH_TTL_SECONDS, 60 * 60);
 const pushDeliveryDisabled = parseBooleanEnv("CARPOSTCLUB_PUSH_DELIVERY_DISABLED", parseBooleanEnv("KONNER_PUSH_DELIVERY_DISABLED", false));
 const pushAwaitDelivery = parseBooleanEnv("CARPOSTCLUB_PUSH_AWAIT_DELIVERY", parseBooleanEnv("KONNER_PUSH_AWAIT_DELIVERY", process.env.NODE_ENV === "test"));
+const notificationLogLimitPerUser = positiveInteger(process.env.CARPOSTCLUB_NOTIFICATION_LOG_LIMIT_PER_USER || process.env.KONNER_NOTIFICATION_LOG_LIMIT_PER_USER, 200);
 const authUsername = process.env.CARPOSTCLUB_AUTH_USERNAME || process.env.KONNER_AUTH_USERNAME || "admin";
 const authPassword = process.env.CARPOSTCLUB_AUTH_PASSWORD || process.env.KONNER_AUTH_PASSWORD || "";
 const authPasswordHash = process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH || process.env.KONNER_AUTH_PASSWORD_HASH || "";
@@ -173,6 +176,21 @@ const inventoryPicklistDealerships = Object.freeze(
     .map((id) => oregansDealerships.find((dealership) => dealership.id === id))
     .filter(Boolean),
 );
+const authDealershipOptions = Object.freeze([
+  { id: "15", key: "kia", label: "Kia" },
+  { id: "31", key: "vw", label: "VW" },
+  { id: "18", key: "gm", label: "GM" },
+  { id: "3", key: "nissan", label: "Nissan" },
+].map((option) => ({
+  ...option,
+  name: oregansDealerships.find((dealership) => dealership.id === option.id)?.name || option.label,
+})));
+const authBootstrapDealershipId = normalizeAuthDealershipId(
+  process.env.CARPOSTCLUB_AUTH_DEALERSHIP_ID
+    || process.env.KONNER_AUTH_DEALERSHIP_ID
+    || process.env.AUTH_DEALERSHIP_ID
+    || defaultAuthDealershipIdForUser({ username: authUsername }),
+);
 const inventoryCache = new Map();
 const chatClients = new Set();
 const albumClients = new Set();
@@ -189,6 +207,8 @@ let authInvitesWritePromise = Promise.resolve();
 let manualInventoryWritePromise = Promise.resolve();
 let albumSeenWritePromise = Promise.resolve();
 let pushSubscriptionsWritePromise = Promise.resolve();
+let notificationLogWritePromise = Promise.resolve();
+let inventoryLifecycleWritePromise = Promise.resolve();
 let openaiClient = null;
 
 await fs.mkdir(uploadRoot, { recursive: true });
@@ -203,6 +223,8 @@ await fs.mkdir(path.dirname(authUsersPath), { recursive: true });
 await fs.mkdir(path.dirname(authInvitesPath), { recursive: true });
 await fs.mkdir(path.dirname(pushSubscriptionsPath), { recursive: true });
 await fs.mkdir(path.dirname(pushVapidKeysPath), { recursive: true });
+await fs.mkdir(path.dirname(notificationLogPath), { recursive: true });
+await fs.mkdir(path.dirname(inventoryLifecyclePath), { recursive: true });
 
 marketplaceDescriptionsDb = openMarketplaceDescriptionsDatabase();
 const pushKeys = await resolvePushVapidKeys();
@@ -344,6 +366,7 @@ app.post("/signup", async (req, res, next) => {
 
     const username = normalizeAuthUsername(req.body?.username);
     const displayName = normalizeDisplayName(req.body?.displayName) || username;
+    const dealershipId = normalizeAuthDealershipId(req.body?.dealershipId || req.body?.dealership);
     const password = String(req.body?.password || "");
     const confirmPassword = String(req.body?.confirmPassword || "");
     const inviteState = await authInviteState(req.body?.invite);
@@ -351,18 +374,18 @@ app.post("/signup", async (req, res, next) => {
       sendSignupPage(res, {
         error: inviteState.message,
         inviteToken: inviteState.token,
-        values: { username, displayName },
+        values: { username, displayName, dealershipId },
       });
       return;
     }
 
-    const validationError = validateSignup({ username, password, confirmPassword });
+    const validationError = validateSignup({ username, dealershipId, password, confirmPassword });
     if (validationError) {
       sendSignupPage(res, {
         error: validationError,
         invite: inviteState.invite,
         inviteToken: inviteState.token,
-        values: { username, displayName },
+        values: { username, displayName, dealershipId },
       });
       return;
     }
@@ -376,6 +399,7 @@ app.post("/signup", async (req, res, next) => {
       const user = {
         username,
         displayName,
+        dealershipId,
         passwordHash,
         passwordVersion: newPasswordVersion(),
         role: "user",
@@ -396,7 +420,7 @@ app.post("/signup", async (req, res, next) => {
         error: "That username already exists.",
         invite: inviteState.invite,
         inviteToken: inviteState.token,
-        values: { username, displayName },
+        values: { username, displayName, dealershipId },
       });
       return;
     }
@@ -516,6 +540,27 @@ app.post("/admin/users/:username/reject", requireAdmin, async (req, res, next) =
   }
 });
 
+app.post("/admin/users/:username/dealership", requireAdmin, async (req, res, next) => {
+  try {
+    const dealershipId = normalizeAuthDealershipId(req.body?.dealershipId || req.body?.dealership);
+    if (!dealershipId) {
+      res.redirect(303, adminUsersUrl({ error: "Choose Kia, VW, GM, or Nissan." }));
+      return;
+    }
+
+    const updated = await setStoredUserDealership(req.params.username, dealershipId, req.authUser.username);
+    if (!updated) {
+      res.redirect(303, adminUsersUrl({ error: "User not found." }));
+      return;
+    }
+
+    const dealership = publicAuthDealership(updated.dealershipId);
+    res.redirect(303, adminUsersUrl({ success: `Dealership updated for ${updated.displayName} to ${dealership?.label || "selected dealership"}.` }));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/admin/users/:username/password", requireAdmin, async (req, res, next) => {
   try {
     const password = String(req.body?.password || "");
@@ -616,8 +661,6 @@ app.post("/api/gallery/dealerships/:dealershipId/seen", requireAuth, async (req,
   }
 });
 
-app.post("/api/gallery/remove-sold-uploads", requireAdmin, removeSoldUploads);
-
 app.get("/api/me", requireAuth, async (req, res, next) => {
   try {
     const preferenceState = await userPreferencesForUser(req.authUser);
@@ -705,6 +748,38 @@ app.post("/api/push/test", requireAuth, async (req, res, next) => {
       },
     });
     res.json({ ok: true, delivery });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/notifications", requireAuth, async (req, res, next) => {
+  try {
+    const limit = Math.min(100, positiveInteger(req.query.limit, 50));
+    const result = await notificationLogForUser(req.authUser, { limit });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      notifications: result.notifications,
+      unreadCount: result.unreadCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/notifications/read", requireAuth, async (req, res, next) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : null;
+    const marked = await markNotificationsRead(req.authUser, ids);
+    const result = await notificationLogForUser(req.authUser, { limit: 50 });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      marked,
+      notifications: result.notifications,
+      unreadCount: result.unreadCount,
+    });
   } catch (error) {
     next(error);
   }
@@ -1113,6 +1188,7 @@ function marketplaceDescriptionDocument({ album, car, draft, photos, user, inven
   const displayName = normalizeDisplayName(user?.displayName) || normalizeAuthUsername(user?.username) || "CarPostClub user";
   const missingFields = Array.isArray(draft.missingFields) ? draft.missingFields : [];
   const reviewFields = Array.isArray(draft.reviewFields) ? draft.reviewFields : [];
+  const facebookSyncAction = inventoryLifecycleDocumentAction(inventoryStatus);
   return [
     "CarPostClub Marketplace Package",
     "",
@@ -1122,6 +1198,7 @@ function marketplaceDescriptionDocument({ album, car, draft, photos, user, inven
     `VIN: ${car.vin || "Needs review"}`,
     `Media: ${photos.length} ${photos.length === 1 ? "file" : "files"}`,
     `Inventory status: ${inventoryStatus?.label || "Unknown"}`,
+    facebookSyncAction ? `Facebook sync: ${facebookSyncAction}` : "",
     `Ready to post: ${draft.ready ? "Yes" : "No"}`,
     missingFields.length ? `Missing fields: ${missingFields.join(", ")}` : "",
     reviewFields.length ? `Review fields: ${reviewFields.join(", ")}` : "",
@@ -1134,6 +1211,16 @@ function marketplaceDescriptionDocument({ album, car, draft, photos, user, inven
       car,
     }),
   ].filter((line, index, lines) => line || lines[index - 1] !== "").join("\n").trimEnd() + "\n";
+}
+
+function inventoryLifecycleDocumentAction(inventoryStatus) {
+  const action = inventoryStatus?.lifecycle?.facebookAction || "";
+  if (action === "mark_sold") return "Mark any matching Konner John Marketplace listing sold; do not delete it.";
+  if (action === "post_if_not_live") return "Post to Konner John Marketplace if it is not already live.";
+  if (action === "capture_photos") return "Capture and upload Connor photos before posting.";
+  if (action === "manual_review") return "Review manually before any Facebook action.";
+  if (action === "review") return "Review inventory status before any Facebook action.";
+  return "";
 }
 
 function marketplacePackageManifest({ album, car, draft, photos, user, inventoryStatus }) {
@@ -1219,86 +1306,6 @@ async function deleteAlbumMediaCollection(req, res, next) {
   } catch (error) {
     next(error);
   }
-}
-
-async function removeSoldUploads(req, res, next) {
-  try {
-    const dealership = cleanOptionalDealership(req.body?.dealershipId || req.query?.dealershipId);
-    const uploadedAlbums = await listAlbums();
-    const scopedAlbums = dealership
-      ? uploadedAlbums.filter((album) => albumDealershipKey(album) === dealership.id)
-      : uploadedAlbums;
-    const result = {
-      ok: true,
-      scanned: scopedAlbums.length,
-      matched: 0,
-      deleted: [],
-      skipped: [],
-      errors: [],
-      albums: [],
-    };
-
-    for (const album of scopedAlbums) {
-      const status = await inventoryStatusForAlbum(album);
-      const summary = soldUploadCleanupSummary(album, status);
-      const skipReason = soldUploadCleanupSkipReason(album, status);
-      if (skipReason) {
-        const skipped = { ...summary, reason: skipReason };
-        result.skipped.push(skipped);
-        result.albums.push({ ...skipped, action: "skipped" });
-        continue;
-      }
-
-      result.matched += 1;
-      try {
-        const deleted = await removeAlbumMediaCollection(album.id);
-        const deletedSummary = {
-          ...summary,
-          reason: status?.status === "missing" ? "inventory_missing" : "inventory_inactive",
-          deletedMedia: deleted.deleted,
-        };
-        result.deleted.push(deletedSummary);
-        result.albums.push({ ...deletedSummary, action: "deleted" });
-      } catch (error) {
-        const errorSummary = {
-          ...summary,
-          reason: "delete_failed",
-          error: error instanceof Error ? error.message : String(error),
-        };
-        result.errors.push(errorSummary);
-        result.albums.push({ ...errorSummary, action: "error" });
-      }
-    }
-
-    res.json(result);
-  } catch (error) {
-    next(error);
-  }
-}
-
-function soldUploadCleanupSkipReason(album, status = {}) {
-  if (!album?.mediaCount) return "no_media";
-  if (status.source === "manual") return "manual_inventory";
-  if (status.source !== "oregans") return "not_oregans_inventory";
-  if (status.status === "unknown" || status.active == null || status.error) return "inventory_status_unknown";
-  if (status.status === "missing" || status.active === false) return "";
-  return "inventory_active";
-}
-
-function soldUploadCleanupSummary(album, status = {}) {
-  const vehicle = album?.vehicle || {};
-  return {
-    albumId: album?.id || "",
-    stockNumber: normalizeSpace(vehicle.stockNumber || album?.inventoryNumber),
-    title: normalizeSpace(vehicle.title || album?.name),
-    dealership: normalizeSpace(vehicle.dealershipName || album?.dealership?.name),
-    dealershipId: normalizeSpace(vehicle.dealershipId || album?.dealership?.id),
-    source: normalizeSpace(status.source || vehicle.source || "oregans"),
-    status: normalizeSpace(status.status || "unknown"),
-    active: status.active ?? null,
-    mediaCount: Number(album?.mediaCount || 0),
-    checkedAt: status.checkedAt || null,
-  };
 }
 
 app.get("/api/chat/messages", requireAuth, async (req, res, next) => {
@@ -1566,16 +1573,16 @@ async function readAlbum(albumId) {
 
   const metadata = await readAlbumMetadata(albumId);
   const photos = await listAlbumPhotos(albumId);
-  const updatedAt = photos[0]?.uploadedAt || metadata.createdAt || stats.mtime.toISOString();
+  const latestPhoto = albumLatestPhoto(photos);
+  const updatedAt = latestPhoto?.uploadedAt || metadata.updatedAt || metadata.createdAt || stats.mtime.toISOString();
   const bytes = photos.reduce((total, photo) => total + photo.bytes, 0);
   const photoCount = photos.filter((photo) => photo.kind !== "video").length;
   const videoCount = photos.filter((photo) => photo.kind === "video").length;
-  const cover = photos.find((photo) => photo.kind !== "video") || photos[0] || null;
+  const cover = selectAlbumCoverPhoto(photos);
   const inventoryNumber = albumInventoryNumberFromMetadata(metadata);
   const storage = albumStorageInfo(albumId, metadata);
   const uploadedByUsers = albumUploadedByUsers(photos);
   const createdBy = albumCreator(metadata, photos);
-  const latestPhoto = photos[0] || null;
   const updatedBy = publicUploader(metadata.updatedBy) || publicUploader(latestPhoto?.uploadedBy) || createdBy;
 
   return {
@@ -1591,7 +1598,9 @@ async function readAlbum(albumId) {
     videoCount,
     mediaCount: photos.length,
     bytes,
+    coverPhoto: publicAlbumCoverPhoto(cover),
     coverUrl: cover?.url || null,
+    coverThumbnailUrl: cover?.thumbnailUrl || null,
     latestUploadedAt: latestPhoto?.uploadedAt || null,
     latestUploadedBy: latestPhoto?.uploadedBy || null,
     descriptionPreview: normalizeSpace(metadata.vehicle?.descriptionPreview),
@@ -1635,11 +1644,164 @@ function albumPhotosOldestFirst(photos = []) {
   });
 }
 
+function albumLatestPhoto(photos = []) {
+  return photos.reduce((latest, photo) => {
+    if (!latest) return photo;
+    return compareAlbumPhotosNewestFirst(photo, latest) < 0 ? photo : latest;
+  }, null);
+}
+
+function publicAlbumCoverPhoto(photo) {
+  if (!photo) return null;
+  return {
+    filename: photo.filename,
+    originalName: photo.originalName,
+    kind: photo.kind,
+    contentType: photo.contentType,
+    url: photo.url,
+    thumbnailUrl: photo.thumbnailUrl || "",
+    downloadUrl: photo.downloadUrl || "",
+  };
+}
+
+function sortAlbumPhotosForDisplay(photos = []) {
+  const stableOrder = [...photos].sort(compareAlbumPhotosStableOrder);
+  const cover = selectAlbumCoverPhoto(stableOrder);
+  if (!cover) return stableOrder;
+  return [
+    cover,
+    ...stableOrder.filter((photo) => photo !== cover),
+  ];
+}
+
+function selectAlbumCoverPhoto(photos = []) {
+  const images = photos.filter((photo) => photo?.kind !== "video");
+  if (!images.length) return photos[0] || null;
+  return images.reduce((best, photo) => {
+    if (!best) return photo;
+    return compareAlbumCoverCandidates(photo, best) < 0 ? photo : best;
+  }, null);
+}
+
+function compareAlbumCoverCandidates(left, right) {
+  const scoreDelta = vehicleCoverPhotoScore(right) - vehicleCoverPhotoScore(left);
+  if (scoreDelta) return scoreDelta;
+  return compareAlbumPhotosStableOrder(left, right);
+}
+
+function compareAlbumPhotosStableOrder(left, right) {
+  const indexDelta = albumPhotoUploadIndex(left) - albumPhotoUploadIndex(right);
+  if (indexDelta) return indexDelta;
+
+  const leftTime = Date.parse(left?.uploadedAt || "") || 0;
+  const rightTime = Date.parse(right?.uploadedAt || "") || 0;
+  if (leftTime !== rightTime) return leftTime - rightTime;
+
+  return String(left?.filename || "").localeCompare(String(right?.filename || ""));
+}
+
+function albumPhotoUploadIndex(photo) {
+  const index = normalizedUploadIndex(photo?.uploadIndex);
+  return index ?? Number.MAX_SAFE_INTEGER;
+}
+
+function compareAlbumPhotosNewestFirst(left, right) {
+  const leftTime = Date.parse(left?.uploadedAt || "") || 0;
+  const rightTime = Date.parse(right?.uploadedAt || "") || 0;
+  if (leftTime !== rightTime) return rightTime - leftTime;
+
+  return compareAlbumPhotosStableOrder(left, right);
+}
+
+function vehicleCoverPhotoScore(photo) {
+  if (!photo || photo.kind === "video") return -100000;
+
+  const text = vehiclePhotoLabelText(photo);
+  let score = 0;
+  if (matchesAny(text, vehicleHeroPhotoPatterns())) score += 180;
+  if (matchesAny(text, vehicleFrontExteriorPhotoPatterns())) score += 160;
+  if (/\bfront\b/i.test(text)) score += 90;
+  if (/\b(?:exterior|outside|ext|profile|walkaround)\b/i.test(text)) score += 70;
+  if (/\b(?:three quarter|three quarters|3 4|quarter angle)\b/i.test(text)) score += 60;
+  if (/\b(?:driver front|passenger front|left front|right front)\b/i.test(text)) score += 55;
+  if (/\b(?:side|rear|back)\b/i.test(text)) score += 30;
+  if (/\b(?:angle|beauty|showroom)\b/i.test(text)) score += 25;
+  if (matchesAny(text, vehicleInteriorPhotoPatterns())) score -= 180;
+  if (matchesAny(text, vehicleDetailPhotoPatterns())) score -= 150;
+  if (matchesAny(text, vehicleMechanicalPhotoPatterns())) score -= 100;
+  return score;
+}
+
+function vehiclePhotoLabelText(photo) {
+  return ` ${[
+    photo?.originalName,
+    photo?.filename,
+    photo?.downloadName,
+  ].filter(Boolean).join(" ")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")} `;
+}
+
+function matchesAny(text, patterns) {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function vehicleHeroPhotoPatterns() {
+  return [
+    /\b(?:hero|cover|main|primary|thumbnail)\b/i,
+  ];
+}
+
+function vehicleFrontExteriorPhotoPatterns() {
+  return [
+    /\b(?:front exterior|exterior front|front view|front shot|front angle|front quarter|front three quarter|front three quarters|front 3 4|3 4 front)\b/i,
+  ];
+}
+
+function vehicleInteriorPhotoPatterns() {
+  return [
+    /\b(?:interior|inside|cabin|dash|dashboard|odometer|gauge|gauges|cluster|steering|wheel controls|seat|seats|console|screen|infotainment|radio|shifter|carplay|floor mat|mats|door panel|headliner|sunroof|cargo|trunk)\b/i,
+  ];
+}
+
+function vehicleDetailPhotoPatterns() {
+  return [
+    /\b(?:vin|sticker|tag|lot tag|window sticker|monroney|plate|key|keys|fob|paperwork|document|scratch|dent|damage|tire|wheel|rim|warranty)\b/i,
+  ];
+}
+
+function vehicleMechanicalPhotoPatterns() {
+  return [
+    /\b(?:engine|underhood|under hood|hood open|battery|brake|suspension|undercarriage)\b/i,
+  ];
+}
+
+function normalizedUploadIndex(value) {
+  const index = Number(value);
+  return Number.isSafeInteger(index) && index >= 0 ? index : null;
+}
+
+function nextPhotoUploadIndex(metadata = {}) {
+  let maxIndex = -1;
+  let mediaCount = 0;
+  for (const [filename, meta] of Object.entries(metadata || {})) {
+    if (!isMediaFilename(filename)) continue;
+    mediaCount += 1;
+    const index = normalizedUploadIndex(meta?.uploadIndex);
+    if (index !== null) maxIndex = Math.max(maxIndex, index);
+  }
+  return Math.max(maxIndex + 1, mediaCount);
+}
+
 async function albumWithInventoryStatus(album) {
   if (!album) return album;
+  const inventoryStatus = await inventoryStatusForAlbum(album);
+  recordAlbumInventoryLifecycle(album, inventoryStatus).catch((error) => {
+    console.warn(`Inventory lifecycle update failed for ${album.id}: ${error?.message || error}`);
+  });
   return {
     ...album,
-    inventoryStatus: await inventoryStatusForAlbum(album),
+    inventoryStatus,
   };
 }
 
@@ -1653,6 +1815,7 @@ async function inventoryStatusForAlbum(album) {
       active: null,
       checkedAt: null,
       label: "Manual entry, not checked against O'Regan's inventory.",
+      lifecycle: inventoryLifecycleState({ sourceStatus: "manual", album }),
     };
   }
 
@@ -1665,6 +1828,7 @@ async function inventoryStatusForAlbum(album) {
       active: null,
       checkedAt: null,
       label: "O'Regan's inventory status is unavailable.",
+      lifecycle: inventoryLifecycleState({ sourceStatus: "unknown", album }),
     };
   }
 
@@ -1682,6 +1846,11 @@ async function inventoryStatusForAlbum(album) {
         : `No longer active in O'Regan's inventory as of ${checkedAt}.`,
       matchedInventoryKey: matchedCar?.inventoryKey || matchedCar?.vin || "",
       matchedStockNumber: matchedCar?.stockNumber || "",
+      lifecycle: inventoryLifecycleState({
+        sourceStatus: matchedCar ? "source_active" : "source_removed",
+        album,
+        checkedAt,
+      }),
     };
   } catch (error) {
     return {
@@ -1690,9 +1859,187 @@ async function inventoryStatusForAlbum(album) {
       active: null,
       checkedAt: null,
       label: "O'Regan's inventory check is temporarily unavailable.",
+      lifecycle: inventoryLifecycleState({ sourceStatus: "unknown", album }),
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function inventoryLifecycleState({ sourceStatus, album, checkedAt = null }) {
+  const hasPackagePhotos = Number(album?.mediaCount || 0) > 0;
+  if (sourceStatus === "manual") {
+    return {
+      sourceStatus: "manual",
+      packageStatus: hasPackagePhotos ? "photo_matched" : "needs_photos",
+      facebookState: "do_not_post",
+      facebookAction: "manual_review",
+      shouldMarkFacebookSold: false,
+      canPostToFacebook: false,
+      checkedAt,
+    };
+  }
+
+  if (sourceStatus === "source_removed") {
+    return {
+      sourceStatus: "source_removed",
+      packageStatus: hasPackagePhotos ? "source_removed_package" : "needs_photos",
+      facebookState: "stale_on_facebook",
+      facebookAction: "mark_sold",
+      shouldMarkFacebookSold: true,
+      canPostToFacebook: false,
+      checkedAt,
+    };
+  }
+
+  if (sourceStatus === "source_active") {
+    return {
+      sourceStatus: "source_active",
+      packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+      facebookState: hasPackagePhotos ? "ready_to_post" : "needs_photos",
+      facebookAction: hasPackagePhotos ? "post_if_not_live" : "capture_photos",
+      shouldMarkFacebookSold: false,
+      canPostToFacebook: hasPackagePhotos,
+      checkedAt,
+    };
+  }
+
+  return {
+    sourceStatus: "unknown",
+    packageStatus: hasPackagePhotos ? "photo_matched" : "needs_photos",
+    facebookState: "unknown",
+    facebookAction: "review",
+    shouldMarkFacebookSold: false,
+    canPostToFacebook: false,
+    checkedAt,
+  };
+}
+
+async function recordAlbumInventoryLifecycle(album, inventoryStatus) {
+  const lifecycle = inventoryStatus?.lifecycle || {};
+  if (!album?.id || inventoryStatus?.source !== "oregans") return;
+  if (!["source_active", "source_removed"].includes(lifecycle.sourceStatus)) return;
+
+  let notificationPayload = null;
+  await updateInventoryLifecycleStore((store) => {
+    const now = new Date().toISOString();
+    const previous = store.albums[album.id] || {};
+    const isRemoved = lifecycle.sourceStatus === "source_removed";
+    const wasRemoved = previous.lifecycle?.sourceStatus === "source_removed" || previous.status === "missing";
+    const shouldNotifyRemoved = isRemoved && !previous.removedNotifiedAt && !wasRemoved;
+    const vehicle = album.vehicle || {};
+    const record = {
+      ...previous,
+      albumId: album.id,
+      albumName: album.name || "",
+      status: inventoryStatus.status,
+      active: inventoryStatus.active,
+      checkedAt: inventoryStatus.checkedAt || now,
+      lastObservedAt: now,
+      lifecycle,
+      vehicle: {
+        inventoryKey: normalizeSpace(vehicle.inventoryKey || vehicle.vin || vehicle.manualInventoryId),
+        vin: normalizeSpace(vehicle.vin),
+        stockNumber: normalizeSpace(vehicle.stockNumber),
+        title: normalizeSpace(vehicle.title || album.name),
+        dealershipId: normalizeSpace(vehicle.dealershipId || album.dealership?.id),
+        dealershipName: normalizeSpace(vehicle.dealershipName || album.dealership?.name),
+      },
+    };
+
+    if (isRemoved) {
+      record.firstRemovedAt = previous.firstRemovedAt || now;
+      if (shouldNotifyRemoved) {
+        record.removedNotifiedAt = now;
+        notificationPayload = inventoryRemovedPushPayload(album, inventoryStatus, now);
+      }
+    } else {
+      record.firstRemovedAt = "";
+      record.removedNotifiedAt = "";
+    }
+
+    store.albums[album.id] = record;
+  });
+
+  if (notificationPayload) {
+    queuePushNotifications({ payload: notificationPayload });
+  }
+}
+
+function inventoryRemovedPushPayload(album, inventoryStatus, timestamp) {
+  const vehicle = album?.vehicle || {};
+  const label = normalizeSpace([
+    vehicle.stockNumber,
+    vehicle.title || album?.name,
+  ].filter(Boolean).join(" - ")) || "A vehicle package";
+  const car = carFromAlbum(album);
+  return {
+    kind: "inventory_removed",
+    messageId: `inventory-removed-${album.id}-${Date.parse(timestamp) || Date.now()}`,
+    albumId: album.id,
+    title: "Inventory removed",
+    body: `${label} is no longer in O'Regan's inventory. Mark any matching Facebook Marketplace listing sold.`,
+    tag: `carpostclub-inventory-removed-${album.id}`.slice(0, 80),
+    url: vehicleDeepLink(car, { openAlbum: true }),
+    timestamp,
+    mediaCount: album.mediaCount || 0,
+    inventoryStatus,
+  };
+}
+
+async function readInventoryLifecycleStore() {
+  return normalizeInventoryLifecycleStore(await readJson(inventoryLifecyclePath, { albums: {} }));
+}
+
+async function updateInventoryLifecycleStore(mutator) {
+  inventoryLifecycleWritePromise = inventoryLifecycleWritePromise.catch(() => {}).then(async () => {
+    const store = await readInventoryLifecycleStore();
+    const result = await mutator(store);
+    await writeJson(inventoryLifecyclePath, store);
+    return result;
+  });
+  return inventoryLifecycleWritePromise;
+}
+
+function normalizeInventoryLifecycleStore(value) {
+  const albums = value?.albums && typeof value.albums === "object" ? value.albums : {};
+  const normalized = { albums: {} };
+  for (const [rawAlbumId, rawRecord] of Object.entries(albums)) {
+    if (!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(rawAlbumId) || rawAlbumId.includes("..")) continue;
+    const albumId = rawAlbumId.toLowerCase();
+    const lifecycle = rawRecord?.lifecycle && typeof rawRecord.lifecycle === "object" ? rawRecord.lifecycle : {};
+    normalized.albums[albumId] = {
+      albumId,
+      albumName: normalizeSpace(rawRecord?.albumName).slice(0, 160),
+      status: normalizeSpace(rawRecord?.status).slice(0, 40),
+      active: typeof rawRecord?.active === "boolean" ? rawRecord.active : null,
+      checkedAt: normalizeIsoDate(rawRecord?.checkedAt) || "",
+      lastObservedAt: normalizeIsoDate(rawRecord?.lastObservedAt) || "",
+      firstRemovedAt: normalizeIsoDate(rawRecord?.firstRemovedAt) || "",
+      removedNotifiedAt: normalizeIsoDate(rawRecord?.removedNotifiedAt) || "",
+      lifecycle: {
+        sourceStatus: normalizeSpace(lifecycle.sourceStatus).slice(0, 60),
+        packageStatus: normalizeSpace(lifecycle.packageStatus).slice(0, 60),
+        facebookState: normalizeSpace(lifecycle.facebookState).slice(0, 60),
+        facebookAction: normalizeSpace(lifecycle.facebookAction).slice(0, 60),
+        shouldMarkFacebookSold: Boolean(lifecycle.shouldMarkFacebookSold),
+        canPostToFacebook: Boolean(lifecycle.canPostToFacebook),
+        checkedAt: normalizeIsoDate(lifecycle.checkedAt) || "",
+      },
+      vehicle: normalizeInventoryLifecycleVehicle(rawRecord?.vehicle),
+    };
+  }
+  return normalized;
+}
+
+function normalizeInventoryLifecycleVehicle(value = {}) {
+  return {
+    inventoryKey: normalizeSpace(value.inventoryKey).slice(0, 120),
+    vin: normalizeSpace(value.vin).slice(0, 40),
+    stockNumber: normalizeSpace(value.stockNumber).slice(0, 80),
+    title: normalizeSpace(value.title).slice(0, 160),
+    dealershipId: normalizeSpace(value.dealershipId).slice(0, 40),
+    dealershipName: normalizeSpace(value.dealershipName).slice(0, 120),
+  };
 }
 
 function inventoryCarMatchesAlbum(car, album) {
@@ -2375,12 +2722,13 @@ function normalizeInventoryCar(car, { dealership, inventoryTypeId }) {
 }
 
 async function buildMarketplaceDraftForUser(car, user, { album = null, force = false } = {}) {
-  const fields = buildMarketplaceFields(car);
+  const baseFields = buildMarketplaceFields(car);
+  const fields = personalizeMarketplaceFields(baseFields, user);
   const title = buildMarketplaceTitle(car);
-  const fallbackDescription = buildMarketplaceDescription(car, fields, user);
+  const fallbackDescription = buildMarketplaceDescription(car, baseFields, user);
   const generated = await getMarketplaceDescriptionForUser({
     car,
-    fields,
+    fields: baseFields,
     user,
     album,
     fallbackDescription,
@@ -2435,7 +2783,7 @@ async function buildMarketplaceDraftForUser(car, user, { album = null, force = f
       copy: generated.source === "not_generated"
         ? "Marketplace copy is generated only after media is uploaded."
         : generated.source?.startsWith("openai") ? "OpenAI generated from text vehicle facts on media upload" : "Template fallback copy generated on media upload",
-      photos: "Photos are shared for the selected car; description text is user-specific.",
+      photos: "Photos are shared for the selected car; package header and contact text are personalized for the signed-in user.",
     },
   };
 }
@@ -2465,6 +2813,21 @@ function buildMarketplaceFields(car) {
   };
 }
 
+function personalizeMarketplaceFields(fields, user) {
+  return {
+    ...fields,
+    contactName: marketplaceContactNameForUser(user, fields?.contactName),
+  };
+}
+
+function marketplaceContactNameForUser(user, fallbackName = marketplaceContactPerson) {
+  const displayName = normalizeDisplayName(user?.displayName);
+  const username = normalizeAuthUsername(user?.username);
+  const fallback = normalizeSpace(fallbackName) || marketplaceContactPerson;
+  if (username && username === normalizeAuthUsername(authUsername)) return fallback;
+  return displayName || fallback;
+}
+
 async function prepareMarketplaceDescriptionsForUpload(car, user, { album = null, uploadedMediaCount = 0 } = {}) {
   album = album || await ensureCarAlbum(car);
   const fields = buildMarketplaceFields(car);
@@ -2478,7 +2841,7 @@ async function prepareMarketplaceDescriptionsForUpload(car, user, { album = null
 
   const promise = (async () => {
     const existingStore = await readMarketplaceCopyStore(album.id);
-    if (isMarketplaceUploadPoolCurrent(existingStore, inputHash) && existingStore.variants.length >= targetCount) {
+    if (isMarketplaceUploadPoolCurrent(existingStore, inputHash) && existingStore.variants.length >= marketplaceDescriptionVariantCount) {
       const assigned = await assignMarketplaceDescriptionsToUsers(album.id, targetUsers, inputHash);
       return {
         ok: true,
@@ -2916,7 +3279,8 @@ async function assignMarketplaceDescriptionToUser(albumId, user, inputHash, { fo
         || store.variants.find((candidate) => candidate.id === currentVariantId)
       : targetedVariant
         || store.variants.find((candidate) => candidate.id === currentVariantId)
-        || availableVariants[0];
+        || availableVariants[0]
+        || marketplaceReusableDescriptionVariant(store.variants, userKey, inputHash);
     if (!variant) return { write: false, value: null };
 
     store.assignments[userKey] = variant.id;
@@ -2938,6 +3302,13 @@ async function assignMarketplaceDescriptionToUser(albumId, user, inputHash, { fo
     store.users[userKey] = copy;
     return { value: marketplaceAssignedCopyResponse(copy, inputHash) };
   });
+}
+
+function marketplaceReusableDescriptionVariant(variants = [], userKey = "", inputHash = "") {
+  const candidates = Array.isArray(variants) ? variants.filter(Boolean) : [];
+  if (!candidates.length) return null;
+  const index = marketplaceVariantIndex(userKey, candidates.length, inputHash);
+  return candidates[index] || candidates[0] || null;
 }
 
 function marketplaceAssignedCopyResponse(copy, inputHash) {
@@ -3263,8 +3634,11 @@ function appendMarketplaceContactLine(description, fields = {}, car = null, user
   const text = String(description || "").trim();
   const contactLine = buildMarketplaceContactLine(fields, car, user);
   if (!text) return contactLine;
-  if (hasMarketplaceContactLine(text)) return text;
-  const paragraphs = text.split(/\n{2,}/);
+  const paragraphs = text.split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
+    .filter((paragraph) => !isMarketplaceContactParagraph(paragraph));
+  if (!paragraphs.length) return contactLine;
   const finalParagraph = paragraphs[paragraphs.length - 1] || "";
   if (hasMarketplacePriceDisclosure(finalParagraph)) {
     return [
@@ -3280,7 +3654,7 @@ function buildMarketplaceContactLine(fields = {}, car = null, user = null) {
   const dealership = marketplaceDealershipContext(car || {});
   const dealershipName = fields.dealershipName || dealership.name;
   const city = fields.dealershipCity || dealership.city;
-  const contactName = fields.contactName || dealership.contactName || marketplaceContactPerson;
+  const contactName = marketplaceContactNameForUser(user, fields.contactName || dealership.contactName || marketplaceContactPerson);
   const seed = `${marketplaceUserKey(user)}:${car?.vin || car?.stockNumber || dealershipName}`;
   const lines = [
     `Send a message with any questions, or stop by ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
@@ -3291,6 +3665,12 @@ function buildMarketplaceContactLine(fields = {}, car = null, user = null) {
     `For more details, contact ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
   ];
   return lines[marketplaceVariantIndex(seed, lines.length, fields.location || "")];
+}
+
+function isMarketplaceContactParagraph(value) {
+  const text = String(value || "").trim();
+  return /\b(?:message|contact|reach|stop by|visit|come by|questions|closer look|arrange)\b/i.test(text)
+    && /\bask for\s+[A-Z0-9][A-Z0-9 .'-]{0,60}\b/i.test(text);
 }
 
 function stripMarketplaceInventoryNumbers(description, car = null) {
@@ -3331,9 +3711,7 @@ function isMarketplaceInventoryNumberSegment(value, stockNumberPattern) {
 }
 
 function hasMarketplaceContactLine(description) {
-  const text = String(description || "");
-  return /\b(?:message|contact|reach|stop by|visit|come by|questions|closer look)\b/i.test(text)
-    && new RegExp(`\\bask for\\s+${escapeRegExp(marketplaceContactPerson)}\\b`, "i").test(text);
+  return String(description || "").split(/\n{2,}/).some(isMarketplaceContactParagraph);
 }
 
 function hasMarketplacePriceDisclosure(description) {
@@ -3602,10 +3980,11 @@ async function listAlbumPhotos(albumId) {
       uploadedAt: meta.uploadedAt || stats.birthtime.toISOString(),
       contentType,
       uploadedBy: meta.uploadedBy,
+      uploadIndex: meta.uploadIndex,
     }));
   }
 
-  return photos.sort((left, right) => new Date(right.uploadedAt).getTime() - new Date(left.uploadedAt).getTime());
+  return sortAlbumPhotosForDisplay(photos);
 }
 
 function photosFromMetadata(albumId, metadata) {
@@ -3619,9 +3998,10 @@ function photosFromMetadata(albumId, metadata) {
       uploadedAt: meta?.uploadedAt || new Date(0).toISOString(),
       contentType: meta?.contentType || contentTypeFor(filename),
       uploadedBy: meta?.uploadedBy,
+      uploadIndex: meta?.uploadIndex,
     }));
   }
-  return photos.sort((left, right) => new Date(right.uploadedAt).getTime() - new Date(left.uploadedAt).getTime());
+  return sortAlbumPhotosForDisplay(photos);
 }
 
 async function saveUploadedPhoto(albumId, file, user) {
@@ -3641,6 +4021,7 @@ async function saveUploadedPhotoToLocalStorage(albumId, file, user) {
   let uploadedAt;
   let contentType;
   let uploadedBy;
+  let uploadIndex;
   try {
     await moveFile(file.path, destination);
     moved = true;
@@ -3648,14 +4029,17 @@ async function saveUploadedPhotoToLocalStorage(albumId, file, user) {
     uploadedAt = new Date().toISOString();
     contentType = contentTypeFor(filename);
     uploadedBy = publicUploader(user);
-    await updatePhotoMetadata(albumId, (metadata) => {
+    uploadIndex = await updatePhotoMetadata(albumId, (metadata) => {
+      const nextIndex = nextPhotoUploadIndex(metadata);
       metadata[filename] = {
         originalName: file.originalname,
         contentType,
         bytes: stats.size,
         uploadedAt,
         uploadedBy,
+        uploadIndex: nextIndex,
       };
+      return nextIndex;
     });
   } catch (error) {
     if (moved) await fs.unlink(destination).catch(() => {});
@@ -3668,6 +4052,7 @@ async function saveUploadedPhotoToLocalStorage(albumId, file, user) {
     bytes: stats.size,
     uploadedAt,
     uploadedBy,
+    uploadIndex,
   });
 }
 
@@ -3682,12 +4067,14 @@ async function saveUploadedPhotoToObjectStorage(albumId, file, user) {
   const uploadedAt = new Date().toISOString();
   const contentType = contentTypeFor(filename);
   const uploadedBy = publicUploader(user);
+  let uploadIndex;
 
   let uploaded = false;
   try {
     await putMediaObject(objectKey, file.path, contentType);
     uploaded = true;
-    await updatePhotoMetadata(albumId, (metadata) => {
+    uploadIndex = await updatePhotoMetadata(albumId, (metadata) => {
+      const nextIndex = nextPhotoUploadIndex(metadata);
       metadata[filename] = {
         originalName: file.originalname,
         contentType,
@@ -3697,7 +4084,9 @@ async function saveUploadedPhotoToObjectStorage(albumId, file, user) {
         storage: "s3",
         bucket: objectStorageBucket,
         objectKey,
+        uploadIndex: nextIndex,
       };
+      return nextIndex;
     });
     await fs.unlink(file.path).catch(() => {});
   } catch (error) {
@@ -3711,6 +4100,7 @@ async function saveUploadedPhotoToObjectStorage(albumId, file, user) {
     bytes: stats.size,
     uploadedAt,
     uploadedBy,
+    uploadIndex,
   });
 }
 
@@ -4056,6 +4446,7 @@ function photoResponse(albumId, filename, details) {
     bytes: details.bytes,
     uploadedAt: details.uploadedAt,
     uploadedBy: publicUploader(details.uploadedBy),
+    uploadIndex: normalizedUploadIndex(details.uploadIndex),
     downloadName: mediaDownloadName(details.originalName, filename),
     url: `/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}`,
     thumbnailUrl: kind === "image" ? `/api/albums/${encodeURIComponent(albumId)}/media/${encodeURIComponent(filename)}/thumbnail` : "",
@@ -4626,7 +5017,11 @@ async function sendPushNotifications({ payload, usernames = null, excludeUsernam
     : null;
   const excluded = normalizeAuthUsername(excludeUsername);
   const eligibleUserVersions = await pushEligibleUserVersions();
-  const notificationPayload = JSON.stringify(cleanPushPayload(payload));
+  const cleanPayload = cleanPushPayload({
+    ...payload,
+    notificationId: pushNotificationId(payload),
+  });
+  const notificationPayload = JSON.stringify(cleanPayload);
   const { subscriptions } = await readPushSubscriptions();
   const retiredEndpoints = new Set();
   const targets = subscriptions.filter((record) => {
@@ -4641,6 +5036,10 @@ async function sendPushNotifications({ payload, usernames = null, excludeUsernam
     return true;
   });
 
+  const logged = await appendNotificationLogEntries(cleanPayload, targets).catch((error) => {
+    console.warn(`Notification log update failed: ${error?.message || error}`);
+    return 0;
+  });
   const staleEndpoints = new Set();
   const results = await Promise.all(targets.map(async (record) => {
     if (pushDeliveryDisabled) return { status: "skipped" };
@@ -4673,7 +5072,117 @@ async function sendPushNotifications({ payload, usernames = null, excludeUsernam
     skipped: results.filter((result) => result.status === "skipped").length,
     staleRemoved,
     retiredRemoved,
+    logged,
   };
+}
+
+async function readNotificationLog() {
+  const store = await readJson(notificationLogPath, { notifications: [] });
+  const rawNotifications = Array.isArray(store) ? store : store.notifications;
+  return {
+    notifications: Array.isArray(rawNotifications)
+      ? rawNotifications.map(normalizeStoredNotification).filter(Boolean)
+      : [],
+  };
+}
+
+async function updateNotificationLog(mutator) {
+  notificationLogWritePromise = notificationLogWritePromise.catch(() => {}).then(async () => {
+    const store = await readNotificationLog();
+    const result = await mutator(store);
+    store.notifications.sort((left, right) => {
+      const username = left.username.localeCompare(right.username);
+      if (username) return username;
+      return new Date(right.receivedAt || right.createdAt || 0).getTime() - new Date(left.receivedAt || left.createdAt || 0).getTime();
+    });
+    pruneNotificationLog(store);
+    await writeJson(notificationLogPath, { notifications: store.notifications });
+    return result;
+  });
+  return notificationLogWritePromise;
+}
+
+async function appendNotificationLogEntries(payload, targetRecords) {
+  const usernames = [...new Set((targetRecords || [])
+    .map((record) => normalizeAuthUsername(record?.username))
+    .filter(Boolean))];
+  if (!usernames.length) return 0;
+
+  const cleanPayload = cleanPushPayload(payload);
+  const id = cleanPushNotificationId(cleanPayload.notificationId || cleanPayload.messageId) || pushNotificationId(cleanPayload);
+  const now = new Date().toISOString();
+
+  return updateNotificationLog((store) => {
+    let changed = 0;
+    for (const username of usernames) {
+      const existing = store.notifications.find((entry) => entry.username === username && entry.id === id);
+      const record = {
+        id,
+        username,
+        title: cleanPayload.title,
+        body: cleanPayload.body,
+        url: cleanPayload.url,
+        kind: cleanPayload.kind,
+        tag: cleanPayload.tag,
+        messageId: cleanPayload.messageId,
+        notificationId: id,
+        albumId: cleanPayload.albumId,
+        mediaCount: cleanPayload.mediaCount,
+        author: cleanPayload.author,
+        createdAt: cleanPayload.timestamp || now,
+        receivedAt: existing?.receivedAt || now,
+        readAt: existing?.readAt || "",
+      };
+
+      if (existing) Object.assign(existing, record);
+      else store.notifications.push(record);
+      changed += 1;
+    }
+    return changed;
+  });
+}
+
+async function notificationLogForUser(user, { limit = 50 } = {}) {
+  const username = normalizeAuthUsername(user?.username);
+  if (!username) throw httpError(401, "Authentication required.");
+  const store = await readNotificationLog();
+  const notifications = store.notifications
+    .filter((entry) => entry.username === username)
+    .sort((left, right) => new Date(right.receivedAt || right.createdAt || 0).getTime() - new Date(left.receivedAt || left.createdAt || 0).getTime());
+  return {
+    notifications: notifications.slice(0, limit).map(publicNotificationRecord),
+    unreadCount: notifications.filter((entry) => !entry.readAt).length,
+  };
+}
+
+async function markNotificationsRead(user, ids = null) {
+  const username = normalizeAuthUsername(user?.username);
+  if (!username) throw httpError(401, "Authentication required.");
+  const idSet = Array.isArray(ids)
+    ? new Set(ids.map(cleanPushNotificationId).filter(Boolean))
+    : null;
+  const now = new Date().toISOString();
+  return updateNotificationLog((store) => {
+    let marked = 0;
+    for (const entry of store.notifications) {
+      if (entry.username !== username) continue;
+      if (idSet && !idSet.has(entry.id)) continue;
+      if (entry.readAt) continue;
+      entry.readAt = now;
+      marked += 1;
+    }
+    return marked;
+  });
+}
+
+function pruneNotificationLog(store) {
+  const counts = new Map();
+  store.notifications = store.notifications.filter((entry) => {
+    const username = entry.username;
+    const count = (counts.get(username) || 0) + 1;
+    counts.set(username, count);
+    return count <= notificationLogLimitPerUser;
+  });
 }
 
 async function pushEligibleUserVersions() {
@@ -4771,6 +5280,12 @@ function vehicleDeepLink(car, { openAlbum = false } = {}) {
   return query ? `/?${query}` : "/";
 }
 
+function pushNotificationId(payload = {}) {
+  const explicit = cleanPushNotificationId(payload.notificationId || payload.messageId);
+  if (explicit) return explicit;
+  return `push-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
 function publicPushSubscriptionRecord(record) {
   return {
     endpoint: record.endpoint,
@@ -4778,6 +5293,50 @@ function publicPushSubscriptionRecord(record) {
     displayName: record.displayName,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+  };
+}
+
+function publicNotificationRecord(record) {
+  return {
+    id: record.id,
+    notificationId: record.notificationId || record.id,
+    title: record.title,
+    body: record.body,
+    url: record.url,
+    kind: record.kind,
+    tag: record.tag,
+    messageId: record.messageId,
+    albumId: record.albumId,
+    mediaCount: record.mediaCount,
+    author: record.author,
+    createdAt: record.createdAt,
+    receivedAt: record.receivedAt,
+    readAt: record.readAt,
+  };
+}
+
+function normalizeStoredNotification(record) {
+  if (!record || typeof record !== "object") return null;
+  const username = normalizeAuthUsername(record.username);
+  const id = cleanPushNotificationId(record.id || record.notificationId || record.messageId);
+  if (!username || !id) return null;
+  const now = new Date().toISOString();
+  return {
+    id,
+    username,
+    notificationId: id,
+    title: normalizeSpace(record.title).slice(0, 80) || appName,
+    body: sanitizeChatMessageText(record.body, { truncate: true }).slice(0, 180) || `Open ${appName}.`,
+    url: cleanNotificationPath(record.url, "/"),
+    kind: normalizeSpace(record.kind).slice(0, 32),
+    tag: normalizeSpace(record.tag).slice(0, 80) || "carpostclub",
+    messageId: cleanPushNotificationId(record.messageId),
+    albumId: normalizeSpace(record.albumId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 120),
+    mediaCount: positiveInteger(record.mediaCount, 0),
+    author: record.author ? normalizeChatAuthor(record.author) : "",
+    createdAt: normalizeIsoDate(record.createdAt || record.timestamp) || now,
+    receivedAt: normalizeIsoDate(record.receivedAt) || normalizeIsoDate(record.createdAt || record.timestamp) || now,
+    readAt: normalizeIsoDate(record.readAt) || "",
   };
 }
 
@@ -4857,7 +5416,10 @@ function cleanPushKey(value, label) {
 function cleanPushPayload(payload = {}) {
   const kind = normalizeSpace(payload.kind).slice(0, 32);
   const timestamp = normalizeIsoDate(payload.timestamp);
+  const messageId = cleanPushNotificationId(payload.messageId);
+  const notificationId = cleanPushNotificationId(payload.notificationId || messageId);
   return {
+    notificationId,
     title: normalizeSpace(payload.title).slice(0, 80) || appName,
     body: sanitizeChatMessageText(payload.body, { truncate: true }).slice(0, 180) || `Open ${appName}.`,
     icon: cleanNotificationPath(payload.icon, "/icons/carpostclub-icon-192.png"),
@@ -4865,12 +5427,20 @@ function cleanPushPayload(payload = {}) {
     tag: normalizeSpace(payload.tag).slice(0, 80) || "carpostclub",
     url: cleanNotificationPath(payload.url, "/"),
     kind,
-    messageId: normalizeSpace(payload.messageId).slice(0, 80),
+    messageId,
     albumId: normalizeSpace(payload.albumId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 120),
     mediaCount: positiveInteger(payload.mediaCount, 0),
     author: payload.author ? normalizeChatAuthor(payload.author) : "",
     timestamp,
   };
+}
+
+function cleanPushNotificationId(value) {
+  return normalizeSpace(value)
+    .replace(/[^A-Za-z0-9:_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
 }
 
 function cleanNotificationPath(value, fallback) {
@@ -5046,11 +5616,6 @@ function cleanDealershipId(value) {
   const dealership = oregansDealerships.find((candidate) => candidate.id === id);
   if (dealership) return dealership;
   throw httpError(400, "Select a dealership before uploading photos.");
-}
-
-function cleanOptionalDealership(value) {
-  const id = String(value || "").trim();
-  return id ? cleanDealershipId(id) : null;
 }
 
 function cleanInventoryTypeId(value) {
@@ -5487,6 +6052,7 @@ function bootstrapAdminUser() {
   return {
     username: normalizeAuthUsername(authUsername) || "admin",
     displayName: normalizeDisplayName(authUsername) || "Admin",
+    dealershipId: authBootstrapDealershipId,
     role: "admin",
     status: "approved",
     passwordVersion: bootstrapAdminPasswordVersion(),
@@ -5506,6 +6072,7 @@ function authUserFromAccount(account) {
   return {
     username: account.username,
     displayName: account.displayName || account.username,
+    dealershipId: normalizeAuthDealershipId(account.dealershipId),
     role: account.role === "admin" ? "admin" : "user",
     status: account.status,
     passwordVersion: account.passwordVersion || "",
@@ -5514,9 +6081,13 @@ function authUserFromAccount(account) {
 }
 
 function publicAuthUser(user) {
+  const dealership = publicAuthDealership(user?.dealershipId);
   return {
     username: user?.username || "",
     displayName: user?.displayName || user?.username || "",
+    dealershipId: dealership?.id || "",
+    dealershipLabel: dealership?.label || "",
+    dealership,
     role: user?.role === "admin" ? "admin" : "user",
     status: user?.status || "approved",
   };
@@ -5648,6 +6219,7 @@ async function markAuthInviteUsed(inviteId, user) {
     invite.acceptedUsers.unshift({
       username: user.username,
       displayName: user.displayName || user.username,
+      dealership: publicAuthDealership(user.dealershipId),
       acceptedAt: now,
     });
     invite.acceptedUsers = invite.acceptedUsers.slice(0, 25);
@@ -5666,6 +6238,7 @@ function normalizeStoredAuthInvite(value) {
     ? value.acceptedUsers.map((acceptedUser) => ({
       username: normalizeAuthUsername(acceptedUser?.username),
       displayName: normalizeDisplayName(acceptedUser?.displayName) || normalizeAuthUsername(acceptedUser?.username),
+      dealership: publicAuthDealership(acceptedUser?.dealership?.id || acceptedUser?.dealershipId || acceptedUser?.dealership),
       acceptedAt: normalizeIsoDate(acceptedUser?.acceptedAt),
     })).filter((acceptedUser) => acceptedUser.username)
     : [];
@@ -5743,6 +6316,23 @@ async function setAuthUserStatus(usernameValue, status, actorUsername) {
   return updated;
 }
 
+async function setStoredUserDealership(usernameValue, dealershipIdValue, actorUsername) {
+  const username = normalizeAuthUsername(usernameValue);
+  const dealershipId = normalizeAuthDealershipId(dealershipIdValue);
+  if (!username || !dealershipId) return null;
+
+  return updateAuthUsers((store) => {
+    const user = store.users.find((candidate) => candidate.username === username);
+    if (!user) return null;
+    const now = new Date().toISOString();
+    user.dealershipId = dealershipId;
+    user.updatedAt = now;
+    user.dealershipUpdatedAt = now;
+    user.dealershipUpdatedBy = normalizeAuthUsername(actorUsername);
+    return user;
+  });
+}
+
 async function changeStoredUserPassword(usernameValue, currentPassword, newPassword) {
   const username = normalizeAuthUsername(usernameValue);
   const store = await readAuthUsers();
@@ -5796,6 +6386,8 @@ function normalizeStoredAuthUser(value) {
   return {
     username,
     displayName: normalizeDisplayName(value.displayName) || username,
+    dealershipId: normalizeAuthDealershipId(value.dealershipId || value.dealership?.id || value.dealership)
+      || defaultAuthDealershipIdForUser({ username, displayName: value.displayName }),
     passwordHash,
     passwordVersion: normalizeSpace(value.passwordVersion).slice(0, 80),
     role: value.role === "admin" ? "admin" : "user",
@@ -5808,15 +6400,20 @@ function normalizeStoredAuthUser(value) {
     rejectedBy: normalizeAuthUsername(value.rejectedBy),
     passwordUpdatedAt: normalizeIsoDate(value.passwordUpdatedAt),
     passwordUpdatedBy: normalizeAuthUsername(value.passwordUpdatedBy),
+    dealershipUpdatedAt: normalizeIsoDate(value.dealershipUpdatedAt),
+    dealershipUpdatedBy: normalizeAuthUsername(value.dealershipUpdatedBy),
   };
 }
 
-function validateSignup({ username, password, confirmPassword }) {
+function validateSignup({ username, dealershipId, password, confirmPassword }) {
   if (!username || !/^[a-z0-9][a-z0-9._-]{2,39}$/.test(username)) {
     return "Use 3-40 letters, numbers, dots, dashes, or underscores.";
   }
   if (username === normalizeAuthUsername(authUsername)) {
     return "That username already exists.";
+  }
+  if (!normalizeAuthDealershipId(dealershipId)) {
+    return "Choose Kia, VW, GM, or Nissan.";
   }
   return validatePasswordFields({ password, confirmPassword });
 }
@@ -5840,6 +6437,51 @@ function normalizeAuthUsername(value) {
 
 function normalizeDisplayName(value) {
   return normalizeSpace(value).slice(0, 40);
+}
+
+function normalizeAuthDealershipId(value) {
+  const raw = normalizeSpace(value);
+  if (!raw) return "";
+  const lowered = raw.toLowerCase();
+  const match = authDealershipOptions.find((dealership) => (
+    dealership.id === raw
+    || dealership.key === lowered
+    || dealership.label.toLowerCase() === lowered
+    || dealership.name.toLowerCase() === lowered
+    || (lowered === "volkswagen" && dealership.key === "vw")
+  ));
+  return match?.id || "";
+}
+
+function publicAuthDealership(value) {
+  const id = normalizeAuthDealershipId(value);
+  const dealership = authDealershipOptions.find((candidate) => candidate.id === id);
+  if (!dealership) return null;
+  return {
+    id: dealership.id,
+    key: dealership.key,
+    label: dealership.label,
+    name: dealership.name,
+  };
+}
+
+function defaultAuthDealershipIdForUser(user) {
+  const username = normalizeAuthUsername(user?.username);
+  const displayName = normalizeDisplayName(user?.displayName).toLowerCase();
+  if (username === "konner" || displayName === "konner") return "15";
+  if (username === "mwebber2030" || displayName === "michael") return "18";
+  return "";
+}
+
+function renderAuthDealershipSelectOptions(selectedValue, { includePlaceholder = false } = {}) {
+  const selectedId = normalizeAuthDealershipId(selectedValue);
+  const placeholder = includePlaceholder
+    ? `<option value=""${selectedId ? "" : " selected"}>Choose dealership</option>`
+    : "";
+  return `${placeholder}${authDealershipOptions.map((dealership) => {
+    const selected = dealership.id === selectedId ? " selected" : "";
+    return `<option value="${escapeHtml(dealership.id)}"${selected}>${escapeHtml(dealership.label)}</option>`;
+  }).join("")}`;
 }
 
 function normalizeIsoDate(value) {
@@ -5948,6 +6590,12 @@ function sendSignupPage(res, { error = "", success = "", values = {}, invite = n
         <input name="username" autocomplete="username" value="${escapeHtml(values.username || "")}" required>
       </label>
       <label>
+        <span>Dealership</span>
+        <select name="dealershipId" required>
+          ${renderAuthDealershipSelectOptions(values.dealershipId, { includePlaceholder: true })}
+        </select>
+      </label>
+      <label>
         <span>Password</span>
         <input name="password" type="password" autocomplete="new-password" minlength="8" required>
       </label>
@@ -5983,6 +6631,8 @@ function sendAdminUsersPage(res, { currentUser, users, invites = [], generatedIn
   const inviteRows = invites.length
     ? invites.slice(0, 8).map(renderAuthInviteCard).join("")
     : '<p class="auth-note">No invite links generated yet.</p>';
+  const bootstrapUser = bootstrapAdminUser();
+  const bootstrapDealership = publicAuthDealership(bootstrapUser.dealershipId);
 
   setPrivateNoStore(res);
   res.send(renderAuthPage({
@@ -6006,8 +6656,8 @@ function sendAdminUsersPage(res, { currentUser, users, invites = [], generatedIn
     <div class="admin-user-list">${inviteRows}</div>
     <section class="admin-user-card is-bootstrap">
       <div>
-        <strong>${escapeHtml(bootstrapAdminUser().displayName)}</strong>
-        <span>${escapeHtml(bootstrapAdminUser().username)} · admin · approved</span>
+        <strong>${escapeHtml(bootstrapUser.displayName)}</strong>
+        <span>${escapeHtml(bootstrapUser.username)} · admin · approved · ${escapeHtml(bootstrapDealership?.label || "No dealership")}</span>
       </div>
       <em>Bootstrap admin</em>
     </section>
@@ -6021,7 +6671,8 @@ function sendAdminUsersPage(res, { currentUser, users, invites = [], generatedIn
 function renderAdminUserCard(user) {
   const approved = user.status === "approved";
   const rejected = user.status === "rejected";
-  const statusText = `${user.role} · ${user.status}`;
+  const dealership = publicAuthDealership(user.dealershipId);
+  const statusText = `${user.role} · ${user.status} · ${dealership?.label || "No dealership"}`;
   const createdText = user.createdAt ? `Joined ${formatAuthDate(user.createdAt)}` : "Join date unknown";
   const reactivateDisabled = approved ? "disabled" : "";
   const deactivateDisabled = rejected ? "disabled" : "";
@@ -6039,6 +6690,15 @@ function renderAdminUserCard(user) {
         <button class="danger" type="submit" ${deactivateDisabled}>Deactivate</button>
       </form>
     </div>
+    <form class="admin-dealership-form" method="post" action="/admin/users/${encodeURIComponent(user.username)}/dealership">
+      <label>
+        <span>Dealership</span>
+        <select name="dealershipId" required>
+          ${renderAuthDealershipSelectOptions(user.dealershipId, { includePlaceholder: true })}
+        </select>
+      </label>
+      <button type="submit">Save dealership</button>
+    </form>
     <form class="admin-password-form" method="post" action="/admin/users/${encodeURIComponent(user.username)}/password">
       <label>
         <span>Reset password</span>
@@ -6236,7 +6896,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260604-upload-selection-v43">
+  <link rel="stylesheet" href="/styles.css?v=20260609-inventory-lifecycle-v56">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">

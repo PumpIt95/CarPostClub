@@ -6,6 +6,7 @@ Password-gated vehicle media intake, team chat, upload history, and listing copy
 
 - Pulls current O'Regan's inventory by dealership and inventory type.
 - Saves uploaded car media into a per-car album named from the vehicle and inventory number.
+- Treats O'Regan's removal as the source-of-truth signal that a package is no longer available; the app greys that album, notifies subscribed users, and marks the Facebook sync action as `mark_sold`.
 - Provides per-asset and album-wide download/delete actions.
 - Generates Facebook Marketplace description variants only after media is uploaded.
 - Privately assigns one Marketplace description to each active user.
