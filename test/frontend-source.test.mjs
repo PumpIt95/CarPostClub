@@ -120,7 +120,7 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="galleryModelFilter"/);
   assert.match(html, /id="galleryYearFilter"/);
   assert.match(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260609-gallery-delete-admin-only-v54/);
+  assert.match(html, /\/app\.js\?v=20260609-auto-sold-cleanup-v55/);
   assert.match(html, /\/styles\.css\?v=20260604-upload-selection-v43/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
@@ -203,13 +203,10 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /disabled: !canUseSavedAlbum \|\| !hasMedia/);
   assert.match(source, /Delete uploaded media for \$\{label\}\? This deletes the uploaded media for that vehicle and cannot be undone\./);
   assert.match(source, /Deleted upload for \$\{label\}\./);
-  assert.match(source, /renderGalleryCleanupButton/);
-  assert.match(source, /Remove sold uploads/);
-  assert.match(source, /Remove sold uploads here/);
-  assert.match(source, /remove-sold-uploads/);
-  assert.match(source, /\/api\/gallery\/remove-sold-uploads/);
-  assert.match(source, /Manual and unknown-status uploads will be skipped/);
-  assert.match(source, /No sold\/offline uploads found/);
+  assert.doesNotMatch(source, /renderGalleryCleanupButton/);
+  assert.doesNotMatch(source, /Remove sold uploads/);
+  assert.doesNotMatch(source, /Remove sold uploads here/);
+  assert.doesNotMatch(source, /remove-sold-uploads/);
   assert.match(source, /download-or-share-album-photos/);
   assert.match(source, /async function downloadOrShareAlbumPhotos\(albumId\)/);
   assert.match(source, /function downloadAlbumZip\(album\)/);
@@ -463,7 +460,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v54/);
+  assert.match(serviceWorker, /carpostclub-pwa-v55/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -747,6 +744,28 @@ test("gallery page is an authenticated app route separate from upload", async ()
   assert.match(source, /app\.get\("\/", requireAuth/);
   assert.match(source, /app\.get\("\/gallery", requireAuth/);
   assert.match(source, /res\.sendFile\(path\.join\(publicRoot, "index\.html"\)\)/);
+});
+
+test("sold upload cleanup runs server-side with scheduler safeguards", async () => {
+  const source = await fs.readFile(serverPath, "utf8");
+
+  assert.match(source, /CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_ENABLED/);
+  assert.match(source, /CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_INTERVAL_MS/);
+  assert.match(source, /CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_STARTUP_DELAY_MS/);
+  assert.match(source, /CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_MAX_DELETIONS_PER_RUN/);
+  assert.match(source, /CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_DRY_RUN/);
+  assert.match(source, /app\.post\("\/api\/gallery\/remove-sold-uploads", requireAdmin, removeSoldUploads\)/);
+  assert.match(source, /app\.get\("\/api\/gallery\/sold-cleanup\/status", requireAdmin, soldUploadCleanupStatus\)/);
+  assert.match(source, /async function runSoldUploadCleanup/);
+  assert.match(source, /async function runLockedSoldUploadCleanup/);
+  assert.match(source, /if \(soldUploadCleanupScheduler\.running\)/);
+  assert.match(source, /skipIfRunning/);
+  assert.match(source, /scheduleNextSoldUploadCleanup\(soldUploadCleanupConfig\.intervalMs\)/);
+  assert.match(source, /soldUploadCleanupHistoryPath/);
+  assert.match(source, /soldUploadCleanup: soldUploadCleanupPublicStatus\(\)/);
+  assert.match(source, /action: "would_delete"/);
+  assert.match(source, /reason: "max_deletions_reached"/);
+  assert.match(source, /dryRun: requestBoolean/);
 });
 
 test("disabled auth controls are visibly unavailable", async () => {

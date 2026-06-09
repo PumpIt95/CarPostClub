@@ -37,6 +37,22 @@ set `CARPOSTCLUB_MEDIA_STORAGE_DRIVER=s3` plus `CARPOSTCLUB_S3_BUCKET`, `CARPOST
 `CARPOSTCLUB_S3_REGION`, `CARPOSTCLUB_S3_ACCESS_KEY_ID`, and `CARPOSTCLUB_S3_SECRET_ACCESS_KEY`.
 Each inventory album stores files under its own object-key prefix, for example `car-.../photo.jpg`.
 
+Sold/offline upload cleanup is a server-side scheduler, not a gallery button. It reuses the same media deletion
+path as the admin per-album delete action, and only removes uploaded O'Regan's inventory albums when the inventory
+status check says the vehicle is missing/inactive. Manual uploads, unknown statuses, inventory API errors, active
+vehicles, and albums with no media are skipped. Configure it with:
+
+- `CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_ENABLED=true`
+- `CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_INTERVAL_MS=21600000`
+- `CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_STARTUP_DELAY_MS=600000`
+- `CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_MAX_DELETIONS_PER_RUN=25`
+- `CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_DRY_RUN=false`
+
+The production Dokploy/container env file is outside this repository, so the production server must set these
+values there. If more than one app instance shares the same uploads, enable the scheduler on only one instance.
+Admins can inspect recent runs at `GET /api/gallery/sold-cleanup/status` and can still run
+`POST /api/gallery/remove-sold-uploads` for manual dry-runs or emergency maintenance.
+
 ## Useful Commands
 
 ```bash

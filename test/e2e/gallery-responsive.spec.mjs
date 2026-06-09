@@ -141,10 +141,9 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
   }
 });
 
-test("admin gallery delete upload and sold cleanup controls refresh albums", async ({ page }) => {
+test("admin gallery delete upload refreshes albums without bulk cleanup controls", async ({ page }) => {
   const harness = await startTestServer();
   const activeCar = INVENTORY_CARS[0];
-  const soldCar = INVENTORY_CARS[1];
   try {
     harness.cookie = await login(harness.baseUrl);
     const activeUpload = await uploadPhotos(harness, {
@@ -160,25 +159,12 @@ test("admin gallery delete upload and sold cleanup controls refresh albums", asy
       ]
     });
     expect(activeUpload.status).toBe(201);
-    const soldUpload = await uploadPhotos(harness, {
-      dealershipId: soldCar.dealershipId,
-      inventoryTypeId: soldCar.inventoryTypeId,
-      vin: soldCar.vin,
-      photos: [
-        {
-          filename: "cleanup-sold-front.png",
-          type: "image/png",
-          body: pngBytes(1)
-        }
-      ]
-    });
-    expect(soldUpload.status).toBe(201);
 
     await loginWithPage(page, harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
     await page.goto(`${harness.baseUrl}/gallery`);
-    await expect(page.getByRole("button", { name: "Remove sold uploads" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Remove sold uploads" })).toHaveCount(0);
     await page.locator(".gallery-folder-card", { hasText: "O'Regan's Kia Halifax" }).click();
-    await expect(page.getByRole("button", { name: "Remove sold uploads here" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Remove sold uploads here" })).toHaveCount(0);
 
     const activeCard = page.locator(".album-card", { hasText: activeCar.stockNumber }).first();
     await activeCard.locator(".album-summary-button").click();
@@ -200,25 +186,6 @@ test("admin gallery delete upload and sold cleanup controls refresh albums", asy
     expect(deleteMessages[0]).toContain("cannot be undone");
     await expect(page.locator("#statusBar")).toContainText(`Deleted upload for ${activeCar.stockNumber}`);
     await expect(page.locator(".album-card", { hasText: activeCar.stockNumber })).toHaveCount(0);
-
-    await writeInventoryMock(harness, [activeCar]);
-    const cleanupMessages = [];
-    page.once("dialog", async (dialog) => {
-      cleanupMessages.push(dialog.message());
-      await dialog.accept();
-    });
-    const cleanupResponsePromise = page.waitForResponse((response) =>
-      response.request().method() === "POST"
-      && response.url().endsWith("/api/gallery/remove-sold-uploads")
-    );
-    await page.getByRole("button", { name: "Remove sold uploads here" }).click();
-    const cleanupResponse = await cleanupResponsePromise;
-    expect(cleanupResponse.status()).toBe(200);
-    const cleanupBody = await cleanupResponse.json();
-    expect(cleanupBody.deleted.map((album) => album.albumId)).toContain(soldUpload.body.albumId);
-    expect(cleanupMessages[0]).toContain("Manual and unknown-status uploads will be skipped");
-    await expect(page.locator("#statusBar")).toContainText("Removed 1 sold upload");
-    await expect(page.locator(".album-card", { hasText: soldCar.stockNumber })).toHaveCount(0);
   } finally {
     await stopTestServer(harness);
   }

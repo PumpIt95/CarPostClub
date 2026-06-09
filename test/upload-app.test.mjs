@@ -61,6 +61,13 @@ const SOLD_CAR = {
   transmission: "Automatic",
   detailUrl: "https://www.oregans.com/inventory/Used-2022-Kia-Forte-SOLD123/",
 };
+const SOLD_CAR_TWO = {
+  ...SOLD_CAR,
+  vin: "3KPF24AD1NE654321",
+  stockNumber: "SOLD456",
+  title: "Used 2022 Kia Forte EX",
+  detailUrl: "https://www.oregans.com/inventory/Used-2022-Kia-Forte-SOLD456/",
+};
 const MANUAL_CAR = {
   dealershipId: "15",
   inventoryTypeId: "2",
@@ -1030,6 +1037,10 @@ test("sold upload cleanup deletes only missing O'Regan's albums and skips active
     const cleanup = await postJson(harness, "/api/gallery/remove-sold-uploads", {});
     assert.equal(cleanup.status, 200);
     assert.equal(cleanup.body.ok, true);
+    assert.equal(cleanup.body.dryRun, false);
+    assert.equal(cleanup.body.source, "admin-api");
+    assert.ok(Number.isFinite(Date.parse(cleanup.body.startedAt)));
+    assert.ok(Number.isFinite(Date.parse(cleanup.body.finishedAt)));
     assert.equal(cleanup.body.scanned, 3);
     assert.equal(cleanup.body.matched, 1);
     assert.deepEqual(cleanup.body.deleted.map((album) => album.albumId), [soldUpload.body.album.id]);
@@ -1061,6 +1072,13 @@ test("sold upload cleanup deletes only missing O'Regan's albums and skips active
     assert.equal(scopedCleanup.status, 200);
     assert.equal(scopedCleanup.body.scanned, 2);
     assert.equal(scopedCleanup.body.deleted.length, 0);
+
+    const status = await getJson(harness, "/api/gallery/sold-cleanup/status");
+    assert.equal(status.ok, true);
+    assert.equal(status.scheduler.enabled, false);
+    assert.ok(status.history.runs.some((run) =>
+      run.source === "admin-api" && run.deleted === 1 && run.matched === 1
+    ));
   } finally {
     await stopTestServer(harness);
   }
@@ -1096,6 +1114,120 @@ test("sold upload cleanup skips albums when O'Regan's inventory status is unknow
   }
 });
 
+test("sold upload cleanup dry-run reports candidates without deleting media", async () => {
+  const harness = await startTestServer({ inventoryCars: [SOLD_CAR] });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const upload = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: SOLD_CAR.vin,
+      photos: [{ filename: "dry-run-sold-front.jpg", type: "image/jpeg", body: jpegBytes("dry-run-sold-front") }],
+    });
+    assert.equal(upload.status, 201);
+
+    await writeInventoryMock(harness, []);
+    const cleanup = await postJson(harness, "/api/gallery/remove-sold-uploads", { dryRun: true });
+    assert.equal(cleanup.status, 200);
+    assert.equal(cleanup.body.ok, true);
+    assert.equal(cleanup.body.dryRun, true);
+    assert.equal(cleanup.body.matched, 1);
+    assert.equal(cleanup.body.deleted.length, 0);
+    assert.equal(cleanup.body.albums[0].albumId, upload.body.album.id);
+    assert.equal(cleanup.body.albums[0].action, "would_delete");
+    assert.equal(cleanup.body.albums[0].reason, "inventory_missing");
+    assert.equal(cleanup.body.albums[0].wouldDeleteMedia, 1);
+
+    await fs.access(path.join(harness.uploadRoot, upload.body.album.id, upload.body.photos[0].filename));
+    const albumsAfterCleanup = await getJson(harness, "/api/albums");
+    assert.ok(albumsAfterCleanup.albums.some((album) => album.id === upload.body.album.id));
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("sold upload cleanup respects max deletions per run", async () => {
+  const harness = await startTestServer({ inventoryCars: [SOLD_CAR, SOLD_CAR_TWO] });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const firstUpload = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: SOLD_CAR.vin,
+      photos: [{ filename: "max-sold-one.jpg", type: "image/jpeg", body: jpegBytes("max-sold-one") }],
+    });
+    assert.equal(firstUpload.status, 201);
+    const secondUpload = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: SOLD_CAR_TWO.vin,
+      photos: [{ filename: "max-sold-two.jpg", type: "image/jpeg", body: jpegBytes("max-sold-two") }],
+    });
+    assert.equal(secondUpload.status, 201);
+
+    await writeInventoryMock(harness, []);
+    const cleanup = await postJson(harness, "/api/gallery/remove-sold-uploads", { maxDeletionsPerRun: 1 });
+    assert.equal(cleanup.status, 200);
+    assert.equal(cleanup.body.matched, 2);
+    assert.equal(cleanup.body.deleted.length, 1);
+    assert.equal(cleanup.body.skipped.filter((album) => album.reason === "max_deletions_reached").length, 1);
+    assert.equal(cleanup.body.albums.filter((album) => album.action === "deleted").length, 1);
+
+    const albumsAfterCleanup = await getJson(harness, "/api/albums");
+    const remainingSoldAlbums = [firstUpload.body.album.id, secondUpload.body.album.id]
+      .filter((albumId) => albumsAfterCleanup.albums.some((album) => album.id === albumId));
+    assert.deepEqual(remainingSoldAlbums.length, 1);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("sold upload cleanup scheduler records dry-run history without overlapping gallery UI", async () => {
+  const harness = await startTestServer({
+    inventoryCars: [SOLD_CAR],
+    env: {
+      CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_ENABLED: "true",
+      CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_DRY_RUN: "true",
+      CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_STARTUP_DELAY_MS: "1500",
+      CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_INTERVAL_MS: "600000",
+      CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_MAX_DELETIONS_PER_RUN: "1",
+    },
+  });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const upload = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: SOLD_CAR.vin,
+      photos: [{ filename: "scheduler-sold-front.jpg", type: "image/jpeg", body: jpegBytes("scheduler-sold-front") }],
+    });
+    assert.equal(upload.status, 201);
+
+    await writeInventoryMock(harness, []);
+    const status = await waitForSoldCleanupHistory(harness, (run) => run.source === "scheduler");
+    assert.equal(status.scheduler.enabled, true);
+    assert.equal(status.scheduler.dryRun, true);
+    assert.equal(status.scheduler.intervalMs, 600000);
+    assert.equal(status.scheduler.maxDeletionsPerRun, 1);
+    assert.equal(status.scheduler.running, false);
+    const run = status.history.runs.findLast((candidate) => candidate.source === "scheduler");
+    assert.equal(run.matched, 1);
+    assert.equal(run.deleted, 0);
+    assert.equal(run.errors, 0);
+
+    const health = await fetchJson(`${harness.baseUrl}/healthz`);
+    assert.equal(health.status, 200);
+    assert.equal(health.body.soldUploadCleanup.enabled, true);
+    assert.equal(health.body.soldUploadCleanup.dryRun, true);
+    await fs.access(path.join(harness.uploadRoot, upload.body.album.id, upload.body.photos[0].filename));
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("non-admin users cannot call destructive gallery cleanup or delete routes", async () => {
   const harness = await startTestServer({ inventoryCars: [TEST_CAR] });
 
@@ -1117,6 +1249,12 @@ test("non-admin users cannot call destructive gallery cleanup or delete routes",
     const cleanup = await postJsonWithCookie(harness, viewer.cookie, "/api/gallery/remove-sold-uploads", {});
     assert.equal(cleanup.status, 403);
     assert.match(cleanup.body.error, /Admin access required/i);
+
+    const status = await fetch(`${harness.baseUrl}/api/gallery/sold-cleanup/status`, {
+      headers: { Cookie: viewer.cookie, Accept: "application/json" },
+    });
+    assert.equal(status.status, 403);
+    assert.match((await status.json()).error, /Admin access required/i);
 
     const deleteAll = await deleteJsonWithCookie(harness, viewer.cookie, `/api/albums/${upload.body.album.id}/media`, {});
     assert.equal(deleteAll.status, 403);
@@ -1794,6 +1932,17 @@ async function postJsonWithCookie(harness, cookie, pathname, body) {
     status: response.status,
     body: await response.json(),
   };
+}
+
+async function waitForSoldCleanupHistory(harness, predicate) {
+  const deadline = Date.now() + 5000;
+  let latest = null;
+  while (Date.now() < deadline) {
+    latest = await getJson(harness, "/api/gallery/sold-cleanup/status");
+    if (latest.history?.runs?.some(predicate)) return latest;
+    await sleep(80);
+  }
+  throw new Error(`sold cleanup history did not match predicate: ${JSON.stringify(latest)}`);
 }
 
 async function writeInventoryMock(harness, cars) {
