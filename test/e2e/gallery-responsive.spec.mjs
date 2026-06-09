@@ -127,6 +127,7 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
     await page.locator(".album-card.is-unread .album-summary-button").first().click();
     await expect(page.locator(".album-posting-kit").first()).toBeVisible();
     await expect(page.locator(".album-media-strip").first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Delete Upload" })).toHaveCount(0);
 
     for (const viewport of VIEWPORTS) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
