@@ -42,6 +42,25 @@ const TEST_CAR = {
 };
 const TEST_ALBUM_ID = "car-used-2026-kia-seltos-x-line-awd-u6247a";
 const TEST_OBJECT_STORAGE_PREFIX = `inventory/15/used-vehicles/u6247a-${TEST_CAR.vin.toLowerCase()}`;
+const SOLD_CAR = {
+  dealershipId: "15",
+  inventoryTypeId: "2",
+  vin: "3KPF24AD1NE123456",
+  stockNumber: "SOLD123",
+  title: "Used 2022 Kia Forte LX",
+  year: "2022",
+  make: "Kia",
+  model: "Forte",
+  trim: "LX",
+  price: "$21,990",
+  odometer: "45,123 km",
+  exteriorColor: "Blue",
+  interiorColor: "Black",
+  bodyStyle: "Sedan",
+  fuelType: "Gas",
+  transmission: "Automatic",
+  detailUrl: "https://www.oregans.com/inventory/Used-2022-Kia-Forte-SOLD123/",
+};
 const MANUAL_CAR = {
   dealershipId: "15",
   inventoryTypeId: "2",
@@ -978,6 +997,137 @@ test("album inventory status marks O'Regan's vehicles that disappear from the fe
   }
 });
 
+test("sold upload cleanup deletes only missing O'Regan's albums and skips active or manual uploads", async () => {
+  const harness = await startTestServer({ inventoryCars: [TEST_CAR, SOLD_CAR] });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const activeUpload = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [{ filename: "active-front.jpg", type: "image/jpeg", body: jpegBytes("active-front") }],
+    });
+    assert.equal(activeUpload.status, 201);
+    const soldUpload = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: SOLD_CAR.vin,
+      photos: [{ filename: "sold-front.jpg", type: "image/jpeg", body: jpegBytes("sold-front") }],
+    });
+    assert.equal(soldUpload.status, 201);
+    const manualCreated = await postJson(harness, "/api/manual-inventory/cars", MANUAL_CAR);
+    assert.equal(manualCreated.status, 201);
+    const manualUpload = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      inventoryKey: manualCreated.body.car.inventoryKey,
+      photos: [{ filename: "manual-cleanup-front.jpg", type: "image/jpeg", body: jpegBytes("manual-cleanup-front") }],
+    });
+    assert.equal(manualUpload.status, 201);
+
+    await writeInventoryMock(harness, [TEST_CAR]);
+    const cleanup = await postJson(harness, "/api/gallery/remove-sold-uploads", {});
+    assert.equal(cleanup.status, 200);
+    assert.equal(cleanup.body.ok, true);
+    assert.equal(cleanup.body.scanned, 3);
+    assert.equal(cleanup.body.matched, 1);
+    assert.deepEqual(cleanup.body.deleted.map((album) => album.albumId), [soldUpload.body.album.id]);
+    assert.equal(cleanup.body.deleted[0].stockNumber, SOLD_CAR.stockNumber);
+    assert.equal(cleanup.body.deleted[0].status, "missing");
+    assert.equal(cleanup.body.deleted[0].reason, "inventory_missing");
+    assert.equal(cleanup.body.deleted[0].deletedMedia, 1);
+    assert.ok(cleanup.body.skipped.some((album) =>
+      album.albumId === activeUpload.body.album.id && album.reason === "inventory_active"
+    ));
+    assert.ok(cleanup.body.skipped.some((album) =>
+      album.albumId === manualUpload.body.album.id && album.reason === "manual_inventory"
+    ));
+    assert.equal(cleanup.body.errors.length, 0);
+
+    await assert.rejects(
+      fs.access(path.join(harness.uploadRoot, soldUpload.body.album.id, soldUpload.body.photos[0].filename)),
+      { code: "ENOENT" },
+    );
+    const soldMetadata = JSON.parse(await fs.readFile(path.join(harness.uploadRoot, soldUpload.body.album.id, ".photos.json"), "utf8"));
+    assert.deepEqual(soldMetadata, {});
+
+    const albumsAfterCleanup = await getJson(harness, "/api/albums");
+    assert.ok(albumsAfterCleanup.albums.some((album) => album.id === activeUpload.body.album.id));
+    assert.ok(albumsAfterCleanup.albums.some((album) => album.id === manualUpload.body.album.id));
+    assert.ok(!albumsAfterCleanup.albums.some((album) => album.id === soldUpload.body.album.id));
+
+    const scopedCleanup = await postJson(harness, "/api/gallery/remove-sold-uploads", { dealershipId: "15" });
+    assert.equal(scopedCleanup.status, 200);
+    assert.equal(scopedCleanup.body.scanned, 2);
+    assert.equal(scopedCleanup.body.deleted.length, 0);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("sold upload cleanup skips albums when O'Regan's inventory status is unknown", async () => {
+  const harness = await startTestServer({ inventoryCars: [TEST_CAR] });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const upload = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [{ filename: "unknown-front.jpg", type: "image/jpeg", body: jpegBytes("unknown-front") }],
+    });
+    assert.equal(upload.status, 201);
+
+    await fs.writeFile(harness.inventoryMockFile, "not-json\n");
+    const cleanup = await postJson(harness, "/api/gallery/remove-sold-uploads", {});
+    assert.equal(cleanup.status, 200);
+    assert.equal(cleanup.body.deleted.length, 0);
+    assert.equal(cleanup.body.skipped.length, 1);
+    assert.equal(cleanup.body.skipped[0].albumId, upload.body.album.id);
+    assert.equal(cleanup.body.skipped[0].reason, "inventory_status_unknown");
+    assert.equal(cleanup.body.skipped[0].status, "unknown");
+
+    await fs.access(path.join(harness.uploadRoot, upload.body.album.id, upload.body.photos[0].filename));
+    const albumsAfterCleanup = await getJson(harness, "/api/albums");
+    assert.ok(albumsAfterCleanup.albums.some((album) => album.id === upload.body.album.id));
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("non-admin users cannot call destructive gallery cleanup or delete routes", async () => {
+  const harness = await startTestServer({ inventoryCars: [TEST_CAR] });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const viewer = await createApprovedAccount(harness, {
+      username: "cleanup.viewer",
+      displayName: "Cleanup Viewer",
+      password: "cleanup-viewer-123",
+    });
+    const upload = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [{ filename: "blocked-delete-front.jpg", type: "image/jpeg", body: jpegBytes("blocked-delete-front") }],
+    });
+    assert.equal(upload.status, 201);
+
+    const cleanup = await postJsonWithCookie(harness, viewer.cookie, "/api/gallery/remove-sold-uploads", {});
+    assert.equal(cleanup.status, 403);
+    assert.match(cleanup.body.error, /Admin access required/i);
+
+    const deleteAll = await deleteJsonWithCookie(harness, viewer.cookie, `/api/albums/${upload.body.album.id}/media`, {});
+    assert.equal(deleteAll.status, 403);
+    assert.match(deleteAll.body.error, /Admin access required/i);
+
+    await fs.access(path.join(harness.uploadRoot, upload.body.album.id, upload.body.photos[0].filename));
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("signup invite links expire and block account creation after 24 hours", async () => {
   const harness = await startTestServer();
 
@@ -1495,7 +1645,7 @@ async function startTestServer({ env = {}, inventoryCars = [TEST_CAR] } = {}) {
   });
 
   await waitForHealth(baseUrl, child, () => output);
-  return { baseUrl, child, output: () => output, tempRoot, uploadRoot, tmpRoot, cookie: "" };
+  return { baseUrl, child, output: () => output, tempRoot, uploadRoot, tmpRoot, inventoryMockFile, cookie: "" };
 }
 
 async function stopTestServer(harness) {
@@ -1646,6 +1796,10 @@ async function postJsonWithCookie(harness, cookie, pathname, body) {
   };
 }
 
+async function writeInventoryMock(harness, cars) {
+  await fs.writeFile(harness.inventoryMockFile, `${JSON.stringify({ cars }, null, 2)}\n`);
+}
+
 async function putJsonWithCookie(harness, cookie, pathname, body) {
   const response = await fetch(`${harness.baseUrl}${pathname}`, {
     method: "PUT",
@@ -1778,10 +1932,14 @@ async function openSseCollector(harness, cookie, pathname, label) {
 }
 
 async function deleteJson(harness, pathname, body) {
+  return deleteJsonWithCookie(harness, harness.cookie, pathname, body);
+}
+
+async function deleteJsonWithCookie(harness, cookie, pathname, body) {
   const response = await fetch(`${harness.baseUrl}${pathname}`, {
     method: "DELETE",
     headers: {
-      Cookie: harness.cookie,
+      Cookie: cookie,
       Accept: "application/json",
       "Content-Type": "application/json",
     },

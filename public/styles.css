@@ -610,6 +610,18 @@ textarea:focus {
   gap: var(--spacing-12);
 }
 
+.gallery-cleanup-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.gallery-cleanup-button {
+  min-height: 40px;
+  white-space: normal;
+}
+
 .gallery-folder-card {
   position: relative;
   display: grid;
@@ -750,6 +762,7 @@ textarea:focus {
   display: flex;
   min-width: 0;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--spacing-12);
   border: 1px solid var(--color-stone-gray);
   padding: var(--spacing-8);
@@ -757,6 +770,7 @@ textarea:focus {
 }
 
 .gallery-folder-crumb {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--color-steel-gray);
@@ -765,6 +779,10 @@ textarea:focus {
   line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.gallery-folder-bar .gallery-cleanup-button {
+  margin-left: auto;
 }
 
 .gallery-filter-bar {
@@ -1660,6 +1678,16 @@ textarea:focus {
 .icon-text-button.subtle:hover {
   color: var(--color-cloud-white);
   background: var(--color-midnight-graphite);
+}
+
+.icon-text-button.danger {
+  border-color: var(--color-flame-orange);
+  color: var(--color-flame-orange);
+}
+
+.icon-text-button.danger:hover:not(:disabled) {
+  color: var(--color-cloud-white);
+  background: var(--color-flame-orange);
 }
 
 .icon-text-button {
