@@ -81,6 +81,9 @@ const manualInventoryPath = path.resolve(process.env.MANUAL_INVENTORY_PATH || pa
 const albumSeenPath = path.resolve(process.env.CARPOSTCLUB_ALBUM_SEEN_PATH || process.env.KONNER_ALBUM_SEEN_PATH || process.env.ALBUM_SEEN_PATH || path.join(path.dirname(uploadRoot), "album-seen.json"));
 const pushSubscriptionsPath = path.resolve(process.env.CARPOSTCLUB_PUSH_SUBSCRIPTIONS_PATH || process.env.KONNER_PUSH_SUBSCRIPTIONS_PATH || process.env.PUSH_SUBSCRIPTIONS_PATH || path.join(path.dirname(uploadRoot), "push-subscriptions.json"));
 const pushVapidKeysPath = path.resolve(process.env.CARPOSTCLUB_PUSH_VAPID_KEYS_PATH || process.env.KONNER_PUSH_VAPID_KEYS_PATH || process.env.PUSH_VAPID_KEYS_PATH || path.join(path.dirname(uploadRoot), "push-vapid-keys.json"));
+const soldUploadCleanupHistoryPath = path.resolve(process.env.CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_HISTORY_PATH
+  || process.env.KONNER_SOLD_UPLOAD_CLEANUP_HISTORY_PATH
+  || path.join(path.dirname(uploadRoot), "sold-upload-cleanup-history.json"));
 const releaseManifestPath = process.env.CARPOSTCLUB_RELEASE_MANIFEST || process.env.KONNER_RELEASE_MANIFEST || path.join(appRoot, "release-manifest.json");
 const maxFileBytes = positiveInteger(process.env.MAX_FILE_BYTES, 250 * 1024 * 1024);
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 100);
@@ -114,6 +117,13 @@ const authInviteLifetimeHours = positiveInteger(process.env.CARPOSTCLUB_AUTH_INV
 const authInviteLifetimeMs = authInviteLifetimeHours * 60 * 60 * 1000;
 const authSessionSecret = sessionSecret();
 const releaseInfo = await readReleaseInfo();
+const soldUploadCleanupConfig = Object.freeze({
+  enabled: parseBooleanEnv("CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_ENABLED", false),
+  intervalMs: positiveInteger(process.env.CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_INTERVAL_MS, 6 * 60 * 60 * 1000),
+  startupDelayMs: nonNegativeInteger(process.env.CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_STARTUP_DELAY_MS, 10 * 60 * 1000),
+  maxDeletionsPerRun: positiveInteger(process.env.CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_MAX_DELETIONS_PER_RUN, 25),
+  dryRun: parseBooleanEnv("CARPOSTCLUB_SOLD_UPLOAD_CLEANUP_DRY_RUN", false),
+});
 const thumbnailDirectoryName = ".thumbnails";
 const thumbnailMaxWidth = positiveInteger(process.env.THUMBNAIL_MAX_WIDTH, 640);
 const thumbnailMaxHeight = positiveInteger(process.env.THUMBNAIL_MAX_HEIGHT, 480);
@@ -189,7 +199,18 @@ let authInvitesWritePromise = Promise.resolve();
 let manualInventoryWritePromise = Promise.resolve();
 let albumSeenWritePromise = Promise.resolve();
 let pushSubscriptionsWritePromise = Promise.resolve();
+let soldUploadCleanupHistoryWritePromise = Promise.resolve();
 let openaiClient = null;
+const soldUploadCleanupScheduler = {
+  timer: null,
+  running: false,
+  nextRunAt: null,
+  lastStartedAt: null,
+  lastFinishedAt: null,
+  lastRunAt: null,
+  lastDeletedCount: 0,
+  lastError: null,
+};
 
 await fs.mkdir(uploadRoot, { recursive: true });
 await fs.mkdir(tmpRoot, { recursive: true });
@@ -203,6 +224,7 @@ await fs.mkdir(path.dirname(authUsersPath), { recursive: true });
 await fs.mkdir(path.dirname(authInvitesPath), { recursive: true });
 await fs.mkdir(path.dirname(pushSubscriptionsPath), { recursive: true });
 await fs.mkdir(path.dirname(pushVapidKeysPath), { recursive: true });
+await fs.mkdir(path.dirname(soldUploadCleanupHistoryPath), { recursive: true });
 
 marketplaceDescriptionsDb = openMarketplaceDescriptionsDatabase();
 const pushKeys = await resolvePushVapidKeys();
@@ -259,6 +281,7 @@ app.get("/healthz", (_req, res) => {
         prefix: objectStoragePrefix,
       } : null,
     },
+    soldUploadCleanup: soldUploadCleanupPublicStatus(),
     uptimeSeconds: Math.round(process.uptime()),
     shuttingDown: false,
     criticalOperationCount: 0,
@@ -277,6 +300,7 @@ app.get("/api/version", (_req, res) => {
       node: process.version,
       env: process.env.NODE_ENV || "development",
     },
+    soldUploadCleanup: soldUploadCleanupPublicStatus(),
   });
 });
 
@@ -617,6 +641,7 @@ app.post("/api/gallery/dealerships/:dealershipId/seen", requireAuth, async (req,
 });
 
 app.post("/api/gallery/remove-sold-uploads", requireAdmin, removeSoldUploads);
+app.get("/api/gallery/sold-cleanup/status", requireAdmin, soldUploadCleanupStatus);
 
 app.get("/api/me", requireAuth, async (req, res, next) => {
   try {
@@ -1223,57 +1248,159 @@ async function deleteAlbumMediaCollection(req, res, next) {
 
 async function removeSoldUploads(req, res, next) {
   try {
-    const dealership = cleanOptionalDealership(req.body?.dealershipId || req.query?.dealershipId);
-    const uploadedAlbums = await listAlbums();
-    const scopedAlbums = dealership
-      ? uploadedAlbums.filter((album) => albumDealershipKey(album) === dealership.id)
-      : uploadedAlbums;
-    const result = {
-      ok: true,
-      scanned: scopedAlbums.length,
-      matched: 0,
-      deleted: [],
-      skipped: [],
-      errors: [],
-      albums: [],
-    };
-
-    for (const album of scopedAlbums) {
-      const status = await inventoryStatusForAlbum(album);
-      const summary = soldUploadCleanupSummary(album, status);
-      const skipReason = soldUploadCleanupSkipReason(album, status);
-      if (skipReason) {
-        const skipped = { ...summary, reason: skipReason };
-        result.skipped.push(skipped);
-        result.albums.push({ ...skipped, action: "skipped" });
-        continue;
-      }
-
-      result.matched += 1;
-      try {
-        const deleted = await removeAlbumMediaCollection(album.id);
-        const deletedSummary = {
-          ...summary,
-          reason: status?.status === "missing" ? "inventory_missing" : "inventory_inactive",
-          deletedMedia: deleted.deleted,
-        };
-        result.deleted.push(deletedSummary);
-        result.albums.push({ ...deletedSummary, action: "deleted" });
-      } catch (error) {
-        const errorSummary = {
-          ...summary,
-          reason: "delete_failed",
-          error: error instanceof Error ? error.message : String(error),
-        };
-        result.errors.push(errorSummary);
-        result.albums.push({ ...errorSummary, action: "error" });
-      }
-    }
-
+    const result = await runLockedSoldUploadCleanup({
+      dealershipId: req.body?.dealershipId || req.query?.dealershipId,
+      dryRun: requestBoolean(req.body?.dryRun ?? req.query?.dryRun, false),
+      maxDeletionsPerRun: requestPositiveInteger(
+        req.body?.maxDeletionsPerRun ?? req.body?.maxDeletions ?? req.query?.maxDeletionsPerRun ?? req.query?.maxDeletions,
+        Number.POSITIVE_INFINITY,
+      ),
+      source: "admin-api",
+    });
     res.json(result);
   } catch (error) {
     next(error);
   }
+}
+
+async function soldUploadCleanupStatus(_req, res, next) {
+  try {
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      scheduler: soldUploadCleanupPublicStatus(),
+      history: await readSoldUploadCleanupHistory(),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function runLockedSoldUploadCleanup(options = {}, { skipIfRunning = false } = {}) {
+  if (soldUploadCleanupScheduler.running) {
+    if (skipIfRunning) return null;
+    throw httpError(409, "Sold upload cleanup is already running.");
+  }
+
+  soldUploadCleanupScheduler.running = true;
+  soldUploadCleanupScheduler.lastStartedAt = new Date().toISOString();
+  soldUploadCleanupScheduler.lastError = null;
+  try {
+    const result = await runSoldUploadCleanup(options);
+    soldUploadCleanupScheduler.lastFinishedAt = result.finishedAt;
+    soldUploadCleanupScheduler.lastRunAt = result.finishedAt;
+    soldUploadCleanupScheduler.lastDeletedCount = result.deleted.length;
+    await recordSoldUploadCleanupRun(result);
+    return result;
+  } catch (error) {
+    const finishedAt = new Date().toISOString();
+    soldUploadCleanupScheduler.lastFinishedAt = finishedAt;
+    soldUploadCleanupScheduler.lastRunAt = finishedAt;
+    soldUploadCleanupScheduler.lastDeletedCount = 0;
+    soldUploadCleanupScheduler.lastError = error instanceof Error ? error.message : String(error);
+    await recordSoldUploadCleanupRun({
+      ok: false,
+      source: cleanupSourceLabel(options.source || "unknown"),
+      dryRun: Boolean(options.dryRun),
+      startedAt: soldUploadCleanupScheduler.lastStartedAt,
+      finishedAt,
+      scanned: 0,
+      matched: 0,
+      deleted: [],
+      skipped: [],
+      errors: [{ reason: "run_failed", error: soldUploadCleanupScheduler.lastError }],
+      albums: [],
+    });
+    throw error;
+  } finally {
+    soldUploadCleanupScheduler.running = false;
+  }
+}
+
+async function runSoldUploadCleanup(options = {}) {
+  const startedAt = new Date().toISOString();
+  const dealership = cleanOptionalDealership(options.dealershipId);
+  const dryRun = Boolean(options.dryRun);
+  const maxDeletionsPerRun = Number.isFinite(options.maxDeletionsPerRun)
+    ? Math.max(0, Math.floor(options.maxDeletionsPerRun))
+    : Number.POSITIVE_INFINITY;
+  const source = cleanupSourceLabel(options.source || "manual");
+  const uploadedAlbums = await listAlbums();
+  const scopedAlbums = dealership
+    ? uploadedAlbums.filter((album) => albumDealershipKey(album) === dealership.id)
+    : uploadedAlbums;
+  const result = {
+    ok: true,
+    dryRun,
+    source,
+    startedAt,
+    finishedAt: null,
+    scanned: scopedAlbums.length,
+    matched: 0,
+    deleted: [],
+    skipped: [],
+    errors: [],
+    albums: [],
+  };
+
+  for (const album of scopedAlbums) {
+    const status = await inventoryStatusForAlbum(album);
+    const summary = soldUploadCleanupSummary(album, status);
+    const skipReason = soldUploadCleanupSkipReason(album, status);
+    if (skipReason) {
+      const skipped = { ...summary, reason: skipReason };
+      result.skipped.push(skipped);
+      result.albums.push({ ...skipped, action: "skipped" });
+      continue;
+    }
+
+    result.matched += 1;
+    const candidateSummary = {
+      ...summary,
+      reason: status?.status === "missing" ? "inventory_missing" : "inventory_inactive",
+    };
+
+    if (dryRun) {
+      result.albums.push({
+        ...candidateSummary,
+        action: "would_delete",
+        wouldDeleteMedia: summary.mediaCount,
+      });
+      continue;
+    }
+
+    if (result.deleted.length >= maxDeletionsPerRun) {
+      const skipped = {
+        ...candidateSummary,
+        reason: "max_deletions_reached",
+        wouldDeleteMedia: summary.mediaCount,
+      };
+      result.skipped.push(skipped);
+      result.albums.push({ ...skipped, action: "skipped" });
+      continue;
+    }
+
+    try {
+      const deleted = await removeAlbumMediaCollection(album.id);
+      const deletedSummary = {
+        ...candidateSummary,
+        deletedMedia: deleted.deleted,
+      };
+      result.deleted.push(deletedSummary);
+      result.albums.push({ ...deletedSummary, action: "deleted" });
+    } catch (error) {
+      const errorSummary = {
+        ...candidateSummary,
+        reason: "delete_failed",
+        error: error instanceof Error ? error.message : String(error),
+      };
+      result.errors.push(errorSummary);
+      result.albums.push({ ...errorSummary, action: "error" });
+    }
+  }
+
+  result.finishedAt = new Date().toISOString();
+  return result;
 }
 
 function soldUploadCleanupSkipReason(album, status = {}) {
@@ -1299,6 +1426,116 @@ function soldUploadCleanupSummary(album, status = {}) {
     mediaCount: Number(album?.mediaCount || 0),
     checkedAt: status.checkedAt || null,
   };
+}
+
+function startSoldUploadCleanupScheduler() {
+  if (!soldUploadCleanupConfig.enabled) return;
+  scheduleNextSoldUploadCleanup(soldUploadCleanupConfig.startupDelayMs);
+}
+
+function stopSoldUploadCleanupScheduler() {
+  if (soldUploadCleanupScheduler.timer) {
+    clearTimeout(soldUploadCleanupScheduler.timer);
+    soldUploadCleanupScheduler.timer = null;
+  }
+  soldUploadCleanupScheduler.nextRunAt = null;
+}
+
+function scheduleNextSoldUploadCleanup(delayMs = soldUploadCleanupConfig.intervalMs) {
+  stopSoldUploadCleanupScheduler();
+  const safeDelay = Math.max(0, Number(delayMs) || 0);
+  soldUploadCleanupScheduler.nextRunAt = new Date(Date.now() + safeDelay).toISOString();
+  soldUploadCleanupScheduler.timer = setTimeout(() => {
+    soldUploadCleanupScheduler.timer = null;
+    soldUploadCleanupScheduler.nextRunAt = null;
+    runScheduledSoldUploadCleanup().catch((error) => {
+      console.error("Sold upload cleanup scheduler failed:", error);
+    });
+  }, safeDelay);
+  soldUploadCleanupScheduler.timer.unref?.();
+}
+
+async function runScheduledSoldUploadCleanup() {
+  if (!soldUploadCleanupConfig.enabled) return;
+  try {
+    const result = await runLockedSoldUploadCleanup({
+      dryRun: soldUploadCleanupConfig.dryRun,
+      maxDeletionsPerRun: soldUploadCleanupConfig.maxDeletionsPerRun,
+      source: "scheduler",
+    }, { skipIfRunning: true });
+    if (result) logSoldUploadCleanupRun(result);
+  } finally {
+    scheduleNextSoldUploadCleanup(soldUploadCleanupConfig.intervalMs);
+  }
+}
+
+function soldUploadCleanupPublicStatus() {
+  return {
+    enabled: soldUploadCleanupConfig.enabled,
+    dryRun: soldUploadCleanupConfig.dryRun,
+    intervalMs: soldUploadCleanupConfig.intervalMs,
+    startupDelayMs: soldUploadCleanupConfig.startupDelayMs,
+    maxDeletionsPerRun: soldUploadCleanupConfig.maxDeletionsPerRun,
+    running: soldUploadCleanupScheduler.running,
+    nextRunAt: soldUploadCleanupScheduler.nextRunAt,
+    lastStartedAt: soldUploadCleanupScheduler.lastStartedAt,
+    lastFinishedAt: soldUploadCleanupScheduler.lastFinishedAt,
+    lastRunAt: soldUploadCleanupScheduler.lastRunAt,
+    lastDeletedCount: soldUploadCleanupScheduler.lastDeletedCount,
+    lastError: soldUploadCleanupScheduler.lastError,
+  };
+}
+
+async function readSoldUploadCleanupHistory() {
+  const store = await readJson(soldUploadCleanupHistoryPath, { runs: [] });
+  return {
+    runs: Array.isArray(store.runs) ? store.runs.slice(-20) : [],
+  };
+}
+
+async function recordSoldUploadCleanupRun(result) {
+  const audit = soldUploadCleanupAuditRecord(result);
+  soldUploadCleanupHistoryWritePromise = soldUploadCleanupHistoryWritePromise.catch(() => {}).then(async () => {
+    const history = await readSoldUploadCleanupHistory();
+    history.runs.push(audit);
+    history.runs = history.runs.slice(-20);
+    await writeJson(soldUploadCleanupHistoryPath, history);
+  });
+  return soldUploadCleanupHistoryWritePromise;
+}
+
+function soldUploadCleanupAuditRecord(result = {}) {
+  return {
+    ok: result.ok !== false,
+    source: cleanupSourceLabel(result.source || "unknown"),
+    dryRun: Boolean(result.dryRun),
+    startedAt: result.startedAt || null,
+    finishedAt: result.finishedAt || null,
+    scanned: Number(result.scanned || 0),
+    matched: Number(result.matched || 0),
+    deleted: Array.isArray(result.deleted) ? result.deleted.length : Number(result.deleted || 0),
+    skipped: Array.isArray(result.skipped) ? result.skipped.length : Number(result.skipped || 0),
+    errors: Array.isArray(result.errors) ? result.errors.length : Number(result.errors || 0),
+    deletedAlbums: Array.isArray(result.deleted)
+      ? result.deleted.map((album) => ({
+        albumId: album.albumId,
+        stockNumber: album.stockNumber,
+        title: album.title,
+        dealership: album.dealership,
+        reason: album.reason,
+        deletedMedia: album.deletedMedia,
+      }))
+      : [],
+  };
+}
+
+function logSoldUploadCleanupRun(result = {}) {
+  const audit = soldUploadCleanupAuditRecord(result);
+  console.log(`Sold upload cleanup run ${JSON.stringify(audit)}`);
+}
+
+function cleanupSourceLabel(value) {
+  return normalizeSpace(value || "unknown").replace(/[^a-z0-9._:-]+/gi, "-").slice(0, 80) || "unknown";
 }
 
 app.get("/api/chat/messages", requireAuth, async (req, res, next) => {
@@ -1409,8 +1646,10 @@ app.use(async (error, req, res, _next) => {
 const server = app.listen(port, host, () => {
   console.log(`${appName} listening on ${host}:${port}`);
 });
+startSoldUploadCleanupScheduler();
 
 process.on("SIGTERM", () => {
+  stopSoldUploadCleanupScheduler();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 30_000).unref();
 });
@@ -6310,9 +6549,25 @@ function parseBooleanEnv(name, fallback) {
   return /^(1|true|yes|on)$/i.test(value);
 }
 
+function requestBoolean(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  return /^(1|true|yes|on)$/i.test(String(value));
+}
+
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function nonNegativeInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function requestPositiveInteger(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return positiveInteger(value, fallback);
 }
 
 function uploadLimitHttpError(error) {
