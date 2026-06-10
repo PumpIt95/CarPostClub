@@ -393,7 +393,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260609-gallery-mobile-v57/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260610-gallery-unread-v58/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -1476,6 +1476,10 @@ test("push preview is self-only and admin dry-run reports dealership targets", a
     assert.equal(inventoryPreview.body.preview, true);
     assert.equal(inventoryPreview.body.payload.preview, true);
     assert.equal(inventoryPreview.body.payload.title, "New Kia inventory");
+    assert.equal(inventoryPreview.body.payload.type, "inventory_added");
+    assert.equal(inventoryPreview.body.payload.notificationType, "inventory_added");
+    assert.equal(inventoryPreview.body.payload.route, "vehicle_media_intake");
+    assert.match(inventoryPreview.body.payload.url, /^\//);
     assert.equal(inventoryPreview.body.delivery.requested, 1);
     assert.equal(inventoryPreview.body.delivery.skipped, 1);
     assert.equal(inventoryPreview.body.delivery.logged, 1);
@@ -1485,6 +1489,10 @@ test("push preview is self-only and admin dry-run reports dealership targets", a
     assert.equal(uploadPreview.body.payload.preview, true);
     assert.equal(uploadPreview.body.payload.title, "admin uploaded a car");
     assert.equal(uploadPreview.body.payload.body, "Photos added for STK123 - 2024 Kia Sportage.");
+    assert.equal(uploadPreview.body.payload.type, "media_upload");
+    assert.equal(uploadPreview.body.payload.notificationType, "media_upload");
+    assert.equal(uploadPreview.body.payload.route, "media_gallery");
+    assert.match(uploadPreview.body.payload.url, /^\/gallery\?/);
     assert.equal(uploadPreview.body.delivery.requested, 1);
     assert.equal(uploadPreview.body.delivery.skipped, 1);
     assert.equal(uploadPreview.body.delivery.logged, 1);
@@ -1920,7 +1928,14 @@ test("vehicle gallery unread state is tracked per user", async () => {
       assert.equal(event.uploadedBy.username, TEST_USERNAME);
       assert.equal(event.title, "admin uploaded a car");
       assert.match(event.body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
-      assert.equal(event.url, `/?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&openAlbum=1`);
+      assert.equal(event.type, "media_upload");
+      assert.equal(event.notificationType, "media_upload");
+      assert.equal(event.route, "media_gallery");
+      assert.equal(event.dealershipId, "15");
+      assert.equal(event.inventoryTypeId, "2");
+      assert.equal(event.inventoryKey, TEST_CAR.vin);
+      assert.equal(event.stockNumber, TEST_CAR.stockNumber);
+      assert.equal(event.url, `/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&albumId=${TEST_ALBUM_ID}&openAlbum=1`);
     }
 
     const adminGallery = await getJsonWithCookie(harness, harness.cookie, "/api/albums");
@@ -1936,15 +1951,22 @@ test("vehicle gallery unread state is tracked per user", async () => {
 
     const firstRead = await postJsonWithCookie(harness, firstViewer.cookie, "/api/gallery/dealerships/15/seen", {});
     assert.equal(firstRead.status, 200);
-    assert.equal(firstRead.body.marked, 1);
-    assert.equal(albumUnread(firstRead.body, TEST_ALBUM_ID), false);
-    assert.equal(firstRead.body.unreadTotal, 0);
+    assert.equal(firstRead.body.marked, 0);
+    assert.equal(firstRead.body.deprecated, true);
+    assert.equal(albumUnread(firstRead.body, TEST_ALBUM_ID), true);
+    assert.equal(firstRead.body.unreadTotal, 1);
 
     const firstAfterRead = await getJsonWithCookie(harness, firstViewer.cookie, "/api/albums");
     const secondAfterFirstRead = await getJsonWithCookie(harness, secondViewer.cookie, "/api/albums");
-    assert.equal(albumUnread(firstAfterRead, TEST_ALBUM_ID), false);
+    assert.equal(albumUnread(firstAfterRead, TEST_ALBUM_ID), true);
     assert.equal(albumUnread(secondAfterFirstRead, TEST_ALBUM_ID), true);
     assert.equal(secondAfterFirstRead.unreadTotal, 1);
+
+    const firstAlbumRead = await postJsonWithCookie(harness, firstViewer.cookie, `/api/albums/${TEST_ALBUM_ID}/seen`, {});
+    assert.equal(firstAlbumRead.status, 200);
+    assert.equal(firstAlbumRead.body.marked, 1);
+    assert.equal(albumUnread(firstAlbumRead.body, TEST_ALBUM_ID), false);
+    assert.equal(firstAlbumRead.body.unreadTotal, 0);
 
     const secondRead = await postJsonWithCookie(harness, secondViewer.cookie, `/api/albums/${TEST_ALBUM_ID}/seen`, {});
     assert.equal(secondRead.status, 200);
@@ -2030,19 +2052,27 @@ test("vehicle upload push notifications go to all approved push-enabled users ex
     assert.equal(kiaNotifications.notifications[0].title, "admin uploaded a car");
     assert.match(kiaNotifications.notifications[0].body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
     assert.equal(kiaNotifications.notifications[0].kind, "upload");
+    assert.equal(kiaNotifications.notifications[0].type, "media_upload");
+    assert.equal(kiaNotifications.notifications[0].notificationType, "media_upload");
+    assert.equal(kiaNotifications.notifications[0].route, "media_gallery");
     assert.equal(kiaNotifications.notifications[0].dealershipId, "15");
-    assert.equal(kiaNotifications.notifications[0].url, `/?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&openAlbum=1`);
+    assert.equal(kiaNotifications.notifications[0].inventoryTypeId, "2");
+    assert.equal(kiaNotifications.notifications[0].inventoryKey, TEST_CAR.vin);
+    assert.equal(kiaNotifications.notifications[0].stockNumber, TEST_CAR.stockNumber);
+    assert.equal(kiaNotifications.notifications[0].url, `/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&albumId=${TEST_ALBUM_ID}&openAlbum=1`);
 
     const gmNotifications = await waitForNotificationCount(harness, gmViewer.cookie, 1);
     assert.equal(gmNotifications.notifications[0].title, "admin uploaded a car");
     assert.match(gmNotifications.notifications[0].body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
     assert.equal(gmNotifications.notifications[0].kind, "upload");
+    assert.equal(gmNotifications.notifications[0].route, "media_gallery");
     assert.equal(gmNotifications.notifications[0].dealershipId, "15");
 
     const nissanNotifications = await waitForNotificationCount(harness, nissanViewer.cookie, 1);
     assert.equal(nissanNotifications.notifications[0].title, "admin uploaded a car");
     assert.match(nissanNotifications.notifications[0].body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
     assert.equal(nissanNotifications.notifications[0].kind, "upload");
+    assert.equal(nissanNotifications.notifications[0].route, "media_gallery");
     assert.equal(nissanNotifications.notifications[0].dealershipId, "15");
 
     const adminNotifications = await getJson(harness, "/api/notifications");
@@ -2092,8 +2122,9 @@ test("gm uploader is excluded while kia users receive the upload push", async ()
     assert.equal(adminNotifications.notifications[0].title, "Michael uploaded a car");
     assert.match(adminNotifications.notifications[0].body, /Photos added for UG9999 - 2024 Chevrolet Silverado Custom\./);
     assert.equal(adminNotifications.notifications[0].kind, "upload");
+    assert.equal(adminNotifications.notifications[0].route, "media_gallery");
     assert.equal(adminNotifications.notifications[0].dealershipId, "18");
-    assert.equal(adminNotifications.notifications[0].url, `/?dealershipId=18&inventoryTypeId=2&inventoryKey=${SNAPSHOT_NEW_CAR.vin}&openAlbum=1`);
+    assert.equal(adminNotifications.notifications[0].url, `/gallery?dealershipId=18&inventoryTypeId=2&inventoryKey=${SNAPSHOT_NEW_CAR.vin}&albumId=${uploaded.body.album.id}&openAlbum=1`);
 
     const michaelNotifications = await getJsonWithCookie(harness, michael.cookie, "/api/notifications");
     assert.equal(michaelNotifications.unreadCount, 0);

@@ -642,7 +642,8 @@ textarea:focus {
 
 .gallery-folder-card.has-unread {
   border-color: var(--color-midnight-graphite);
-  box-shadow: inset 4px 0 0 #e11937;
+  background: linear-gradient(180deg, #fff 0%, #fff7f8 100%);
+  box-shadow: inset 4px 0 0 #e11937, 0 10px 24px rgba(17, 17, 17, 0.08);
 }
 
 .gallery-folder-cover {
@@ -749,6 +750,7 @@ textarea:focus {
   min-width: 24px;
   height: 24px;
   border: 1px solid #ffffff;
+  border-radius: 999px;
   padding: 0 6px;
   color: #ffffff;
   background: #e11937;
@@ -817,8 +819,8 @@ textarea:focus {
 
 .app-shell.is-gallery-page .album-card.is-unread {
   border-color: var(--color-midnight-graphite);
-  background: #fff7f8;
-  box-shadow: inset 4px 0 0 #e11937;
+  background: linear-gradient(90deg, #fff5f7 0%, #ffffff 64%);
+  box-shadow: inset 4px 0 0 #e11937, 0 8px 18px rgba(17, 17, 17, 0.06);
 }
 
 .app-shell.is-gallery-page .album-card.is-collapsed {
@@ -835,14 +837,23 @@ textarea:focus {
   position: absolute;
   top: 8px;
   right: 8px;
-  border: 1px solid var(--color-midnight-graphite);
-  padding: 3px 7px;
+  min-height: 24px;
+  border: 1px solid #ffffff;
+  border-radius: 999px;
+  padding: 0 9px;
   color: #ffffff;
   background: #e11937;
   font-size: 11px;
   font-weight: var(--font-weight-bold);
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
   text-transform: uppercase;
+  box-shadow: 0 0 0 1px var(--color-midnight-graphite);
+}
+
+.app-shell.is-gallery-page .album-card.is-unread .album-summary-button {
+  padding-right: 92px;
 }
 
 .album-card.is-open {
@@ -2633,6 +2644,16 @@ textarea:focus {
     min-height: 28px;
     padding: 0 var(--spacing-8);
     font-size: 10px;
+  }
+
+  .app-shell.is-gallery-page .album-card.is-unread .album-summary-button {
+    padding-right: 78px;
+  }
+
+  .album-unread-badge {
+    min-height: 21px;
+    padding: 0 7px;
+    font-size: 9px;
   }
 
   .brand-mark {

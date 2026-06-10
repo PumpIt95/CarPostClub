@@ -756,13 +756,12 @@ app.get("/api/albums/stream", requireAuth, (req, res) => {
 app.post("/api/gallery/dealerships/:dealershipId/seen", requireAuth, async (req, res, next) => {
   try {
     const dealership = cleanDealershipId(req.params.dealershipId);
-    const albums = (await listAlbums()).filter((album) => albumDealershipKey(album) === dealership.id);
-    const marked = await markAlbumObjectsSeen(req.authUser, albums);
     const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
     res.json({
       ok: true,
       dealership,
-      marked,
+      marked: 0,
+      deprecated: true,
       albums: publicAlbums(gallery.albums),
       unreadTotal: gallery.unreadTotal,
     });
@@ -2271,12 +2270,15 @@ function inventoryRemovedPushPayload(album, inventoryStatus, timestamp) {
   const car = carFromAlbum(album);
   return {
     kind: "inventory_removed",
+    type: "inventory_removed",
+    notificationType: "inventory_removed",
+    route: "media_gallery",
     messageId: `inventory-removed-${album.id}-${Date.parse(timestamp) || Date.now()}`,
     albumId: album.id,
     title: "Inventory removed",
     body: `${label} is no longer in O'Regan's inventory. Mark any matching Facebook Marketplace listing sold.`,
     tag: `carpostclub-inventory-removed-${album.id}`.slice(0, 80),
-    url: vehicleDeepLink(car, { openAlbum: true }),
+    url: mediaGalleryDeepLink(car, { openAlbum: true, albumId: album.id }),
     timestamp,
     mediaCount: album.mediaCount || 0,
     dealershipId: car.dealership?.id || car.dealershipId,
@@ -4009,6 +4011,9 @@ function oregansInventoryAddedPushPayload(vehicles, timestamp) {
     : `${count} ${dealershipLabel} vehicles added: ${examples.join(", ")}${moreCount ? `, + ${moreCount} more` : ""}.`;
   return {
     kind: "inventory_added",
+    type: "inventory_added",
+    notificationType: "inventory_added",
+    route: "vehicle_media_intake",
     messageId: `inventory-added-${Date.parse(timestamp) || Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
     title: `New ${dealershipLabel} inventory`,
     body,
@@ -4018,6 +4023,7 @@ function oregansInventoryAddedPushPayload(vehicles, timestamp) {
       inventoryTypeId: first.inventoryTypeId,
     }),
     dealershipId: dealership?.id || normalizeAuthDealershipId(first.dealershipId),
+    inventoryTypeId: normalizeSpace(first.inventoryTypeId || defaultInventoryTypeId),
     timestamp,
   };
 }
@@ -6683,14 +6689,21 @@ async function appendNotificationLogEntries(payload, targetRecords) {
         body: cleanPayload.body,
         url: cleanPayload.url,
         kind: cleanPayload.kind,
+        type: cleanPayload.type,
+        route: cleanPayload.route,
+        notificationType: cleanPayload.notificationType,
         tag: cleanPayload.tag,
         messageId: cleanPayload.messageId,
+        uploadId: cleanPayload.uploadId,
         notificationId: id,
         albumId: cleanPayload.albumId,
         mediaCount: cleanPayload.mediaCount,
         author: cleanPayload.author,
         preview: cleanPayload.preview,
         dealershipId: cleanPayload.dealershipId,
+        inventoryTypeId: cleanPayload.inventoryTypeId,
+        inventoryKey: cleanPayload.inventoryKey,
+        stockNumber: cleanPayload.stockNumber,
         createdAt: cleanPayload.timestamp || now,
         receivedAt: existing?.receivedAt || now,
         readAt: existing?.readAt || "",
@@ -6946,13 +6959,19 @@ function previewPushPayload(input = {}, user = {}) {
     };
     return {
       kind,
+      type: "media_upload",
+      notificationType: "media_upload",
+      route: "media_gallery",
       preview: true,
       messageId,
       title: titleOverride || uploadPushTitle({ displayName: previewUploader, username: user?.username }),
       body: bodyOverride || uploadPushBody(previewCar),
       tag: `carpostclub-preview-${messageId}`,
-      url: vehicleDeepLink(previewCar, { openAlbum: true }),
+      url: mediaGalleryDeepLink(previewCar, { openAlbum: true }),
       dealershipId: dealership?.id || "",
+      inventoryTypeId: previewCar.inventoryTypeId,
+      inventoryKey: previewCar.inventoryKey,
+      stockNumber: previewCar.stockNumber,
       mediaCount: 12,
       author: previewUploader,
       timestamp: now,
@@ -6961,6 +6980,9 @@ function previewPushPayload(input = {}, user = {}) {
 
   return {
     kind,
+    type: "inventory_added",
+    notificationType: "inventory_added",
+    route: "vehicle_media_intake",
     preview: true,
     messageId,
     title: titleOverride || `New ${dealershipLabel} inventory`,
@@ -7025,13 +7047,20 @@ function uploadAlbumEventPayload(car, result, user) {
   const uploadedBy = publicAuthUser(user);
   return {
     kind: "upload",
+    type: "media_upload",
+    notificationType: "media_upload",
+    route: "media_gallery",
     uploadId: `upload-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`,
     albumId: album?.id || "",
     mediaCount,
     title: uploadPushTitle(uploadedBy),
     body: uploadPushBody(car || album?.vehicle),
     tag: `carpostclub-upload-${carInventoryNotificationKey(car)}`,
-    url: vehicleDeepLink(car, { openAlbum: true }),
+    url: mediaGalleryDeepLink(car, { openAlbum: true, albumId: album?.id || "" }),
+    dealershipId: car?.dealership?.id || car?.dealershipId,
+    inventoryTypeId: car?.inventoryTypeId || defaultInventoryTypeId,
+    inventoryKey: car?.inventoryKey || car?.manualInventoryId || car?.vin || "",
+    stockNumber: car?.stockNumber || "",
     uploadedBy,
     uploadedAt: new Date().toISOString(),
   };
@@ -7041,14 +7070,21 @@ function uploadPushPayload(car, mediaCount, uploadEvent = null) {
   const uploadedBy = uploadEvent?.uploadedBy || null;
   return {
     kind: "upload",
+    type: "media_upload",
+    notificationType: "media_upload",
+    route: "media_gallery",
     messageId: uploadEvent?.uploadId || `upload-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`,
+    uploadId: uploadEvent?.uploadId || "",
     albumId: uploadEvent?.albumId || "",
     mediaCount,
     title: uploadEvent?.title || uploadPushTitle(uploadedBy),
     body: uploadEvent?.body || uploadPushBody(car),
     tag: uploadEvent?.tag || `carpostclub-upload-${carInventoryNotificationKey(car)}`,
-    url: uploadEvent?.url || vehicleDeepLink(car, { openAlbum: true }),
+    url: uploadEvent?.url || mediaGalleryDeepLink(car, { openAlbum: true }),
     dealershipId: car?.dealership?.id || car?.dealershipId,
+    inventoryTypeId: car?.inventoryTypeId || defaultInventoryTypeId,
+    inventoryKey: car?.inventoryKey || car?.manualInventoryId || car?.vin || "",
+    stockNumber: car?.stockNumber || "",
     author: uploadedBy?.displayName || uploadedBy?.username || "",
     timestamp: uploadEvent?.uploadedAt || new Date().toISOString(),
   };
@@ -7097,16 +7133,27 @@ function carInventoryNotificationKey(car) {
 }
 
 function vehicleDeepLink(car, { openAlbum = false } = {}) {
+  const query = vehicleRouteParams(car, { openAlbum }).toString();
+  return query ? `/?${query}` : "/";
+}
+
+function mediaGalleryDeepLink(car, { openAlbum = false, albumId = "" } = {}) {
+  const query = vehicleRouteParams(car, { openAlbum, albumId }).toString();
+  return query ? `/gallery?${query}` : "/gallery";
+}
+
+function vehicleRouteParams(car, { openAlbum = false, albumId = "" } = {}) {
   const params = new URLSearchParams();
   const dealershipId = normalizeSpace(car?.dealership?.id || car?.dealershipId);
   const inventoryTypeId = normalizeSpace(car?.inventoryTypeId || defaultInventoryTypeId);
   const inventoryKey = normalizeSpace(car?.inventoryKey || car?.manualInventoryId || car?.vin);
+  const cleanAlbumIdValue = normalizeSpace(albumId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 120);
   if (dealershipId) params.set("dealershipId", dealershipId);
   if (inventoryTypeId) params.set("inventoryTypeId", inventoryTypeId);
   if (inventoryKey) params.set("inventoryKey", inventoryKey);
+  if (cleanAlbumIdValue) params.set("albumId", cleanAlbumIdValue);
   if (openAlbum) params.set("openAlbum", "1");
-  const query = params.toString();
-  return query ? `/?${query}` : "/";
+  return params;
 }
 
 function pushNotificationId(payload = {}) {
@@ -7133,13 +7180,20 @@ function publicNotificationRecord(record) {
     body: record.body,
     url: record.url,
     kind: record.kind,
+    type: record.type,
+    route: record.route,
+    notificationType: record.notificationType,
     tag: record.tag,
     messageId: record.messageId,
+    uploadId: record.uploadId,
     albumId: record.albumId,
     mediaCount: record.mediaCount,
     author: record.author,
     preview: Boolean(record.preview),
     dealershipId: record.dealershipId,
+    inventoryTypeId: record.inventoryTypeId,
+    inventoryKey: record.inventoryKey,
+    stockNumber: record.stockNumber,
     createdAt: record.createdAt,
     receivedAt: record.receivedAt,
     readAt: record.readAt,
@@ -7160,13 +7214,20 @@ function normalizeStoredNotification(record) {
     body: sanitizeChatMessageText(record.body, { truncate: true }).slice(0, 180) || `Open ${appName}.`,
     url: cleanNotificationPath(record.url, "/"),
     kind: normalizeSpace(record.kind).slice(0, 32),
+    type: normalizeNotificationToken(record.type || record.notificationType || record.kind),
+    route: normalizeNotificationToken(record.route),
+    notificationType: normalizeNotificationToken(record.notificationType || record.type || record.kind),
     tag: normalizeSpace(record.tag).slice(0, 80) || "carpostclub",
     messageId: cleanPushNotificationId(record.messageId),
+    uploadId: cleanPushNotificationId(record.uploadId),
     albumId: normalizeSpace(record.albumId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 120),
     mediaCount: positiveInteger(record.mediaCount, 0),
     author: record.author ? normalizeChatAuthor(record.author) : "",
     preview: Boolean(record.preview),
     dealershipId: normalizeAuthDealershipId(record.dealershipId),
+    inventoryTypeId: normalizeSpace(record.inventoryTypeId).slice(0, 32),
+    inventoryKey: normalizeSpace(record.inventoryKey).slice(0, 120),
+    stockNumber: normalizeSpace(record.stockNumber).slice(0, 80),
     createdAt: normalizeIsoDate(record.createdAt || record.timestamp) || now,
     receivedAt: normalizeIsoDate(record.receivedAt) || normalizeIsoDate(record.createdAt || record.timestamp) || now,
     readAt: normalizeIsoDate(record.readAt) || "",
@@ -7251,6 +7312,7 @@ function cleanPushPayload(payload = {}) {
   const timestamp = normalizeIsoDate(payload.timestamp);
   const messageId = cleanPushNotificationId(payload.messageId);
   const notificationId = cleanPushNotificationId(payload.notificationId || messageId);
+  const notificationType = normalizeNotificationToken(payload.notificationType || payload.type || kind);
   return {
     notificationId,
     title: normalizeSpace(payload.title).slice(0, 80) || appName,
@@ -7260,14 +7322,29 @@ function cleanPushPayload(payload = {}) {
     tag: normalizeSpace(payload.tag).slice(0, 80) || "carpostclub",
     url: cleanNotificationPath(payload.url, "/"),
     kind,
+    type: normalizeNotificationToken(payload.type || notificationType || kind),
+    route: normalizeNotificationToken(payload.route),
+    notificationType,
     messageId,
+    uploadId: cleanPushNotificationId(payload.uploadId),
     albumId: normalizeSpace(payload.albumId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 120),
     mediaCount: positiveInteger(payload.mediaCount, 0),
     author: payload.author ? normalizeChatAuthor(payload.author) : "",
     preview: Boolean(payload.preview),
     dealershipId: normalizeAuthDealershipId(payload.dealershipId || payload.dealership?.id),
+    inventoryTypeId: normalizeSpace(payload.inventoryTypeId).slice(0, 32),
+    inventoryKey: normalizeSpace(payload.inventoryKey).slice(0, 120),
+    stockNumber: normalizeSpace(payload.stockNumber).slice(0, 80),
     timestamp,
   };
+}
+
+function normalizeNotificationToken(value) {
+  return normalizeSpace(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
 }
 
 function cleanPushNotificationId(value) {
@@ -8796,7 +8873,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260609-gallery-mobile-v57">
+  <link rel="stylesheet" href="/styles.css?v=20260610-gallery-unread-v58">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">

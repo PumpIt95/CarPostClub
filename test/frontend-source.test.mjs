@@ -128,8 +128,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="galleryModelFilter"/);
   assert.match(html, /id="galleryYearFilter"/);
   assert.match(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260609-gallery-mobile-v57/);
-  assert.match(html, /\/styles\.css\?v=20260609-gallery-mobile-v57/);
+  assert.match(html, /\/app\.js\?v=20260610-gallery-unread-v58/);
+  assert.match(html, /\/styles\.css\?v=20260610-gallery-unread-v58/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -162,10 +162,12 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /galleryFolderStats/);
   assert.match(source, /galleryAlbumIsUnread/);
   assert.match(source, /openedUnreadAlbumIds/);
-  assert.match(source, /markGalleryDealershipSeen/);
   assert.match(source, /markGalleryAlbumSeen/);
-  assert.match(source, /\/api\/gallery\/dealerships\/\$\{encodeURIComponent\(dealershipId\)\}\/seen/);
+  assert.doesNotMatch(source, /markGalleryDealershipSeen/);
+  assert.doesNotMatch(source, /\/api\/gallery\/dealerships\/\$\{encodeURIComponent\(dealershipId\)\}\/seen/);
   assert.match(source, /\/api\/albums\/\$\{encodeURIComponent\(albumId\)\}\/seen/);
+  assert.match(source, /albumReadVersion/);
+  assert.match(source, /galleryAlbumWasOpenedLocally/);
   assert.match(source, /renderGalleryFilterBar/);
   assert.match(source, /gallerySearchInput/);
   assert.match(source, /galleryStatusFilter/);
@@ -488,7 +490,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v57/);
+  assert.match(serviceWorker, /carpostclub-pwa-v58/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -521,6 +523,97 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(serviceWorker, /albumId/);
   assert.match(serviceWorker, /mediaCount/);
   assert.match(serviceWorker, /Open chat/);
+});
+
+test("service worker routes media upload notifications to gallery and inventory notifications to intake", async () => {
+  const serviceWorker = await fs.readFile(serviceWorkerPath, "utf8");
+  const handlers = new Map();
+  const notifications = [];
+  let openedWindow = "";
+  const context = {
+    URL,
+    URLSearchParams,
+    console,
+    fetch: async () => ({ ok: true, json: async () => ({}) }),
+    caches: {
+      keys: async () => [],
+      delete: async () => true,
+      open: async () => ({
+        addAll: async () => {},
+        match: async () => null,
+        put: async () => {},
+      }),
+    },
+    Response: {
+      error: () => ({ status: 0, marker: "response-error" }),
+    },
+    self: {
+      location: { origin: "https://carpostclub.test" },
+      addEventListener: (type, handler) => {
+        handlers.set(type, handler);
+      },
+      clients: {
+        claim: async () => {},
+        matchAll: async () => [],
+        openWindow: async (url) => {
+          openedWindow = url;
+          return null;
+        },
+      },
+      registration: {
+        showNotification: async (title, options) => {
+          notifications.push({ title, options });
+        },
+      },
+      skipWaiting: async () => {},
+    },
+  };
+  vm.runInNewContext(serviceWorker, context);
+
+  const pushHandler = handlers.get("push");
+  assert.equal(typeof pushHandler, "function");
+
+  await dispatchPush(pushHandler, {
+    kind: "upload",
+    type: "media_upload",
+    route: "media_gallery",
+    title: "Upload ready",
+    url: "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&albumId=album-1&openAlbum=1",
+  });
+  assert.equal(notifications.at(-1).options.data.url, "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&albumId=album-1&openAlbum=1");
+
+  await dispatchPush(pushHandler, {
+    kind: "upload",
+    title: "Legacy upload",
+    url: "/?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&openAlbum=1",
+  });
+  assert.equal(notifications.at(-1).options.data.url, "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&openAlbum=1");
+
+  await dispatchPush(pushHandler, {
+    kind: "inventory_added",
+    title: "New inventory",
+    url: "/?dealershipId=15&inventoryTypeId=2",
+  });
+  assert.equal(notifications.at(-1).options.data.url, "/?dealershipId=15&inventoryTypeId=2");
+
+  const clickHandler = handlers.get("notificationclick");
+  assert.equal(typeof clickHandler, "function");
+  const clickEvent = {
+    action: "",
+    notification: {
+      data: {
+        kind: "upload",
+        url: "/?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&openAlbum=1",
+      },
+      close() {},
+    },
+    waitUntil(promise) {
+      this.promise = promise;
+    },
+  };
+  clickHandler(clickEvent);
+  await clickEvent.promise;
+  assert.equal(openedWindow, "https://carpostclub.test/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&openAlbum=1");
 });
 
 test("service worker repairs changed push subscriptions with authenticated endpoints", async () => {
@@ -908,7 +1001,7 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260609-gallery-mobile-v57/);
+  assert.match(source, /\/styles\.css\?v=20260610-gallery-unread-v58/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });
@@ -957,4 +1050,18 @@ function fetchEventFor(url, mode) {
       this.response = Promise.resolve(response);
     },
   };
+}
+
+async function dispatchPush(handler, payload) {
+  const event = {
+    data: {
+      json: () => payload,
+      text: () => JSON.stringify(payload),
+    },
+    waitUntil(promise) {
+      this.promise = promise;
+    },
+  };
+  handler(event);
+  await event.promise;
 }

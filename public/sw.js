@@ -1,6 +1,6 @@
 const APP_ICON = "/icons/carpostclub-icon-192.png";
 const APP_BADGE = "/icons/carpostclub-apple-touch-icon.png";
-const CACHE_VERSION = "carpostclub-pwa-v57";
+const CACHE_VERSION = "carpostclub-pwa-v58";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/offline.html",
@@ -61,17 +61,27 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("push", (event) => {
   const payload = parsePushPayload(event);
   const title = payload.title || "CarPostClub";
+  const targetUrl = notificationTargetPath(payload);
   const options = {
     body: payload.body || "Open CarPostClub.",
     icon: payload.icon || APP_ICON,
     badge: payload.badge || APP_BADGE,
     tag: payload.tag || "carpostclub",
     data: {
-      url: payload.url || "/",
+      url: targetUrl,
       kind: payload.kind || "",
+      type: payload.type || "",
+      route: payload.route || "",
+      notificationType: payload.notificationType || "",
       notificationId: payload.notificationId || payload.messageId || "",
+      uploadId: payload.uploadId || "",
       messageId: payload.messageId || "",
       albumId: payload.albumId || "",
+      dealershipId: payload.dealershipId || "",
+      inventoryTypeId: payload.inventoryTypeId || "",
+      inventoryKey: payload.inventoryKey || "",
+      stockNumber: payload.stockNumber || "",
+      mediaId: payload.mediaId || "",
       mediaCount: payload.mediaCount || 0,
       author: payload.author || "",
     },
@@ -89,7 +99,7 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   if (event.action === "dismiss") return;
-  const targetUrl = new URL(event.notification.data?.url || "/", self.location.origin).href;
+  const targetUrl = new URL(notificationTargetPath(event.notification.data || {}), self.location.origin).href;
 
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
@@ -135,6 +145,87 @@ function notificationActions(payload) {
       title: "Open chat",
     },
   ];
+}
+
+function notificationTargetPath(payload = {}) {
+  const explicitPath = cleanNavigationPath(payload.url);
+  const routePath = cleanNavigationPath(payload.route);
+  if (routePath) return routePath;
+
+  const route = notificationToken(payload.route);
+  if (route === "media_gallery" || route === "gallery") {
+    return mediaGalleryPath(payload, explicitPath);
+  }
+  if (route === "vehicle_media_intake" || route === "home" || route === "inventory") {
+    return intakePath(payload, explicitPath);
+  }
+
+  const type = notificationToken(payload.notificationType || payload.type || payload.kind);
+  if (type === "upload" || type === "media_upload" || type === "new_media_upload" || type === "inventory_removed") {
+    return mediaGalleryPath(payload, explicitPath);
+  }
+  if (type === "inventory_added" || type === "new_inventory") {
+    return intakePath(payload, explicitPath);
+  }
+
+  if (explicitPath) return explicitPath;
+  return "/";
+}
+
+function mediaGalleryPath(payload = {}, fallbackPath = "") {
+  const fallback = cleanNavigationPath(fallbackPath);
+  if (fallback.startsWith("/gallery")) return fallback;
+  const params = notificationParams(payload, fallback);
+  const query = params.toString();
+  return query ? `/gallery?${query}` : "/gallery";
+}
+
+function intakePath(payload = {}, fallbackPath = "") {
+  const fallback = cleanNavigationPath(fallbackPath);
+  if (fallback && !fallback.startsWith("/gallery")) return fallback;
+  const params = notificationParams(payload, fallback);
+  params.delete("albumId");
+  params.delete("openAlbum");
+  const query = params.toString();
+  return query ? `/?${query}` : "/";
+}
+
+function notificationParams(payload = {}, fallbackPath = "") {
+  const params = new URLSearchParams();
+  const fallback = cleanNavigationPath(fallbackPath);
+  const questionIndex = fallback.indexOf("?");
+  if (questionIndex >= 0) {
+    for (const [key, value] of new URLSearchParams(fallback.slice(questionIndex + 1))) {
+      if (value) params.set(key, value);
+    }
+  }
+  setParamIfMissing(params, "dealershipId", payload.dealershipId);
+  setParamIfMissing(params, "inventoryTypeId", payload.inventoryTypeId);
+  setParamIfMissing(params, "inventoryKey", payload.inventoryKey || payload.vin);
+  setParamIfMissing(params, "albumId", payload.albumId);
+  if (payload.stockNumber && !params.has("stockNumber")) params.set("stockNumber", String(payload.stockNumber).slice(0, 80));
+  if (payload.openAlbum || params.has("albumId")) params.set("openAlbum", "1");
+  return params;
+}
+
+function setParamIfMissing(params, key, value) {
+  const text = String(value || "").trim();
+  if (text && !params.has(key)) params.set(key, text.slice(0, 160));
+}
+
+function cleanNavigationPath(value) {
+  const text = String(value || "").trim();
+  if (!text || !text.startsWith("/") || text.startsWith("//")) return "";
+  return text.slice(0, 512);
+}
+
+function notificationToken(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
 }
 
 async function refreshPushSubscription(event) {

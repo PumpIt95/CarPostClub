@@ -128,6 +128,7 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
     await page.locator(".gallery-folder-card.has-unread", { hasText: "2 new" }).first().click();
     await expect(page.locator(".gallery-folder-bar")).toBeVisible();
     await expect(page.locator(".album-card.is-unread")).toHaveCount(2);
+    await expect(page.locator("#albumSectionSubhead")).toContainText("2 new");
     await expect(page.locator(".album-cover img").first()).toHaveAttribute("src", /\/thumbnail$/);
 
     for (const viewport of VIEWPORTS) {
@@ -140,11 +141,24 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
       await capture(page, `${viewport.name}-feed`);
     }
 
+    const firstSeenResponse = page.waitForResponse((response) => /\/api\/albums\/[^/]+\/seen$/.test(new URL(response.url()).pathname));
     await page.locator(".album-card.is-unread .album-summary-button").first().click();
+    await firstSeenResponse;
     await expect(page.locator(".album-posting-kit").first()).toBeVisible();
     await expect(page.locator(".album-media-strip").first()).toBeVisible();
+    await expect(page.locator(".album-card.is-unread")).toHaveCount(1);
+    await expect(page.locator("#albumSectionSubhead")).toContainText("1 new");
     await expect(page.getByRole("button", { name: "Delete Upload" })).toHaveCount(0);
     await expect(page.locator(".album-media-thumb img").first()).toHaveAttribute("src", /\/thumbnail$/);
+
+    await page.reload();
+    await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
+    const kiaUnreadFolder = page.locator(".gallery-folder-card.has-unread", { hasText: "O'Regan's Kia Halifax" });
+    await expect(kiaUnreadFolder).toContainText("1 new");
+    await kiaUnreadFolder.click();
+    await expect(page.locator(".gallery-folder-bar")).toBeVisible();
+    await expect(page.locator(".album-card.is-unread")).toHaveCount(1);
+    await expect(page.locator("#albumSectionSubhead")).toContainText("1 new");
 
     for (const viewport of VIEWPORTS) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -153,6 +167,16 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
       await assertControlTextFits(page);
       await capture(page, `${viewport.name}-expanded`);
     }
+
+    const secondSeenResponse = page.waitForResponse((response) => /\/api\/albums\/[^/]+\/seen$/.test(new URL(response.url()).pathname));
+    await page.locator(".album-card.is-unread .album-summary-button").first().click();
+    await secondSeenResponse;
+    await expect(page.locator(".album-posting-kit").first()).toBeVisible();
+    await expect(page.locator(".album-card.is-unread")).toHaveCount(0);
+    await expect(page.locator("#albumSectionSubhead")).not.toContainText("new");
+
+    await page.locator("[data-action='back-gallery-folders']").click();
+    await expect(page.locator(".gallery-folder-card.has-unread", { hasText: "O'Regan's Kia Halifax" })).toHaveCount(0);
   } finally {
     await stopTestServer(harness);
   }
@@ -617,7 +641,7 @@ test("live upload events refresh gallery without reload and keep duplicate lock 
     });
     expect(upload.status).toBe(201);
 
-    await expect(page.locator("#statusBar")).toContainText("1 file added for U7001");
+    await expect(page.locator("#statusBar")).toContainText("Photos added for U7001");
     await expect(page.locator(".gallery-folder-card.has-unread")).toContainText("1 new");
     await expect(page.locator(".gallery-folder-card.has-unread")).toContainText("O'Regan's Kia Halifax");
     expect(mainFrameNavigations).toBe(navigationsBeforeUpload);
