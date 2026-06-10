@@ -63,7 +63,7 @@ self.addEventListener("push", (event) => {
   const title = payload.title || "CarPostClub";
   const targetUrl = notificationTargetPath(payload);
   const options = {
-    body: payload.body || "Open CarPostClub.",
+    body: Object.prototype.hasOwnProperty.call(payload, "body") ? String(payload.body || "") : "Open CarPostClub.",
     icon: payload.icon || APP_ICON,
     badge: payload.badge || APP_BADGE,
     tag: payload.tag || "carpostclub",

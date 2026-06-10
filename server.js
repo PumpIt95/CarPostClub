@@ -3943,10 +3943,13 @@ async function queueInventoryAddedPushNotifications(vehicles, timestamp) {
   const deliveries = [];
   for (const [dealershipId, dealershipVehicles] of groups) {
     const targeting = await pushTargetingForDealership(dealershipId);
-    const delivery = await queuePushNotifications({
-      dealershipId,
-      payload: oregansInventoryAddedPushPayload(dealershipVehicles, timestamp),
-    });
+    const delivery = emptyPushDeliveryTotals();
+    for (const vehicle of dealershipVehicles) {
+      addPushDeliveryTotals(delivery, await queuePushNotifications({
+        dealershipId,
+        payload: oregansInventoryAddedPushPayload([vehicle], timestamp),
+      }));
+    }
     deliveries.push({
       dealershipId,
       label: targeting.label,
@@ -3955,6 +3958,29 @@ async function queueInventoryAddedPushNotifications(vehicles, timestamp) {
     });
   }
   return aggregatePushDeliveries(deliveries);
+}
+
+function emptyPushDeliveryTotals() {
+  return {
+    requested: 0,
+    delivered: 0,
+    failed: 0,
+    skipped: 0,
+    staleRemoved: 0,
+    retiredRemoved: 0,
+    logged: 0,
+  };
+}
+
+function addPushDeliveryTotals(total, delivery = {}) {
+  total.requested += Number(delivery.requested) || 0;
+  total.delivered += Number(delivery.delivered) || 0;
+  total.failed += Number(delivery.failed) || 0;
+  total.skipped += Number(delivery.skipped) || 0;
+  total.staleRemoved += Number(delivery.staleRemoved) || 0;
+  total.retiredRemoved += Number(delivery.retiredRemoved) || 0;
+  total.logged += Number(delivery.logged) || 0;
+  return total;
 }
 
 function vehiclesByTargetDealership(vehicles) {
@@ -4006,30 +4032,29 @@ function aggregatePushDeliveries(deliveries) {
 
 function oregansInventoryAddedPushPayload(vehicles, timestamp) {
   const cleanVehicles = Array.isArray(vehicles) ? vehicles.filter(Boolean) : [];
-  const count = cleanVehicles.length;
   const first = cleanVehicles[0] || {};
   const dealership = publicAuthDealership(first.dealershipId || first.dealership?.id || first.dealershipName);
   const dealershipLabel = dealership?.label || normalizeSpace(first.dealershipName) || "O'Regan's";
-  const examples = cleanVehicles.slice(0, 3).map(vehiclePushLabel).filter(Boolean);
-  const moreCount = Math.max(0, count - examples.length);
-  const body = count === 1
-    ? `${examples[0] || "Vehicle"} added.`
-    : `${count} ${dealershipLabel} vehicles added: ${examples.join(", ")}${moreCount ? `, + ${moreCount} more` : ""}.`;
+  const title = inventoryAddedPushText(first, dealershipLabel);
+  const timestampMs = Date.parse(timestamp) || Date.now();
+  const tagVehicleKey = inventoryAddedPushTagVehicleKey(first);
   return {
     kind: "inventory_added",
     type: "inventory_added",
     notificationType: "inventory_added",
     route: "vehicle_media_intake",
-    messageId: `inventory-added-${Date.parse(timestamp) || Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
-    title: `New ${dealershipLabel} inventory`,
-    body,
-    tag: `carpostclub-inventory-added-${dealership?.id || "unknown"}-${Date.parse(timestamp) || Date.now()}`,
+    messageId: `inventory-added-${timestampMs}-${tagVehicleKey}-${crypto.randomUUID().slice(0, 8)}`,
+    title,
+    body: "",
+    tag: `carpostclub-inventory-added-${dealership?.id || "unknown"}-${tagVehicleKey}-${timestampMs}`,
     url: vehicleDeepLink({
       dealershipId: dealership?.id || first.dealershipId,
       inventoryTypeId: first.inventoryTypeId,
     }),
     dealershipId: dealership?.id || normalizeAuthDealershipId(first.dealershipId),
     inventoryTypeId: normalizeSpace(first.inventoryTypeId || defaultInventoryTypeId),
+    inventoryKey: first.inventoryKey || first.vin || "",
+    stockNumber: first.stockNumber || "",
     timestamp,
   };
 }
@@ -6953,6 +6978,7 @@ function previewPushPayload(input = {}, user = {}) {
   const dealership = requestedDealership || userDealership || publicAuthDealership(shortcutDefaultDealershipId);
   const dealershipLabel = normalizeSpace(input.dealershipLabel).slice(0, 40) || dealership?.label || "CarPostClub";
   const titleOverride = normalizeSpace(input.title).slice(0, 80);
+  const hasBodyOverride = Object.hasOwn(input, "body");
   const bodyOverride = normalizeSpace(input.body).slice(0, 180);
 
   if (kind === "upload") {
@@ -6989,6 +7015,16 @@ function previewPushPayload(input = {}, user = {}) {
     };
   }
 
+  const sampleVehicle = previewVehicleSample(dealershipLabel);
+  const previewCar = {
+    dealershipId: dealership?.id || "",
+    inventoryTypeId: defaultInventoryTypeId,
+    inventoryKey: "a10412a",
+    stockNumber: "a10412a",
+    year: "2020",
+    make: sampleVehicle.make,
+    model: sampleVehicle.model,
+  };
   return {
     kind,
     type: "inventory_added",
@@ -6996,51 +7032,19 @@ function previewPushPayload(input = {}, user = {}) {
     route: "vehicle_media_intake",
     preview: true,
     messageId,
-    title: titleOverride || `New ${dealershipLabel} inventory`,
-    body: bodyOverride || defaultInventoryPreviewBody(dealershipLabel),
+    title: titleOverride || inventoryAddedPushText(previewCar, dealershipLabel),
+    body: "",
     tag: `carpostclub-preview-${messageId}`,
     url: vehicleDeepLink({
       dealershipId: dealership?.id || "",
       inventoryTypeId: defaultInventoryTypeId,
     }),
     dealershipId: dealership?.id || "",
+    inventoryTypeId: previewCar.inventoryTypeId,
+    inventoryKey: previewCar.inventoryKey,
+    stockNumber: previewCar.stockNumber,
     timestamp: now,
   };
-}
-
-function defaultInventoryPreviewBody(dealershipLabel) {
-  const examples = defaultInventoryPreviewExamples(dealershipLabel);
-  return `3 ${dealershipLabel} vehicles added: ${examples.join(", ")}.`;
-}
-
-function defaultInventoryPreviewExamples(dealershipLabel) {
-  const label = normalizeSpace(dealershipLabel).toLowerCase();
-  if (label === "gm") {
-    return [
-      "STK123 2024 Chevrolet Silverado",
-      "STK456 2023 GMC Sierra",
-      "STK789 2025 Chevrolet Equinox",
-    ];
-  }
-  if (label === "nissan") {
-    return [
-      "STK123 2024 Nissan Rogue",
-      "STK456 2023 Nissan Sentra",
-      "STK789 2025 Nissan Kicks",
-    ];
-  }
-  if (label === "vw") {
-    return [
-      "STK123 2024 Volkswagen Tiguan",
-      "STK456 2023 Volkswagen Jetta",
-      "STK789 2025 Volkswagen Atlas",
-    ];
-  }
-  return [
-    "STK123 2024 Kia Sportage",
-    "STK456 2023 Kia Forte",
-    "STK789 2025 Kia Seltos",
-  ];
 }
 
 function previewVehicleSample(dealershipLabel) {
@@ -7124,6 +7128,26 @@ function vehiclePushLabel(vehicle) {
   return normalizeSpace([stock, name].filter(Boolean).join(" ")) || "Vehicle";
 }
 
+function inventoryAddedPushText(vehicle, dealershipLabel = "") {
+  const make = displayVehicleWord(vehicle?.make || dealershipLabel || "Vehicle");
+  const stock = normalizeSpace(vehicle?.stockNumber || vehicle?.inventoryKey);
+  const year = normalizeSpace(vehicle?.year).replace(/[^0-9]/g, "");
+  const vehicleMake = displayVehicleWord(vehicle?.make || make);
+  const model = displayVehicleWords(vehicle?.model);
+  const details = [stock, year, vehicleMake, model].filter(Boolean).join(" ");
+  return normalizeSpace(`new ${make} Inventory ${details}`);
+}
+
+function inventoryAddedPushTagVehicleKey(vehicle) {
+  const key = normalizeSpace(vehicle?.stockNumber || vehicle?.inventoryKey || vehicle?.vin)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24);
+  if (key) return key;
+  return crypto.createHash("sha256").update(JSON.stringify(vehicle || {})).digest("hex").slice(0, 12);
+}
+
 function vehiclePushName(vehicle) {
   const structured = normalizeSpace([
     vehicle?.year,
@@ -7133,6 +7157,23 @@ function vehiclePushName(vehicle) {
   ].filter(Boolean).join(" "));
   if (structured) return structured;
   return normalizeSpace(vehicle?.title).replace(/^(Used|New|Certified)\s+/i, "");
+}
+
+function displayVehicleWords(value) {
+  return normalizeSpace(value)
+    .split(/\s+/)
+    .map(displayVehicleWord)
+    .join(" ");
+}
+
+function displayVehicleWord(value) {
+  const text = normalizeSpace(value);
+  if (!text) return "";
+  const upper = text.toUpperCase();
+  if (["BMW", "GM", "GMC", "MINI", "VW", "GT", "GTI", "EV", "EV6", "EV9", "CX-5", "CX-50", "CR-V", "HR-V"].includes(upper)) {
+    return upper;
+  }
+  return text.toLowerCase().replace(/(^|[-'./])([a-z0-9])/g, (match, prefix, char) => `${prefix}${char.toUpperCase()}`);
 }
 
 function carInventoryNotificationKey(car) {
@@ -7217,12 +7258,13 @@ function normalizeStoredNotification(record) {
   const id = cleanPushNotificationId(record.id || record.notificationId || record.messageId);
   if (!username || !id) return null;
   const now = new Date().toISOString();
+  const hasBody = Object.hasOwn(record, "body");
   return {
     id,
     username,
     notificationId: id,
     title: normalizeSpace(record.title).slice(0, 80) || appName,
-    body: sanitizeChatMessageText(record.body, { truncate: true }).slice(0, 180) || `Open ${appName}.`,
+    body: hasBody ? sanitizeChatMessageText(record.body, { truncate: true }).slice(0, 180) : `Open ${appName}.`,
     url: cleanNotificationPath(record.url, "/"),
     kind: normalizeSpace(record.kind).slice(0, 32),
     type: normalizeNotificationToken(record.type || record.notificationType || record.kind),
@@ -7324,10 +7366,11 @@ function cleanPushPayload(payload = {}) {
   const messageId = cleanPushNotificationId(payload.messageId);
   const notificationId = cleanPushNotificationId(payload.notificationId || messageId);
   const notificationType = normalizeNotificationToken(payload.notificationType || payload.type || kind);
+  const hasBody = Object.hasOwn(payload, "body");
   return {
     notificationId,
     title: normalizeSpace(payload.title).slice(0, 80) || appName,
-    body: sanitizeChatMessageText(payload.body, { truncate: true }).slice(0, 180) || `Open ${appName}.`,
+    body: hasBody ? sanitizeChatMessageText(payload.body, { truncate: true }).slice(0, 180) : `Open ${appName}.`,
     icon: cleanNotificationPath(payload.icon, "/icons/carpostclub-icon-192.png"),
     badge: cleanNotificationPath(payload.badge, "/icons/carpostclub-apple-touch-icon.png"),
     tag: normalizeSpace(payload.tag).slice(0, 80) || "carpostclub",
