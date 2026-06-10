@@ -160,6 +160,8 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /renderGalleryAlbumList/);
   assert.match(source, /galleryDealershipFolders/);
   assert.match(source, /renderGalleryFolderCard/);
+  assert.match(source, /albumsLoaded: false/);
+  assert.match(source, /Loading dealership folders/);
   assert.match(source, /galleryFolderStatusSummary/);
   assert.match(source, /galleryFolderStats/);
   assert.match(source, /galleryAlbumIsUnread/);
@@ -252,7 +254,7 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /clearInactivePhotoSharePreparations\(albumId\)/);
   assert.match(source, /clearAlbumPhotoSharePreparation\(albumId, "replace"\)/);
   assert.match(source, /preparePhotoShareFilesWithConcurrency/);
-  assert.match(source, /photoSharePreparationConcurrency = 2/);
+  assert.match(source, /photoSharePreparationConcurrency = 4/);
   assert.match(source, /photoShareDebugEnabled/);
   assert.match(source, /debugShare/);
   assert.match(source, /navigator-share-result/);
@@ -971,10 +973,12 @@ test("uploaded package albums show inventory status and mobile download controls
   assert.match(styles, /\.gallery-folder-cover/);
   assert.match(styles, /\.gallery-folder-cover\.has-logo/);
   assert.match(styles, /\.gallery-folder-cover\.has-logo img\.gallery-folder-logo/);
+  assert.match(styles, /object-fit: contain/);
   assert.match(styles, /\.gallery-folder-bar/);
   assert.match(styles, /\.gallery-folder-crumb/);
   assert.match(source, /logoUrl: dealership\.logoUrl/);
   assert.match(source, /gallery-folder-logo/);
+  assert.match(source, /if \(albumCoverThumbnailUrl\(latestAlbum\)\)/);
   assert.match(source, /\$\{folder\.name\} logo/);
   assert.match(styles, /\.app-shell\.is-gallery-page \.album-card\.is-collapsed/);
   assert.match(styles, /\.app-shell\.is-gallery-page \.album-card\.is-unread/);

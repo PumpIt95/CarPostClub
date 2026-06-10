@@ -689,9 +689,11 @@ textarea:focus {
 }
 
 .gallery-folder-cover.has-logo img.gallery-folder-logo {
+  box-sizing: border-box;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  padding: var(--spacing-12);
 }
 
 .gallery-folder-cover img + * {

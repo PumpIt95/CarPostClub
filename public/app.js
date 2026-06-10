@@ -50,6 +50,7 @@ const state = {
   galleryFocusAlbumId: "",
   expandedAlbumId: safeStorageGet("carpostclub.expandedAlbumId"),
   albumsLoading: false,
+  albumsLoaded: false,
   openedUnreadAlbumIds: new Map(),
   inventoryFetchedAt: "",
   failedUploadFiles: [],
@@ -89,7 +90,7 @@ const hapticNotificationTypes = {
 };
 const pushPromptStorageKey = "carpostclub.pushPromptAsked";
 const photoSharePreparationTimeoutMs = Number(window.__CARPOSTCLUB_PHOTO_SHARE_PREPARATION_TIMEOUT_MS || 20000);
-const photoSharePreparationConcurrency = 2;
+const photoSharePreparationConcurrency = 4;
 const photoShareDebugEnabled = new URLSearchParams(window.location.search).get("debugShare") === "1";
 const hapticSelector = [
   "button:not(:disabled)",
@@ -1798,6 +1799,7 @@ async function loadAlbums() {
   renderAlbumList();
   try {
     const response = await apiJson("/api/albums");
+    state.albumsLoaded = true;
     applyAlbumsResponse(response);
     renderAlbumList();
   } finally {
@@ -2026,6 +2028,15 @@ function renderGalleryAlbumList() {
     persistAccountPreferences();
   }
   renderGalleryFilterBar(selectedFolder);
+
+  if (!state.albumsLoaded && !state.albums.length) {
+    els.albumList.classList.remove("is-folder-grid", "is-folder-open");
+    els.albumCount.textContent = "...";
+    els.albumEmpty.textContent = "Loading dealership folders";
+    els.albumEmpty.hidden = false;
+    els.albumList.replaceChildren();
+    return;
+  }
 
   if (!state.galleryDealershipId) {
     const folders = galleryDealershipFolders();
@@ -2326,19 +2337,19 @@ function renderGalleryFolderCard(folder) {
   button.classList.toggle("has-unread", stats.unread > 0);
   const cover = document.createElement("span");
   cover.className = "gallery-folder-cover";
-  if (folder.logoUrl) {
+  if (albumCoverThumbnailUrl(latestAlbum)) {
+    const image = document.createElement("img");
+    image.src = albumCoverThumbnailUrl(latestAlbum);
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    cover.append(image);
+  } else if (folder.logoUrl) {
     cover.classList.add("has-logo");
     const image = document.createElement("img");
     image.className = "gallery-folder-logo";
     image.src = folder.logoUrl;
     image.alt = `${folder.name} logo`;
-    image.loading = "lazy";
-    image.decoding = "async";
-    cover.append(image);
-  } else if (albumCoverThumbnailUrl(latestAlbum)) {
-    const image = document.createElement("img");
-    image.src = albumCoverThumbnailUrl(latestAlbum);
-    image.alt = "";
     image.loading = "lazy";
     image.decoding = "async";
     cover.append(image);

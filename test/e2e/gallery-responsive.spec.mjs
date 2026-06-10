@@ -113,6 +113,9 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
     await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
     await expect(page.getByRole("button", { name: "Remove sold uploads" })).toHaveCount(0);
     await expect(page.locator(".gallery-folder-card.has-unread")).toHaveCount(2);
+    const firstUnreadFolderCover = page.locator(".gallery-folder-card.has-unread").first().locator(".gallery-folder-cover img");
+    await expect(firstUnreadFolderCover).toHaveAttribute("src", /\/thumbnail$/);
+    await expect(firstUnreadFolderCover).not.toHaveClass(/gallery-folder-logo/);
 
     for (const viewport of VIEWPORTS) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -658,6 +661,60 @@ test("live upload events refresh gallery without reload and keep duplicate lock 
     const duplicateResult = page.locator(`#carSearchResults [data-inventory-key="${liveCar.vin}"]`);
     await expect(duplicateResult).toBeDisabled();
     await expect(duplicateResult).toContainText("Already uploaded");
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("live upload appears while a dealership gallery folder is already open", async ({ page }) => {
+  const harness = await startTestServer();
+  const existingCar = INVENTORY_CARS[0];
+  const liveCar = INVENTORY_CARS[1];
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    await createApprovedAccount(harness, VIEWER);
+    await uploadPhotos(harness, {
+      dealershipId: existingCar.dealershipId,
+      inventoryTypeId: existingCar.inventoryTypeId,
+      vin: existingCar.vin,
+      photos: [
+        {
+          filename: "existing-folder-front.png",
+          type: "image/png",
+          body: pngBytes(0)
+        }
+      ]
+    });
+    await loginWithPage(page, harness.baseUrl, VIEWER.username, VIEWER.password);
+
+    const streamRequest = page.waitForRequest((request) => request.url().endsWith("/api/albums/stream"));
+    await page.goto(`${harness.baseUrl}/gallery`);
+    await streamRequest;
+    await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
+    await page.locator(".gallery-folder-card", { hasText: "O'Regan's Kia Halifax" }).click();
+    await expect(page.locator(".album-card", { hasText: existingCar.stockNumber })).toBeVisible();
+    await expect(page.locator(".album-card", { hasText: liveCar.stockNumber })).toHaveCount(0);
+
+    const upload = await uploadPhotosWithCookie(harness, harness.cookie, {
+      dealershipId: liveCar.dealershipId,
+      inventoryTypeId: liveCar.inventoryTypeId,
+      vin: liveCar.vin,
+      photos: [
+        {
+          filename: "folder-open-live-front.png",
+          type: "image/png",
+          body: pngBytes(1)
+        }
+      ]
+    });
+    expect(upload.status).toBe(201);
+
+    const liveAlbum = page.locator(".album-card", { hasText: liveCar.stockNumber });
+    await expect(page.locator("#albumSectionTitle")).toHaveText("O'Regan's Kia Halifax");
+    await expect(liveAlbum).toBeVisible();
+    await expect(liveAlbum).toContainText("New Post");
+    await expect(liveAlbum.locator(".album-cover img")).toHaveAttribute("src", /\/thumbnail$/);
   } finally {
     await stopTestServer(harness);
   }
