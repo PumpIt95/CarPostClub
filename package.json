@@ -9,6 +9,9 @@
     "build:manifest": "node scripts/build_release_manifest.mjs",
     "qa:gallery": "node scripts/gallery_visual_qa.mjs",
     "smoke": "node scripts/smoke_test.mjs",
+    "backup:state": "node scripts/backup_state.mjs",
+    "restore:check": "node scripts/restore_state_check.mjs",
+    "monitor:production": "node scripts/production_monitor.mjs",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "playwright test"
   },

@@ -37,7 +37,9 @@ await checkText("/", authHeaders, (body) => {
 await checkJson("/api/albums", authHeaders, (body) => {
   assert(body.ok === true, "albums ok flag is false");
   assert(Array.isArray(body.albums), "albums response did not include albums[]");
-  assert(typeof body.uploadRoot === "string" && body.uploadRoot.length > 0, "albums response did not include uploadRoot");
+  assert(!Object.hasOwn(body, "uploadRoot"), "albums response exposed uploadRoot");
+  assert(!Object.hasOwn(body, "mediaDriver"), "albums response exposed mediaDriver");
+  assert(body.albums.every((album) => !Object.hasOwn(album, "storage") && !Object.hasOwn(album, "objectStoragePrefix")), "albums response exposed storage internals");
 });
 
 await checkJson("/api/inventory/dealerships", authHeaders, (body) => {
@@ -53,6 +55,27 @@ await checkJson("/api/inventory/cars?dealershipId=15&inventoryTypeId=2", authHea
   assert(Array.isArray(body.cars), "cars response did not include cars[]");
 });
 
+await checkJson("/api/inventory/snapshots/status", authHeaders, (body) => {
+  assert(body.ok === true, "snapshot status ok flag is false");
+  assert(typeof body.enabled === "boolean", "snapshot status did not include enabled boolean");
+  assert(Array.isArray(body.presentCounts), "snapshot status did not include presentCounts[]");
+});
+
+await checkJson("/api/inventory/snapshots/added?date=today&limit=1", authHeaders, (body) => {
+  assert(body.ok === true, "snapshot added ok flag is false");
+  assert(typeof body.since === "string" && body.since.length > 0, "snapshot added did not include since");
+  assert(Array.isArray(body.vehicles), "snapshot added did not include vehicles[]");
+});
+
+const shortcutToken = process.env.CARPOSTCLUB_SHORTCUTS_BEARER_TOKEN || process.env.KONNER_SHORTCUTS_BEARER_TOKEN || "";
+if (shortcutToken) {
+  await checkStatus("/api/shortcuts/inventory-albums", {}, 401);
+  await checkJson("/api/shortcuts/inventory-albums", { Authorization: `Bearer ${shortcutToken}` }, (body) => {
+    assert(body.ok === true, "authorized shortcut inventory ok flag is false");
+    assert(Array.isArray(body.items), "authorized shortcut inventory did not include items[]");
+  });
+}
+
 console.log(JSON.stringify({
   ok: true,
   baseUrl: baseUrl.toString(),
@@ -63,6 +86,7 @@ async function checkJson(pathname, headers, validate) {
   const response = await request(pathname, headers);
   const text = await response.text();
   assert(response.ok, `${pathname} returned ${response.status}: ${text.slice(0, 200)}`);
+  assertSecurityHeaders(response, pathname);
   let body;
   try {
     body = JSON.parse(text);
@@ -77,8 +101,17 @@ async function checkText(pathname, headers, validate) {
   const response = await request(pathname, headers);
   const text = await response.text();
   assert(response.ok, `${pathname} returned ${response.status}: ${text.slice(0, 200)}`);
+  assertSecurityHeaders(response, pathname);
   validate(text);
   checks.push({ path: pathname, status: response.status, type: "text" });
+}
+
+async function checkStatus(pathname, headers, expectedStatus) {
+  const response = await request(pathname, headers);
+  const text = await response.text();
+  assert(response.status === expectedStatus, `${pathname} returned ${response.status}; expected ${expectedStatus}: ${text.slice(0, 200)}`);
+  assertSecurityHeaders(response, pathname);
+  checks.push({ path: pathname, status: response.status, type: "status" });
 }
 
 async function request(pathname, headers) {
@@ -88,6 +121,13 @@ async function request(pathname, headers) {
     redirect: "manual",
     signal: AbortSignal.timeout(args.timeoutMs || 10000),
   });
+}
+
+function assertSecurityHeaders(response, pathname) {
+  assert(response.headers.get("x-content-type-options") === "nosniff", `${pathname} missing X-Content-Type-Options`);
+  assert(response.headers.get("x-frame-options") === "DENY", `${pathname} missing X-Frame-Options`);
+  assert(response.headers.get("referrer-policy") === "same-origin", `${pathname} missing Referrer-Policy`);
+  assert(/frame-ancestors 'none'/.test(response.headers.get("content-security-policy") || ""), `${pathname} missing CSP frame-ancestors`);
 }
 
 function buildAuthHeaders() {

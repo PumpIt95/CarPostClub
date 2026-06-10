@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expect, test } from "@playwright/test";
+import sharp from "sharp";
 
 const appRoot = fileURLToPath(new URL("../../", import.meta.url));
 const TEST_USERNAME = "admin";
@@ -18,6 +19,18 @@ const VIEWER = {
   password: "gallery-viewer-123"
 };
 const SCREENSHOT_DIR = process.env.CARPOSTCLUB_E2E_SCREENSHOT_DIR || "";
+const TEST_PNG_BYTES = await Promise.all([
+  { r: 255, g: 255, b: 255 },
+  { r: 40, g: 120, b: 255 },
+  { r: 40, g: 180, b: 110 }
+].map((background) => sharp({
+  create: {
+    width: 1,
+    height: 1,
+    channels: 3,
+    background
+  }
+}).png().toBuffer()));
 
 const INVENTORY_CARS = [
   {
@@ -83,6 +96,7 @@ const VIEWPORTS = [
   { name: "desktop", width: 1440, height: 900 },
   { name: "laptop", width: 1280, height: 800 },
   { name: "tablet", width: 820, height: 1180 },
+  { name: "iphone-16", width: 393, height: 852 },
   { name: "mobile", width: 390, height: 844 },
   { name: "compact-mobile", width: 360, height: 740 }
 ];
@@ -107,6 +121,7 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
       await assertGalleryFits(page);
       await assertBadgeInsideCard(page, ".gallery-folder-card.has-unread", ".gallery-unread-badge");
       await assertControlTextFits(page);
+      if (viewport.name === "iphone-16") await assertDealershipFoldersFitFirstViewport(page);
       await capture(page, `${viewport.name}-folders`);
     }
 
@@ -138,6 +153,23 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
       await assertControlTextFits(page);
       await capture(page, `${viewport.name}-expanded`);
     }
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("admin gallery folder overview fits four dealerships in an iPhone 16 first viewport", async ({ page }) => {
+  const harness = await startTestServer();
+  try {
+    await loginWithPage(page, harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
+    await page.setViewportSize({ width: 393, height: 852 });
+    await page.goto(`${harness.baseUrl}/gallery`);
+    await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
+    await expect(page.locator(".gallery-folder-card")).toHaveCount(4);
+    await expect(page.locator("#notificationPrompt")).toBeHidden();
+    await assertGalleryFits(page);
+    await assertControlTextFits(page);
+    await assertDealershipFoldersFitFirstViewport(page);
   } finally {
     await stopTestServer(harness);
   }
@@ -757,6 +789,26 @@ async function assertControlTextFits(page) {
   expect(overflowingControls, JSON.stringify(overflowingControls, null, 2)).toEqual([]);
 }
 
+async function assertDealershipFoldersFitFirstViewport(page) {
+  const metrics = await page.locator(".gallery-folder-card").evaluateAll((cards) => ({
+    viewportHeight: window.innerHeight,
+    cards: cards.slice(0, 4).map((card) => {
+      const box = card.getBoundingClientRect();
+      return {
+        text: String(card.textContent || "").replace(/\s+/g, " ").trim(),
+        top: Math.round(box.top),
+        bottom: Math.round(box.bottom)
+      };
+    })
+  }));
+
+  expect(metrics.cards.length, JSON.stringify(metrics, null, 2)).toBe(4);
+  expect(
+    metrics.cards.every((card) => card.top >= -1 && card.bottom <= metrics.viewportHeight + 1),
+    JSON.stringify(metrics, null, 2)
+  ).toBe(true);
+}
+
 async function capture(page, name) {
   if (!SCREENSHOT_DIR) return;
   await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
@@ -923,12 +975,7 @@ async function uploadPhotosWithCookie(harness, cookie, { dealershipId, inventory
 }
 
 function pngBytes(index) {
-  const images = [
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mP8/58BAAQBAf9Si9VPAAAAAElFTkSuQmCC",
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR42mNk+M8AAwUBAcqX6m4AAAAASUVORK5CYII="
-  ];
-  return Buffer.from(images[index % images.length], "base64");
+  return Buffer.from(TEST_PNG_BYTES[index % TEST_PNG_BYTES.length]);
 }
 
 async function freePort() {

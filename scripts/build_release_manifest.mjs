@@ -53,9 +53,27 @@ async function collectFiles(directory, prefix = "") {
 }
 
 function shouldSkip(name, isDirectory) {
-  if (name === ".DS_Store" || name === ".env" || name === "release-manifest.json") return true;
+  if (
+    name === ".DS_Store"
+    || name.startsWith("._")
+    || name === ".env"
+    || name === "CHROME_TABS.md"
+    || name === "chrome-tab-registry.sqlite"
+    || name.startsWith("facebook-marketplace-messages") && name.endsWith(".sqlite")
+    || name === "playwright.config.mjs"
+    || name === "production-inventory-current.json"
+    || name === "release-manifest.json"
+  ) return true;
   if (!isDirectory) return false;
-  return name === ".git" || name === "node_modules" || name === "backups" || name === "releases";
+  return name === ".git"
+    || name === "node_modules"
+    || name === ".automation-locks"
+    || name === "automation-runs"
+    || name === "backups"
+    || name === "releases"
+    || name === "test"
+    || name === "test-results"
+    || name === "playwright-report";
 }
 
 function toPosixPath(value) {

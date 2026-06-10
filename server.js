@@ -33,6 +33,7 @@ dotenv.config({ path: path.join(appRoot, ".env"), quiet: true });
 dotenv.config({ quiet: true });
 
 const app = express();
+const nodeEnv = process.env.NODE_ENV || "development";
 const port = Number(process.env.PORT || 3911);
 const host = process.env.HOST || "127.0.0.1";
 const uploadRoot = path.resolve(process.env.UPLOAD_ROOT || "/var/lib/carpostclub/uploads");
@@ -40,6 +41,9 @@ const tmpRoot = path.resolve(process.env.TMP_ROOT || "/var/lib/carpostclub/tmp")
 const marketplaceDescriptionsDbPath = path.resolve(process.env.CARPOSTCLUB_MARKETPLACE_DESCRIPTIONS_DB_PATH
   || process.env.MARKETPLACE_DESCRIPTIONS_DB_PATH
   || path.join(path.dirname(uploadRoot), "marketplace-descriptions.sqlite"));
+const oregansInventorySnapshotsDbPath = path.resolve(process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOTS_DB_PATH
+  || process.env.OREGANS_INVENTORY_SNAPSHOTS_DB_PATH
+  || path.join(path.dirname(uploadRoot), "oregans-inventory-snapshots.sqlite"));
 const objectStorageBucket = process.env.CARPOSTCLUB_S3_BUCKET || process.env.HETZNER_OBJECT_STORAGE_BUCKET || "";
 const objectStorageRegion = process.env.CARPOSTCLUB_S3_REGION || process.env.HETZNER_OBJECT_STORAGE_REGION || "fsn1";
 const objectStorageEndpoint = process.env.CARPOSTCLUB_S3_ENDPOINT
@@ -83,7 +87,9 @@ const pushSubscriptionsPath = path.resolve(process.env.CARPOSTCLUB_PUSH_SUBSCRIP
 const pushVapidKeysPath = path.resolve(process.env.CARPOSTCLUB_PUSH_VAPID_KEYS_PATH || process.env.KONNER_PUSH_VAPID_KEYS_PATH || process.env.PUSH_VAPID_KEYS_PATH || path.join(path.dirname(uploadRoot), "push-vapid-keys.json"));
 const notificationLogPath = path.resolve(process.env.CARPOSTCLUB_NOTIFICATION_LOG_PATH || process.env.KONNER_NOTIFICATION_LOG_PATH || process.env.NOTIFICATION_LOG_PATH || path.join(path.dirname(uploadRoot), "notification-log.json"));
 const inventoryLifecyclePath = path.resolve(process.env.CARPOSTCLUB_INVENTORY_LIFECYCLE_PATH || process.env.KONNER_INVENTORY_LIFECYCLE_PATH || process.env.INVENTORY_LIFECYCLE_PATH || path.join(path.dirname(uploadRoot), "inventory-lifecycle.json"));
+const auditLogPath = path.resolve(process.env.CARPOSTCLUB_AUDIT_LOG_PATH || process.env.KONNER_AUDIT_LOG_PATH || process.env.AUDIT_LOG_PATH || path.join(path.dirname(uploadRoot), "audit-log.json"));
 const releaseManifestPath = process.env.CARPOSTCLUB_RELEASE_MANIFEST || process.env.KONNER_RELEASE_MANIFEST || path.join(appRoot, "release-manifest.json");
+const publicOrigin = normalizePublicOrigin(process.env.CARPOSTCLUB_PUBLIC_ORIGIN || process.env.KONNER_PUBLIC_ORIGIN || "");
 const maxFileBytes = positiveInteger(process.env.MAX_FILE_BYTES, 250 * 1024 * 1024);
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 100);
 const chatMessageLimit = positiveInteger(process.env.CHAT_MESSAGE_LIMIT, 500);
@@ -103,10 +109,16 @@ const pushTtlSeconds = positiveInteger(process.env.CARPOSTCLUB_PUSH_TTL_SECONDS 
 const pushDeliveryDisabled = parseBooleanEnv("CARPOSTCLUB_PUSH_DELIVERY_DISABLED", parseBooleanEnv("KONNER_PUSH_DELIVERY_DISABLED", false));
 const pushAwaitDelivery = parseBooleanEnv("CARPOSTCLUB_PUSH_AWAIT_DELIVERY", parseBooleanEnv("KONNER_PUSH_AWAIT_DELIVERY", process.env.NODE_ENV === "test"));
 const notificationLogLimitPerUser = positiveInteger(process.env.CARPOSTCLUB_NOTIFICATION_LOG_LIMIT_PER_USER || process.env.KONNER_NOTIFICATION_LOG_LIMIT_PER_USER, 200);
+const auditLogLimit = positiveInteger(process.env.CARPOSTCLUB_AUDIT_LOG_LIMIT || process.env.KONNER_AUDIT_LOG_LIMIT || process.env.AUDIT_LOG_LIMIT, 1000);
 const authUsername = process.env.CARPOSTCLUB_AUTH_USERNAME || process.env.KONNER_AUTH_USERNAME || "admin";
 const authPassword = process.env.CARPOSTCLUB_AUTH_PASSWORD || process.env.KONNER_AUTH_PASSWORD || "";
 const authPasswordHash = process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH || process.env.KONNER_AUTH_PASSWORD_HASH || "";
 const authEnabled = Boolean(authPassword || authPasswordHash);
+const authDisabled = !authEnabled;
+const authDisabledAllowed = parseBooleanEnv("CARPOSTCLUB_AUTH_DISABLED", parseBooleanEnv("KONNER_AUTH_DISABLED", false));
+if (authDisabled && nodeEnv === "production" && !authDisabledAllowed) {
+  throw new Error("Authentication is not configured. Set CARPOSTCLUB_AUTH_PASSWORD_HASH or explicitly set CARPOSTCLUB_AUTH_DISABLED=true.");
+}
 const authUsersPath = path.resolve(process.env.CARPOSTCLUB_AUTH_USERS_PATH || process.env.KONNER_AUTH_USERS_PATH || process.env.AUTH_USERS_PATH || path.join(path.dirname(uploadRoot), "auth-users.json"));
 const authInvitesPath = path.resolve(process.env.CARPOSTCLUB_AUTH_INVITES_PATH || process.env.KONNER_AUTH_INVITES_PATH || process.env.AUTH_INVITES_PATH || path.join(path.dirname(uploadRoot), "auth-invites.json"));
 const authCookieName = process.env.CARPOSTCLUB_AUTH_COOKIE_NAME || process.env.KONNER_AUTH_COOKIE_NAME || "carpostclub_session";
@@ -115,6 +127,9 @@ const authSessionDays = positiveInteger(process.env.CARPOSTCLUB_AUTH_SESSION_DAY
 const authSessionMs = authSessionDays * 24 * 60 * 60 * 1000;
 const authInviteLifetimeHours = positiveInteger(process.env.CARPOSTCLUB_AUTH_INVITE_HOURS || process.env.KONNER_AUTH_INVITE_HOURS, 24);
 const authInviteLifetimeMs = authInviteLifetimeHours * 60 * 60 * 1000;
+const loginRateLimitWindowMs = positiveInteger(process.env.CARPOSTCLUB_LOGIN_RATE_LIMIT_WINDOW_MS || process.env.KONNER_LOGIN_RATE_LIMIT_WINDOW_MS, 10 * 60 * 1000);
+const loginRateLimitMaxAttempts = positiveInteger(process.env.CARPOSTCLUB_LOGIN_RATE_LIMIT_MAX_ATTEMPTS || process.env.KONNER_LOGIN_RATE_LIMIT_MAX_ATTEMPTS, 10);
+const shortcutBearerToken = normalizeSpace(process.env.CARPOSTCLUB_SHORTCUTS_BEARER_TOKEN || process.env.KONNER_SHORTCUTS_BEARER_TOKEN);
 const authSessionSecret = sessionSecret();
 const releaseInfo = await readReleaseInfo();
 const thumbnailDirectoryName = ".thumbnails";
@@ -140,6 +155,16 @@ const videoExtensions = new Set([
   ".ogv",
   ".webm",
 ]);
+const sharpImageFormatsByExtension = new Map([
+  [".avif", new Set(["avif"])],
+  [".gif", new Set(["gif"])],
+  [".jpeg", new Set(["jpeg"])],
+  [".jpg", new Set(["jpeg"])],
+  [".png", new Set(["png"])],
+  [".tif", new Set(["tiff"])],
+  [".tiff", new Set(["tiff"])],
+  [".webp", new Set(["webp"])],
+]);
 const legacyStorageDirectories = new Set(["optimized", "originals", "thumbnails", "tmp"]);
 const oregansInventorySearchApiUrl = "https://oserv3.oreganscdn.com/api/vehicle-inventory-search/";
 const oregansInventoryRegionId = "1";
@@ -147,6 +172,21 @@ const defaultInventoryTypeId = "2";
 const shortcutDefaultDealershipId = process.env.CARPOSTCLUB_SHORTCUT_DEFAULT_DEALERSHIP_ID || "15";
 const inventoryCacheTtlMs = positiveInteger(process.env.OREGANS_INVENTORY_CACHE_TTL_MS, 5 * 60 * 1000);
 const inventoryMockFile = process.env.OREGANS_INVENTORY_MOCK_FILE || "";
+const oregansInventorySnapshotIntervalMs = positiveInteger(
+  process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INTERVAL_MS
+    || process.env.OREGANS_INVENTORY_SNAPSHOT_INTERVAL_MS,
+  60 * 60 * 1000,
+);
+const oregansInventorySnapshotInitialDelayMs = positiveInteger(
+  process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INITIAL_DELAY_MS
+    || process.env.OREGANS_INVENTORY_SNAPSHOT_INITIAL_DELAY_MS,
+  30_000,
+);
+const oregansInventorySnapshotEnabled = parseBooleanEnv("CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_ENABLED",
+  parseBooleanEnv("OREGANS_INVENTORY_SNAPSHOT_ENABLED", !inventoryMockFile));
+const oregansInventorySnapshotTimeZone = process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_TIME_ZONE
+  || process.env.OREGANS_INVENTORY_SNAPSHOT_TIME_ZONE
+  || "America/Halifax";
 const inventoryTypes = Object.freeze([
   { id: "2", name: "Used vehicles" },
   { id: "1", name: "New vehicles" },
@@ -192,6 +232,7 @@ const authBootstrapDealershipId = normalizeAuthDealershipId(
     || defaultAuthDealershipIdForUser({ username: authUsername }),
 );
 const inventoryCache = new Map();
+const failedLoginAttempts = new Map();
 const chatClients = new Set();
 const albumClients = new Set();
 const marketplaceCopyPromises = new Map();
@@ -199,6 +240,7 @@ const marketplaceCopyStoreWritePromises = new Map();
 const vehicleUploadWritePromises = new Map();
 const photoMetadataWritePromises = new Map();
 let marketplaceDescriptionsDb = null;
+let oregansInventorySnapshotsDb = null;
 let chatWritePromise = Promise.resolve();
 let chatReadStateWritePromise = Promise.resolve();
 let userPreferencesWritePromise = Promise.resolve();
@@ -209,11 +251,15 @@ let albumSeenWritePromise = Promise.resolve();
 let pushSubscriptionsWritePromise = Promise.resolve();
 let notificationLogWritePromise = Promise.resolve();
 let inventoryLifecycleWritePromise = Promise.resolve();
+let auditLogWritePromise = Promise.resolve();
+let oregansInventorySnapshotRunPromise = Promise.resolve();
+let oregansInventorySnapshotTimer = null;
 let openaiClient = null;
 
 await fs.mkdir(uploadRoot, { recursive: true });
 await fs.mkdir(tmpRoot, { recursive: true });
 await fs.mkdir(path.dirname(marketplaceDescriptionsDbPath), { recursive: true });
+await fs.mkdir(path.dirname(oregansInventorySnapshotsDbPath), { recursive: true });
 await fs.mkdir(path.dirname(chatMessagesPath), { recursive: true });
 await fs.mkdir(path.dirname(chatReadStatePath), { recursive: true });
 await fs.mkdir(path.dirname(userPreferencesPath), { recursive: true });
@@ -225,8 +271,10 @@ await fs.mkdir(path.dirname(pushSubscriptionsPath), { recursive: true });
 await fs.mkdir(path.dirname(pushVapidKeysPath), { recursive: true });
 await fs.mkdir(path.dirname(notificationLogPath), { recursive: true });
 await fs.mkdir(path.dirname(inventoryLifecyclePath), { recursive: true });
+await fs.mkdir(path.dirname(auditLogPath), { recursive: true });
 
 marketplaceDescriptionsDb = openMarketplaceDescriptionsDatabase();
+oregansInventorySnapshotsDb = openOregansInventorySnapshotsDatabase();
 const pushKeys = await resolvePushVapidKeys();
 webPush.setVapidDetails(pushSubject, pushKeys.publicKey, pushKeys.privateKey);
 
@@ -254,6 +302,7 @@ const upload = multer({
 
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
+app.use(applySecurityHeaders);
 app.use(express.urlencoded({ extended: false, limit: "32kb" }));
 app.use(express.json({ limit: "32kb" }));
 app.use((req, res, next) => {
@@ -263,6 +312,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.static(publicRoot, { index: false, maxAge: 0 }));
+app.use(rejectCrossOriginUnsafeRequests);
 
 app.get("/healthz", (_req, res) => {
   res.json({
@@ -272,14 +322,8 @@ app.get("/healthz", (_req, res) => {
     port,
     release: releaseInfo,
     storage: {
-      uploadRoot,
       mediaDriver: mediaStorageDriver,
-      objectStorage: s3MediaStorageEnabled ? {
-        bucket: objectStorageBucket,
-        endpoint: objectStorageEndpoint,
-        region: objectStorageRegion,
-        prefix: objectStoragePrefix,
-      } : null,
+      objectStorageEnabled: s3MediaStorageEnabled,
     },
     uptimeSeconds: Math.round(process.uptime()),
     shuttingDown: false,
@@ -325,12 +369,25 @@ app.post("/login", async (req, res, next) => {
     const nextPath = safeRedirectPath(req.body?.next);
     const username = String(req.body?.username || "");
     const password = String(req.body?.password || "");
+    const loginLimit = loginRateLimitForRequest(req, username);
+    if (loginLimit.limited) {
+      res.setHeader("Retry-After", String(loginLimit.retryAfterSeconds));
+      sendLoginPage(res, {
+        error: `Too many failed sign-in attempts. Try again in ${loginLimit.retryAfterSeconds} seconds.`,
+        next: nextPath,
+        status: 429,
+      });
+      return;
+    }
+
     const authResult = await authenticateCredentials(username, password);
     if (!authResult.ok) {
+      recordFailedLogin(req, username);
       sendLoginPage(res, { error: authResult.message, next: nextPath });
       return;
     }
 
+    clearFailedLoginAttempts(req, username);
     res.setHeader("Set-Cookie", serializeSessionCookie(authResult.user));
     res.redirect(303, nextPath || "/");
   } catch (error) {
@@ -475,6 +532,10 @@ app.post("/account/password", requireAuth, async (req, res, next) => {
       return;
     }
 
+    await appendAuditEvent("auth.password.changed", req.authUser, {
+      username: changed.username,
+      displayName: changed.displayName,
+    });
     res.setHeader("Set-Cookie", serializeSessionCookie(authUserFromAccount(changed)));
     sendChangePasswordPage(res, { user: req.authUser, success: "Password updated." });
   } catch (error) {
@@ -501,6 +562,11 @@ app.get("/admin/users", requireAdmin, async (req, res, next) => {
 app.post("/admin/invites", requireAdmin, async (req, res, next) => {
   try {
     const invite = await createAuthInvite(req.authUser);
+    await appendAuditEvent("auth.invite.created", req.authUser, {
+      inviteIdHash: shortAuditHash(invite.id),
+      inviteIdSuffix: auditSuffix(invite.id),
+      expiresAt: invite.expiresAt,
+    });
     if (requestWantsJson(req)) {
       setPrivateNoStore(res);
       res.json({
@@ -577,7 +643,26 @@ app.post("/admin/users/:username/password", requireAdmin, async (req, res, next)
       return;
     }
 
+    await appendAuditEvent("auth.password.reset", req.authUser, {
+      username: updated.username,
+      displayName: updated.displayName,
+    });
     res.redirect(303, adminUsersUrl({ success: `Password reset for ${updated.displayName}.` }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/audit-log", requireAdmin, async (req, res, next) => {
+  try {
+    const limit = Math.min(auditLogLimit, positiveInteger(req.query.limit, 100));
+    const store = await readAuditLog();
+    setPrivateNoStore(res);
+    res.json({
+      ok: true,
+      count: store.events.length,
+      events: store.events.slice(0, limit),
+    });
   } catch (error) {
     next(error);
   }
@@ -602,9 +687,7 @@ app.get("/api/albums", requireAuth, async (req, res, next) => {
     const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
     res.json({
       ok: true,
-      uploadRoot,
-      mediaDriver: mediaStorageDriver,
-      albums: gallery.albums,
+      albums: publicAlbums(gallery.albums),
       unreadTotal: gallery.unreadTotal,
     });
   } catch (error) {
@@ -653,7 +736,7 @@ app.post("/api/gallery/dealerships/:dealershipId/seen", requireAuth, async (req,
       ok: true,
       dealership,
       marked,
-      albums: gallery.albums,
+      albums: publicAlbums(gallery.albums),
       unreadTotal: gallery.unreadTotal,
     });
   } catch (error) {
@@ -818,12 +901,71 @@ app.get("/api/inventory/cars", requireAuth, async (req, res, next) => {
   }
 });
 
+app.get("/api/inventory/snapshots/status", requireAuth, (_req, res, next) => {
+  try {
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      enabled: oregansInventorySnapshotEnabled,
+      intervalMs: oregansInventorySnapshotIntervalMs,
+      timeZone: oregansInventorySnapshotTimeZone,
+      ...oregansInventorySnapshotStatus(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/inventory/snapshots/added", requireAuth, (req, res, next) => {
+  try {
+    const filters = inventorySnapshotQueryFilters(req.query);
+    const result = oregansInventoryVehiclesAddedSince(filters);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      ...result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/inventory/snapshots/run", requireAdmin, async (req, res, next) => {
+  try {
+    const snapshot = await queueOregansInventorySnapshotRun({ reason: "manual" });
+    await appendAuditEvent("inventory.snapshot.manual_run", req.authUser, {
+      snapshotId: snapshot.id,
+      startedAt: snapshot.startedAt,
+      finishedAt: snapshot.finishedAt,
+      newInventoryCount: snapshot.newInventory?.count || 0,
+      removedInventoryCount: snapshot.removedInventory?.count || 0,
+    });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.status(201).json({
+      ok: true,
+      snapshot,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Public contract for the macOS/iOS "Inventory Album v3" Shortcut.
 // Shortcuts cannot carry the upload app's browser session cookie.
 app.get("/api/shortcuts/inventory-albums", async (req, res, next) => {
   try {
+    if (!shortcutRequestAuthorized(req)) {
+      setPrivateNoStore(res);
+      res.setHeader("WWW-Authenticate", 'Bearer realm="CarPostClub Shortcuts"');
+      res.status(401).json({ ok: false, error: "Shortcut token required." });
+      return;
+    }
     const picker = await shortcutInventoryAlbumPicker(req.query);
-    res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    if (shortcutBearerToken) {
+      setPrivateNoStore(res);
+    } else {
+      res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+    }
 
     const format = normalizeSpace(req.query?.format).toLowerCase();
     if (format === "labels" || format === "list") {
@@ -856,7 +998,7 @@ app.get("/api/marketplace-draft", requireAuth, async (req, res, next) => {
     const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album });
     res.json({
       ok: true,
-      album,
+      album: publicAlbum(album),
       car,
       draft,
     });
@@ -872,7 +1014,7 @@ app.post("/api/marketplace-draft/regenerate", requireAuth, async (req, res, next
     const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album, force: true });
     res.json({
       ok: true,
-      album,
+      album: publicAlbum(album),
       car,
       draft,
     });
@@ -890,7 +1032,7 @@ app.get("/api/albums/:albumId/marketplace-draft", requireAuth, async (req, res, 
     const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album });
     res.json({
       ok: true,
-      album: await albumWithInventoryStatus(album),
+      album: publicAlbum(await albumWithInventoryStatus(album)),
       car,
       draft,
     });
@@ -907,7 +1049,7 @@ app.get("/api/vehicle-album", requireAuth, async (req, res, next) => {
     if (album && photos.length) await markAlbumObjectsSeen(req.authUser, [album]);
     res.json({
       ok: true,
-      album: await albumWithInventoryStatus(album),
+      album: publicAlbum(await albumWithInventoryStatus(album)),
       photos,
     });
   } catch (error) {
@@ -924,9 +1066,9 @@ app.post("/api/albums/:albumId/seen", requireAuth, async (req, res, next) => {
     const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
     res.json({
       ok: true,
-      album: withAlbumReadState(await albumWithInventoryStatus(album), req.authUser, await readAlbumSeenStore()),
+      album: publicAlbum(withAlbumReadState(await albumWithInventoryStatus(album), req.authUser, await readAlbumSeenStore())),
       marked,
-      albums: gallery.albums,
+      albums: publicAlbums(gallery.albums),
       unreadTotal: gallery.unreadTotal,
     });
   } catch (error) {
@@ -943,7 +1085,7 @@ app.get("/api/albums/:albumId/photos", requireAuth, async (req, res, next) => {
     if (photos.length) await markAlbumObjectsSeen(req.authUser, [album]);
     res.json({
       ok: true,
-      album: await albumWithInventoryStatus(album),
+      album: publicAlbum(await albumWithInventoryStatus(album)),
       photos,
     });
   } catch (error) {
@@ -964,7 +1106,7 @@ app.post("/api/upload", requireAuth, upload.array("photos", maxUploadFiles), asy
 
     res.status(201).json({
       ok: true,
-      album: result.album,
+      album: publicAlbum(result.album),
       albumId: result.album.id,
       car,
       count: result.photos.length,
@@ -1189,6 +1331,7 @@ function marketplaceDescriptionDocument({ album, car, draft, photos, user, inven
   const missingFields = Array.isArray(draft.missingFields) ? draft.missingFields : [];
   const reviewFields = Array.isArray(draft.reviewFields) ? draft.reviewFields : [];
   const facebookSyncAction = inventoryLifecycleDocumentAction(inventoryStatus);
+  const readyToPost = marketplaceReadyToPost(draft, inventoryStatus);
   return [
     "CarPostClub Marketplace Package",
     "",
@@ -1199,7 +1342,7 @@ function marketplaceDescriptionDocument({ album, car, draft, photos, user, inven
     `Media: ${photos.length} ${photos.length === 1 ? "file" : "files"}`,
     `Inventory status: ${inventoryStatus?.label || "Unknown"}`,
     facebookSyncAction ? `Facebook sync: ${facebookSyncAction}` : "",
-    `Ready to post: ${draft.ready ? "Yes" : "No"}`,
+    `Ready to post: ${readyToPost ? "Yes" : "No"}`,
     missingFields.length ? `Missing fields: ${missingFields.join(", ")}` : "",
     reviewFields.length ? `Review fields: ${reviewFields.join(", ")}` : "",
     "",
@@ -1211,6 +1354,14 @@ function marketplaceDescriptionDocument({ album, car, draft, photos, user, inven
       car,
     }),
   ].filter((line, index, lines) => line || lines[index - 1] !== "").join("\n").trimEnd() + "\n";
+}
+
+function marketplaceReadyToPost(draft, inventoryStatus) {
+  const lifecycle = inventoryStatus?.lifecycle || {};
+  if (Object.hasOwn(lifecycle, "canPostToFacebook")) {
+    return Boolean(draft?.ready && lifecycle.canPostToFacebook);
+  }
+  return Boolean(draft?.ready);
 }
 
 function inventoryLifecycleDocumentAction(inventoryStatus) {
@@ -1228,7 +1379,7 @@ function marketplacePackageManifest({ album, car, draft, photos, user, inventory
     app: appName,
     generatedAt: new Date().toISOString(),
     generatedFor: publicAuthUser(user),
-    readyToPost: Boolean(draft.ready),
+    readyToPost: marketplaceReadyToPost(draft, inventoryStatus),
     missingFields: draft.missingFields || [],
     reviewFields: draft.reviewFields || [],
     inventoryStatus,
@@ -1274,11 +1425,22 @@ async function deleteAlbumMedia(req, res, next) {
   try {
     const albumId = cleanAlbumId(req.params.albumId);
     const filename = cleanFilename(req.params.filename);
+    const [album, metadata] = await Promise.all([
+      readAlbum(albumId),
+      readPhotoMetadata(albumId),
+    ]);
     await deleteStoredMedia(albumId, filename);
     await updatePhotoMetadata(albumId, (metadata) => {
       delete metadata[filename];
     });
     await removeMarketplaceCopyIfAlbumEmpty(albumId);
+    await appendAuditEvent("album.media.deleted", req.authUser, {
+      ...auditAlbumDetails(album),
+      filename,
+      originalName: metadata[filename]?.originalName || filename,
+      contentType: metadata[filename]?.contentType || contentTypeFor(filename),
+      bytes: metadata[filename]?.bytes || 0,
+    });
     res.json({ ok: true });
   } catch (error) {
     next(error);
@@ -1302,6 +1464,11 @@ async function deleteAlbumMediaCollection(req, res, next) {
   try {
     const albumId = cleanAlbumId(req.params.albumId);
     const result = await removeAlbumMediaCollection(albumId);
+    await appendAuditEvent("album.media_collection.deleted", req.authUser, {
+      ...auditAlbumDetails(result.album),
+      deleted: result.deleted,
+      filenames: result.photos.map((photo) => photo.filename),
+    });
     res.json({ ok: true, deleted: result.deleted });
   } catch (error) {
     next(error);
@@ -1415,12 +1582,78 @@ app.use(async (error, req, res, _next) => {
 
 const server = app.listen(port, host, () => {
   console.log(`${appName} listening on ${host}:${port}`);
+  startOregansInventorySnapshotScheduler();
 });
 
 process.on("SIGTERM", () => {
+  stopOregansInventorySnapshotScheduler();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 30_000).unref();
 });
+
+function applySecurityHeaders(_req, res, next) {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Content-Security-Policy", [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "connect-src 'self'",
+    "manifest-src 'self'",
+    "worker-src 'self'",
+  ].join("; "));
+  next();
+}
+
+function rejectCrossOriginUnsafeRequests(req, _res, next) {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+    next();
+    return;
+  }
+  if (isSameOriginUnsafeRequest(req)) {
+    next();
+    return;
+  }
+  next(httpError(403, "Cross-origin requests are not allowed."));
+}
+
+function isSameOriginUnsafeRequest(req) {
+  const allowed = allowedRequestOrigins(req);
+  const originHeader = req.get("origin");
+  if (originHeader) return allowed.has(normalizePublicOrigin(originHeader));
+  if (originHeader === "null") return false;
+
+  const referer = req.get("referer");
+  if (!referer) return true;
+  try {
+    return allowed.has(new URL(referer).origin);
+  } catch {
+    return false;
+  }
+}
+
+function allowedRequestOrigins(req) {
+  return new Set([
+    requestHostOrigin(req),
+    publicOrigin,
+  ].filter(Boolean));
+}
+
+function shortcutRequestAuthorized(req) {
+  if (!shortcutBearerToken) return true;
+  const header = normalizeSpace(req.get("authorization"));
+  const bearer = /^Bearer\s+(.+)$/i.exec(header)?.[1] || "";
+  const explicitHeader = normalizeSpace(req.get("x-carpostclub-shortcut-token"));
+  return [bearer, explicitHeader].some((token) => token && timingSafeEqual(token, shortcutBearerToken));
+}
 
 async function listAlbums({ includeInventoryStatus = false } = {}) {
   const entries = await fs.readdir(uploadRoot, { withFileTypes: true }).catch((error) => {
@@ -1662,6 +1895,20 @@ function publicAlbumCoverPhoto(photo) {
     thumbnailUrl: photo.thumbnailUrl || "",
     downloadUrl: photo.downloadUrl || "",
   };
+}
+
+function publicAlbum(album) {
+  if (!album) return album;
+  const {
+    objectStoragePrefix: _objectStoragePrefix,
+    storage: _storage,
+    ...publicFields
+  } = album;
+  return publicFields;
+}
+
+function publicAlbums(albums = []) {
+  return Array.isArray(albums) ? albums.map(publicAlbum) : [];
 }
 
 function sortAlbumPhotosForDisplay(photos = []) {
@@ -2443,7 +2690,7 @@ function cleanShortcutAlbumPart(value) {
   return normalizeSpace(value).replace(/\s+/g, " ").slice(0, 80);
 }
 
-async function fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId }) {
+async function fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId, bypassCache = false }) {
   const dealership = cleanDealershipId(dealershipId);
   inventoryTypeId = cleanInventoryTypeId(inventoryTypeId || defaultInventoryTypeId);
 
@@ -2461,7 +2708,7 @@ async function fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId }) {
 
   const cacheKey = `${dealership.id}:${inventoryTypeId}`;
   const cached = inventoryCache.get(cacheKey);
-  if (cached && Date.now() - cached.fetchedAt < inventoryCacheTtlMs) {
+  if (!bypassCache && cached && Date.now() - cached.fetchedAt < inventoryCacheTtlMs) {
     return {
       dealership,
       inventoryTypeId,
@@ -3145,6 +3392,701 @@ function openMarketplaceDescriptionsDatabase() {
       ON marketplace_description_stores(input_hash);
   `);
   return db;
+}
+
+function openOregansInventorySnapshotsDatabase() {
+  const db = new DatabaseSync(oregansInventorySnapshotsDbPath);
+  db.exec(`
+    PRAGMA busy_timeout = 5000;
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE IF NOT EXISTS oregans_inventory_snapshot_runs (
+      id TEXT PRIMARY KEY,
+      reason TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT '',
+      started_at TEXT NOT NULL,
+      finished_at TEXT NOT NULL DEFAULT '',
+      scope_json TEXT NOT NULL DEFAULT '[]',
+      summary_json TEXT NOT NULL DEFAULT '[]',
+      error TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS oregans_inventory_vehicles (
+      vehicle_key TEXT PRIMARY KEY,
+      vin TEXT NOT NULL DEFAULT '',
+      stock_number TEXT NOT NULL DEFAULT '',
+      dealership_id TEXT NOT NULL DEFAULT '',
+      dealership_name TEXT NOT NULL DEFAULT '',
+      inventory_type_id TEXT NOT NULL DEFAULT '',
+      inventory_type_name TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      year TEXT NOT NULL DEFAULT '',
+      make TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      trim TEXT NOT NULL DEFAULT '',
+      price TEXT NOT NULL DEFAULT '',
+      price_value REAL,
+      odometer TEXT NOT NULL DEFAULT '',
+      odometer_value INTEGER,
+      exterior_color TEXT NOT NULL DEFAULT '',
+      interior_color TEXT NOT NULL DEFAULT '',
+      body_style TEXT NOT NULL DEFAULT '',
+      fuel_type TEXT NOT NULL DEFAULT '',
+      transmission TEXT NOT NULL DEFAULT '',
+      detail_url TEXT NOT NULL DEFAULT '',
+      raw_json TEXT NOT NULL DEFAULT '{}',
+      first_seen_at TEXT NOT NULL,
+      current_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      first_snapshot_run_id TEXT NOT NULL,
+      last_snapshot_run_id TEXT NOT NULL,
+      present INTEGER NOT NULL DEFAULT 1,
+      removed_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS oregans_inventory_snapshot_items (
+      run_id TEXT NOT NULL,
+      vehicle_key TEXT NOT NULL,
+      dealership_id TEXT NOT NULL DEFAULT '',
+      inventory_type_id TEXT NOT NULL DEFAULT '',
+      observed_at TEXT NOT NULL,
+      car_json TEXT NOT NULL DEFAULT '{}',
+      PRIMARY KEY (run_id, vehicle_key)
+    );
+    CREATE TABLE IF NOT EXISTS oregans_inventory_snapshot_scopes (
+      dealership_id TEXT NOT NULL,
+      inventory_type_id TEXT NOT NULL,
+      dealership_name TEXT NOT NULL DEFAULT '',
+      inventory_type_name TEXT NOT NULL DEFAULT '',
+      first_snapshot_run_id TEXT NOT NULL,
+      last_snapshot_run_id TEXT NOT NULL,
+      first_snapshot_at TEXT NOT NULL,
+      last_snapshot_at TEXT NOT NULL,
+      snapshot_count INTEGER NOT NULL DEFAULT 0,
+      last_count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (dealership_id, inventory_type_id)
+    );
+    CREATE INDEX IF NOT EXISTS oregans_inventory_vehicles_current_seen_idx
+      ON oregans_inventory_vehicles(current_seen_at);
+    CREATE INDEX IF NOT EXISTS oregans_inventory_vehicles_scope_present_idx
+      ON oregans_inventory_vehicles(dealership_id, inventory_type_id, present);
+    CREATE INDEX IF NOT EXISTS oregans_inventory_vehicles_last_seen_idx
+      ON oregans_inventory_vehicles(last_seen_at);
+    CREATE INDEX IF NOT EXISTS oregans_inventory_snapshot_items_scope_idx
+      ON oregans_inventory_snapshot_items(dealership_id, inventory_type_id, observed_at);
+  `);
+  return db;
+}
+
+function startOregansInventorySnapshotScheduler() {
+  if (!oregansInventorySnapshotEnabled || oregansInventorySnapshotTimer) return;
+  const run = () => {
+    queueOregansInventorySnapshotRun({ reason: "scheduled" }).catch((error) => {
+      console.warn(`O'Regan's inventory snapshot failed: ${error?.message || error}`);
+    });
+  };
+  oregansInventorySnapshotTimer = setTimeout(() => {
+    run();
+    oregansInventorySnapshotTimer = setInterval(run, oregansInventorySnapshotIntervalMs);
+    oregansInventorySnapshotTimer.unref?.();
+  }, oregansInventorySnapshotInitialDelayMs);
+  oregansInventorySnapshotTimer.unref?.();
+}
+
+function stopOregansInventorySnapshotScheduler() {
+  if (!oregansInventorySnapshotTimer) return;
+  clearTimeout(oregansInventorySnapshotTimer);
+  clearInterval(oregansInventorySnapshotTimer);
+  oregansInventorySnapshotTimer = null;
+}
+
+async function queueOregansInventorySnapshotRun({ reason = "manual" } = {}) {
+  oregansInventorySnapshotRunPromise = oregansInventorySnapshotRunPromise.catch(() => {}).then(() => {
+    return captureOregansInventorySnapshot({ reason });
+  });
+  return oregansInventorySnapshotRunPromise;
+}
+
+async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
+  const runId = `oregans-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+  const startedAt = new Date().toISOString();
+  const scopes = oregansInventorySnapshotScopes();
+  const observations = [];
+  const summary = [];
+  const successfulScopes = [];
+  const errors = [];
+
+  for (const scope of scopes) {
+    try {
+      const snapshot = await fetchInventoryCarsSnapshot({
+        dealershipId: scope.dealershipId,
+        inventoryTypeId: scope.inventoryTypeId,
+        bypassCache: true,
+      });
+      const cars = snapshot.cars.map((car) => normalizeInventoryCar(car, {
+        dealership: snapshot.dealership,
+        inventoryTypeId: snapshot.inventoryTypeId,
+      }));
+      observations.push(...cars.map((car) => ({ car, scope })));
+      successfulScopes.push(scope);
+      summary.push({
+        dealershipId: scope.dealershipId,
+        dealershipName: scope.dealershipName,
+        inventoryTypeId: scope.inventoryTypeId,
+        inventoryTypeName: scope.inventoryTypeName,
+        count: cars.length,
+        fetchedAt: snapshot.fetchedAtIso,
+        source: snapshot.source,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${scope.dealershipName} ${scope.inventoryTypeName}: ${message}`);
+      summary.push({
+        dealershipId: scope.dealershipId,
+        dealershipName: scope.dealershipName,
+        inventoryTypeId: scope.inventoryTypeId,
+        inventoryTypeName: scope.inventoryTypeName,
+        count: 0,
+        error: message,
+      });
+    }
+  }
+
+  const finishedAt = new Date().toISOString();
+  const status = errors.length === scopes.length ? "failed" : errors.length ? "partial" : "completed";
+  const writeResult = writeOregansInventorySnapshotRun({
+    runId,
+    reason,
+    status,
+    startedAt,
+    finishedAt,
+    scopes,
+    summary,
+    observations,
+    successfulScopes,
+    errors,
+  });
+  const pushPayload = writeResult.newlyObserved.length
+    ? oregansInventoryAddedPushPayload(writeResult.newlyObserved, finishedAt)
+    : null;
+  const pushDeliveryPromise = pushPayload
+    ? queuePushNotifications({ payload: pushPayload })
+    : null;
+  const pushDelivery = pushDeliveryPromise && pushAwaitDelivery
+    ? await pushDeliveryPromise
+    : null;
+
+  return {
+    id: runId,
+    reason,
+    status,
+    startedAt,
+    finishedAt,
+    observed: observations.length,
+    scopes: summary,
+    errors,
+    newInventory: {
+      count: writeResult.newlyObserved.length,
+      vehicles: writeResult.newlyObserved.slice(0, 20),
+    },
+    ...(pushDelivery ? { pushDelivery } : {}),
+  };
+}
+
+function writeOregansInventorySnapshotRun({
+  runId,
+  reason,
+  status,
+  startedAt,
+  finishedAt,
+  scopes,
+  summary,
+  observations,
+  successfulScopes,
+  errors,
+}) {
+  const insertRun = oregansInventorySnapshotsDb.prepare(`
+    INSERT INTO oregans_inventory_snapshot_runs (
+      id,
+      reason,
+      status,
+      started_at,
+      finished_at,
+      scope_json,
+      summary_json,
+      error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const upsertVehicle = oregansInventorySnapshotsDb.prepare(`
+    INSERT INTO oregans_inventory_vehicles (
+      vehicle_key,
+      vin,
+      stock_number,
+      dealership_id,
+      dealership_name,
+      inventory_type_id,
+      inventory_type_name,
+      title,
+      year,
+      make,
+      model,
+      trim,
+      price,
+      price_value,
+      odometer,
+      odometer_value,
+      exterior_color,
+      interior_color,
+      body_style,
+      fuel_type,
+      transmission,
+      detail_url,
+      raw_json,
+      first_seen_at,
+      current_seen_at,
+      last_seen_at,
+      first_snapshot_run_id,
+      last_snapshot_run_id,
+      present,
+      removed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '')
+    ON CONFLICT(vehicle_key) DO UPDATE SET
+      vin = excluded.vin,
+      stock_number = excluded.stock_number,
+      dealership_id = excluded.dealership_id,
+      dealership_name = excluded.dealership_name,
+      inventory_type_id = excluded.inventory_type_id,
+      inventory_type_name = excluded.inventory_type_name,
+      title = excluded.title,
+      year = excluded.year,
+      make = excluded.make,
+      model = excluded.model,
+      trim = excluded.trim,
+      price = excluded.price,
+      price_value = excluded.price_value,
+      odometer = excluded.odometer,
+      odometer_value = excluded.odometer_value,
+      exterior_color = excluded.exterior_color,
+      interior_color = excluded.interior_color,
+      body_style = excluded.body_style,
+      fuel_type = excluded.fuel_type,
+      transmission = excluded.transmission,
+      detail_url = excluded.detail_url,
+      raw_json = excluded.raw_json,
+      current_seen_at = CASE
+        WHEN oregans_inventory_vehicles.present = 0 THEN excluded.current_seen_at
+        ELSE oregans_inventory_vehicles.current_seen_at
+      END,
+      last_seen_at = excluded.last_seen_at,
+      last_snapshot_run_id = excluded.last_snapshot_run_id,
+      present = 1,
+      removed_at = ''
+  `);
+  const insertItem = oregansInventorySnapshotsDb.prepare(`
+    INSERT OR REPLACE INTO oregans_inventory_snapshot_items (
+      run_id,
+      vehicle_key,
+      dealership_id,
+      inventory_type_id,
+      observed_at,
+      car_json
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const markRemoved = oregansInventorySnapshotsDb.prepare(`
+    UPDATE oregans_inventory_vehicles
+    SET present = 0,
+      removed_at = CASE WHEN removed_at = '' THEN ? ELSE removed_at END
+    WHERE dealership_id = ?
+      AND inventory_type_id = ?
+      AND present = 1
+      AND last_snapshot_run_id <> ?
+  `);
+  const selectVehicle = oregansInventorySnapshotsDb.prepare(`
+    SELECT vehicle_key, present
+    FROM oregans_inventory_vehicles
+    WHERE vehicle_key = ?
+  `);
+  const selectScope = oregansInventorySnapshotsDb.prepare(`
+    SELECT snapshot_count
+    FROM oregans_inventory_snapshot_scopes
+    WHERE dealership_id = ?
+      AND inventory_type_id = ?
+  `);
+  const upsertScope = oregansInventorySnapshotsDb.prepare(`
+    INSERT INTO oregans_inventory_snapshot_scopes (
+      dealership_id,
+      inventory_type_id,
+      dealership_name,
+      inventory_type_name,
+      first_snapshot_run_id,
+      last_snapshot_run_id,
+      first_snapshot_at,
+      last_snapshot_at,
+      snapshot_count,
+      last_count
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+    ON CONFLICT(dealership_id, inventory_type_id) DO UPDATE SET
+      dealership_name = excluded.dealership_name,
+      inventory_type_name = excluded.inventory_type_name,
+      last_snapshot_run_id = excluded.last_snapshot_run_id,
+      last_snapshot_at = excluded.last_snapshot_at,
+      snapshot_count = oregans_inventory_snapshot_scopes.snapshot_count + 1,
+      last_count = excluded.last_count
+  `);
+  const observedCountByScope = new Map();
+  for (const { scope } of observations) {
+    const key = inventorySnapshotScopeKey(scope);
+    observedCountByScope.set(key, (observedCountByScope.get(key) || 0) + 1);
+  }
+
+  const newlyObserved = [];
+  oregansInventorySnapshotsDb.exec("BEGIN IMMEDIATE");
+  try {
+    const scopeHasBaseline = new Map(successfulScopes.map((scope) => [
+      inventorySnapshotScopeKey(scope),
+      Boolean(selectScope.get(scope.dealershipId, scope.inventoryTypeId)),
+    ]));
+
+    insertRun.run(
+      runId,
+      normalizeSpace(reason).slice(0, 40),
+      status,
+      startedAt,
+      finishedAt,
+      JSON.stringify(scopes),
+      JSON.stringify(summary),
+      errors.join("\n").slice(0, 4000),
+    );
+
+    for (const { car, scope } of observations) {
+      const record = oregansInventorySnapshotVehicleRecord(car, scope, finishedAt, runId);
+      const previous = selectVehicle.get(record.vehicleKey);
+      if (scopeHasBaseline.get(inventorySnapshotScopeKey(scope)) && (!previous || !Number(previous.present))) {
+        newlyObserved.push(publicOregansInventorySnapshotVehicleFromCar(car, scope, finishedAt, record.vehicleKey));
+      }
+      upsertVehicle.run(...record.values);
+      insertItem.run(
+        runId,
+        record.vehicleKey,
+        scope.dealershipId,
+        scope.inventoryTypeId,
+        finishedAt,
+        JSON.stringify(car),
+      );
+    }
+
+    for (const scope of successfulScopes) {
+      markRemoved.run(finishedAt, scope.dealershipId, scope.inventoryTypeId, runId);
+      upsertScope.run(
+        scope.dealershipId,
+        scope.inventoryTypeId,
+        scope.dealershipName,
+        scope.inventoryTypeName,
+        runId,
+        runId,
+        finishedAt,
+        finishedAt,
+        observedCountByScope.get(inventorySnapshotScopeKey(scope)) || 0,
+      );
+    }
+
+    oregansInventorySnapshotsDb.exec("COMMIT");
+  } catch (error) {
+    oregansInventorySnapshotsDb.exec("ROLLBACK");
+    throw error;
+  }
+
+  return { newlyObserved };
+}
+
+function oregansInventorySnapshotVehicleRecord(car, scope, observedAt, runId) {
+  const vehicleKey = oregansInventorySnapshotVehicleKey(car, scope);
+  return {
+    vehicleKey,
+    values: [
+      vehicleKey,
+      normalizeSpace(car.vin),
+      normalizeSpace(car.stockNumber),
+      scope.dealershipId,
+      scope.dealershipName,
+      scope.inventoryTypeId,
+      scope.inventoryTypeName,
+      normalizeSpace(car.title),
+      normalizeSpace(car.year),
+      normalizeSpace(car.make),
+      normalizeSpace(car.model),
+      normalizeSpace(car.trim),
+      normalizeSpace(car.price),
+      car.priceValue ?? null,
+      normalizeSpace(car.odometer),
+      car.odometerValue ?? null,
+      normalizeSpace(car.exteriorColor),
+      normalizeSpace(car.interiorColor),
+      normalizeSpace(car.bodyStyle),
+      normalizeSpace(car.fuelType),
+      normalizeSpace(car.transmission),
+      normalizeSpace(car.detailUrl),
+      JSON.stringify(car),
+      observedAt,
+      observedAt,
+      observedAt,
+      runId,
+      runId,
+    ],
+  };
+}
+
+function oregansInventorySnapshotVehicleKey(car, scope) {
+  const identifier = normalizeSpace(car.vin || car.inventoryKey || car.stockNumber)
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, "");
+  return [
+    scope.dealershipId,
+    scope.inventoryTypeId,
+    identifier || crypto.createHash("sha256").update(JSON.stringify(car)).digest("hex").slice(0, 24),
+  ].join(":");
+}
+
+function inventorySnapshotScopeKey(scope) {
+  return `${scope.dealershipId}:${scope.inventoryTypeId}`;
+}
+
+function publicOregansInventorySnapshotVehicleFromCar(car, scope, observedAt, vehicleKey) {
+  return {
+    vehicleKey,
+    vin: normalizeSpace(car.vin),
+    stockNumber: normalizeSpace(car.stockNumber),
+    dealershipId: scope.dealershipId,
+    dealershipName: scope.dealershipName,
+    inventoryTypeId: scope.inventoryTypeId,
+    inventoryTypeName: scope.inventoryTypeName,
+    title: normalizeSpace(car.title),
+    year: normalizeSpace(car.year),
+    make: normalizeSpace(car.make),
+    model: normalizeSpace(car.model),
+    trim: normalizeSpace(car.trim),
+    price: normalizeSpace(car.price),
+    priceValue: car.priceValue ?? null,
+    odometer: normalizeSpace(car.odometer),
+    odometerValue: car.odometerValue ?? null,
+    exteriorColor: normalizeSpace(car.exteriorColor),
+    interiorColor: normalizeSpace(car.interiorColor),
+    bodyStyle: normalizeSpace(car.bodyStyle),
+    fuelType: normalizeSpace(car.fuelType),
+    transmission: normalizeSpace(car.transmission),
+    detailUrl: normalizeSpace(car.detailUrl),
+    firstSeenAt: observedAt,
+    currentSeenAt: observedAt,
+    lastSeenAt: observedAt,
+    present: true,
+    removedAt: "",
+  };
+}
+
+function oregansInventoryAddedPushPayload(vehicles, timestamp) {
+  const count = vehicles.length;
+  const first = vehicles[0] || {};
+  const examples = vehicles.slice(0, 4).map((vehicle) => {
+    const dealership = publicAuthDealership(vehicle.dealershipId)?.label || vehicle.dealershipName || "Inventory";
+    const stock = vehicle.stockNumber || vehicle.title || "vehicle";
+    return `${dealership} ${stock}`;
+  });
+  const body = count === 1
+    ? `${examples[0]} added to O'Regan's inventory.`
+    : `${count} vehicles added to O'Regan's inventory: ${examples.join(", ")}${count > examples.length ? ", ..." : ""}.`;
+  return {
+    kind: "inventory_added",
+    messageId: `inventory-added-${Date.parse(timestamp) || Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+    title: "New O'Regan's inventory",
+    body,
+    tag: `carpostclub-inventory-added-${Date.parse(timestamp) || Date.now()}`,
+    url: vehicleDeepLink({
+      dealershipId: first.dealershipId,
+      inventoryTypeId: first.inventoryTypeId,
+      inventoryKey: first.vin,
+    }),
+    timestamp,
+  };
+}
+
+function oregansInventorySnapshotScopes() {
+  const dealershipIds = csvEnvIds(
+    process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DEALERSHIP_IDS
+      || process.env.OREGANS_INVENTORY_SNAPSHOT_DEALERSHIP_IDS,
+    inventoryPicklistDealershipIds,
+  );
+  const inventoryTypeIds = csvEnvIds(
+    process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INVENTORY_TYPE_IDS
+      || process.env.OREGANS_INVENTORY_SNAPSHOT_INVENTORY_TYPE_IDS,
+    inventoryTypes.map((type) => type.id),
+  );
+  const scopes = [];
+  for (const dealershipId of dealershipIds) {
+    const dealership = cleanDealershipId(dealershipId);
+    for (const inventoryTypeId of inventoryTypeIds) {
+      const cleanTypeId = cleanInventoryTypeId(inventoryTypeId);
+      scopes.push({
+        dealershipId: dealership.id,
+        dealershipName: dealership.name,
+        inventoryTypeId: cleanTypeId,
+        inventoryTypeName: inventoryTypeName(cleanTypeId),
+      });
+    }
+  }
+  return scopes;
+}
+
+function csvEnvIds(value, fallback) {
+  const ids = String(value || "")
+    .split(",")
+    .map((id) => normalizeSpace(id))
+    .filter(Boolean);
+  return ids.length ? ids : [...fallback];
+}
+
+function inventorySnapshotQueryFilters(query = {}) {
+  const dealershipId = normalizeSpace(query.dealershipId);
+  const inventoryTypeId = normalizeSpace(query.inventoryTypeId);
+  const since = normalizeIsoDate(query.since)
+    || (normalizeSpace(query.date).toLowerCase() === "today" ? halifaxTodayStartIso() : "")
+    || halifaxTodayStartIso();
+  return {
+    since,
+    dealershipId: dealershipId ? cleanDealershipId(dealershipId).id : "",
+    inventoryTypeId: inventoryTypeId ? cleanInventoryTypeId(inventoryTypeId) : "",
+    limit: Math.min(500, positiveInteger(query.limit, 100)),
+  };
+}
+
+function oregansInventoryVehiclesAddedSince({ since, dealershipId = "", inventoryTypeId = "", limit = 100 }) {
+  const conditions = ["current_seen_at >= ?"];
+  const params = [since];
+  if (dealershipId) {
+    conditions.push("dealership_id = ?");
+    params.push(dealershipId);
+  }
+  if (inventoryTypeId) {
+    conditions.push("inventory_type_id = ?");
+    params.push(inventoryTypeId);
+  }
+  const rows = oregansInventorySnapshotsDb.prepare(`
+    SELECT *
+    FROM oregans_inventory_vehicles
+    WHERE ${conditions.join(" AND ")}
+    ORDER BY current_seen_at DESC, dealership_id, inventory_type_id, stock_number
+    LIMIT ?
+  `).all(...params, limit);
+  return {
+    since,
+    dealershipId,
+    inventoryTypeId,
+    count: rows.length,
+    vehicles: rows.map(publicOregansInventorySnapshotVehicle),
+  };
+}
+
+function oregansInventorySnapshotStatus() {
+  const latestRun = oregansInventorySnapshotsDb.prepare(`
+    SELECT *
+    FROM oregans_inventory_snapshot_runs
+    ORDER BY started_at DESC
+    LIMIT 1
+  `).get();
+  const presentCounts = oregansInventorySnapshotsDb.prepare(`
+    SELECT dealership_id, dealership_name, inventory_type_id, inventory_type_name, COUNT(*) AS count
+    FROM oregans_inventory_vehicles
+    WHERE present = 1
+    GROUP BY dealership_id, inventory_type_id
+    ORDER BY dealership_id, inventory_type_id
+  `).all();
+  return {
+    latestRun: latestRun ? publicOregansInventorySnapshotRun(latestRun) : null,
+    presentCounts: presentCounts.map((row) => ({
+      dealershipId: row.dealership_id,
+      dealershipName: row.dealership_name,
+      inventoryTypeId: row.inventory_type_id,
+      inventoryTypeName: row.inventory_type_name,
+      count: Number(row.count || 0),
+    })),
+  };
+}
+
+function publicOregansInventorySnapshotRun(row) {
+  return {
+    id: row.id,
+    reason: row.reason,
+    status: row.status,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    scopes: safeParseJson(row.summary_json, []),
+    error: row.error,
+  };
+}
+
+function publicOregansInventorySnapshotVehicle(row) {
+  return {
+    vehicleKey: row.vehicle_key,
+    vin: row.vin,
+    stockNumber: row.stock_number,
+    dealershipId: row.dealership_id,
+    dealershipName: row.dealership_name,
+    inventoryTypeId: row.inventory_type_id,
+    inventoryTypeName: row.inventory_type_name,
+    title: row.title,
+    year: row.year,
+    make: row.make,
+    model: row.model,
+    trim: row.trim,
+    price: row.price,
+    priceValue: row.price_value,
+    odometer: row.odometer,
+    odometerValue: row.odometer_value,
+    exteriorColor: row.exterior_color,
+    interiorColor: row.interior_color,
+    bodyStyle: row.body_style,
+    fuelType: row.fuel_type,
+    transmission: row.transmission,
+    detailUrl: row.detail_url,
+    firstSeenAt: row.first_seen_at,
+    currentSeenAt: row.current_seen_at,
+    lastSeenAt: row.last_seen_at,
+    present: Boolean(row.present),
+    removedAt: row.removed_at,
+  };
+}
+
+function halifaxTodayStartIso() {
+  return startOfDayInTimeZone(new Date(), oregansInventorySnapshotTimeZone);
+}
+
+function startOfDayInTimeZone(date, timeZone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date).map((part) => [part.type, part.value]));
+  const utcMidnight = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day));
+  const offset = timeZoneOffsetMinutes(new Date(utcMidnight), timeZone);
+  const candidate = new Date(utcMidnight - offset * 60 * 1000);
+  const correctedOffset = timeZoneOffsetMinutes(candidate, timeZone);
+  return new Date(utcMidnight - correctedOffset * 60 * 1000).toISOString();
+}
+
+function timeZoneOffsetMinutes(date, timeZone) {
+  const value = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "shortOffset",
+  }).formatToParts(date).find((part) => part.type === "timeZoneName")?.value || "";
+  const match = value.match(/^GMT([+-])(\d{1,2})(?::?(\d{2}))?$/i);
+  if (!match) return -date.getTimezoneOffset();
+  const sign = match[1] === "-" ? -1 : 1;
+  return sign * ((Number(match[2]) || 0) * 60 + (Number(match[3]) || 0));
+}
+
+function safeParseJson(value, fallback) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
 }
 
 function emptyMarketplaceCopyStore() {
@@ -4005,8 +4947,96 @@ function photosFromMetadata(albumId, metadata) {
 }
 
 async function saveUploadedPhoto(albumId, file, user) {
+  await validateUploadedMediaFile(file);
   if (s3MediaStorageEnabled) return saveUploadedPhotoToObjectStorage(albumId, file, user);
   return saveUploadedPhotoToLocalStorage(albumId, file, user);
+}
+
+async function validateUploadedMediaFile(file) {
+  const extension = extensionFor(file.originalname, file.mimetype);
+  const contentType = contentTypeFor(`upload${extension}`);
+
+  try {
+    if (contentType.startsWith("image/")) {
+      await validateUploadedImageFile(file.path, extension);
+      return;
+    }
+
+    if (contentType.startsWith("video/")) {
+      await validateUploadedVideoFile(file.path, extension);
+      return;
+    }
+  } catch (error) {
+    if (error?.status) throw error;
+    throw httpError(400, "Uploaded media could not be decoded as the selected image or video type.");
+  }
+
+  throw httpError(400, "Only image or video files can be uploaded.");
+}
+
+async function validateUploadedImageFile(filePath, extension) {
+  if (extension === ".heic" || extension === ".heif") {
+    await heicConvert({
+      buffer: await fs.readFile(filePath),
+      format: "JPEG",
+      quality: 0.8,
+    });
+    return;
+  }
+
+  const expectedFormats = sharpImageFormatsByExtension.get(extension);
+  if (!expectedFormats) throw httpError(400, "Unsupported image format.");
+
+  const image = sharp(filePath, { failOn: "error" });
+  const metadata = await image.metadata();
+  const actualFormat = String(metadata.format || "").toLowerCase();
+  if (!expectedFormats.has(actualFormat)) {
+    throw httpError(400, "Uploaded image bytes do not match the selected image type.");
+  }
+  if (!metadata.width || !metadata.height) {
+    throw httpError(400, "Uploaded image has no readable dimensions.");
+  }
+  await sharp(filePath, { failOn: "error" })
+    .rotate()
+    .resize({ width: 1, height: 1, fit: "inside", withoutEnlargement: true })
+    .toBuffer();
+}
+
+async function validateUploadedVideoFile(filePath, extension) {
+  const header = await readFileHeader(filePath, 16);
+  const asciiHeader = header.toString("ascii");
+
+  if (extension === ".mp4" || extension === ".mov" || extension === ".m4v") {
+    if (header.length >= 12 && header.subarray(4, 8).toString("ascii") === "ftyp") return;
+    throw httpError(400, "Uploaded video bytes do not match the selected video type.");
+  }
+
+  if (extension === ".webm") {
+    if (bufferStartsWith(header, Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) return;
+    throw httpError(400, "Uploaded video bytes do not match the selected video type.");
+  }
+
+  if (extension === ".ogv") {
+    if (asciiHeader.startsWith("OggS")) return;
+    throw httpError(400, "Uploaded video bytes do not match the selected video type.");
+  }
+
+  throw httpError(400, "Unsupported video format.");
+}
+
+async function readFileHeader(filePath, length) {
+  const handle = await fs.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+function bufferStartsWith(buffer, prefix) {
+  return buffer.length >= prefix.length && buffer.subarray(0, prefix.length).equals(prefix);
 }
 
 async function saveUploadedPhotoToLocalStorage(albumId, file, user) {
@@ -5185,6 +6215,135 @@ function pruneNotificationLog(store) {
   });
 }
 
+async function readAuditLog() {
+  const store = await readJson(auditLogPath, { events: [] });
+  const rawEvents = Array.isArray(store) ? store : store.events;
+  const events = Array.isArray(rawEvents)
+    ? rawEvents.map(normalizeStoredAuditEvent).filter(Boolean)
+    : [];
+  events.sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime());
+  return { events };
+}
+
+async function appendAuditEvent(kind, actor, details = {}) {
+  const event = normalizeStoredAuditEvent({
+    id: `audit-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 12)}`,
+    kind,
+    actor: auditActor(actor),
+    details: sanitizeAuditDetails(details),
+    createdAt: new Date().toISOString(),
+  });
+  if (!event) return null;
+
+  auditLogWritePromise = auditLogWritePromise.catch(() => {}).then(async () => {
+    const store = await readAuditLog();
+    store.events.unshift(event);
+    store.events.sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime());
+    store.events = store.events.slice(0, auditLogLimit);
+    await writeJson(auditLogPath, { events: store.events });
+    return event;
+  });
+  return auditLogWritePromise;
+}
+
+function normalizeStoredAuditEvent(value) {
+  if (!value || typeof value !== "object") return null;
+  const kind = normalizeAuditKind(value.kind);
+  if (!kind) return null;
+  return {
+    id: normalizeSpace(value.id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || `audit-${Date.now().toString(36)}`,
+    kind,
+    actor: normalizeAuditActor(value.actor),
+    details: sanitizeAuditDetails(value.details),
+    createdAt: normalizeIsoDate(value.createdAt || value.timestamp) || new Date().toISOString(),
+  };
+}
+
+function normalizeAuditKind(value) {
+  return normalizeSpace(value).toLowerCase().replace(/[^a-z0-9_.:-]/g, "").slice(0, 80);
+}
+
+function auditActor(user) {
+  const publicUser = publicAuthUser(user);
+  return normalizeAuditActor(publicUser.username ? publicUser : { username: "system", displayName: "System", role: "system" });
+}
+
+function normalizeAuditActor(value) {
+  if (!value || typeof value !== "object") {
+    return { username: "system", displayName: "System", role: "system" };
+  }
+  const username = normalizeAuthUsername(value.username) || "system";
+  return {
+    username,
+    displayName: normalizeDisplayName(value.displayName) || username,
+    role: value.role === "admin" ? "admin" : value.role === "system" ? "system" : "user",
+  };
+}
+
+function auditAlbumDetails(album) {
+  const vehicle = album?.vehicle || {};
+  const stockNumber = normalizeSpace(vehicle.stockNumber || album?.inventoryNumber).slice(0, 80);
+  return {
+    albumId: normalizeSpace(album?.id).slice(0, 120),
+    inventoryNumber: normalizeSpace(album?.inventoryNumber || stockNumber).slice(0, 80),
+    dealershipId: normalizeSpace(album?.dealership?.id || album?.dealershipId || vehicle.dealershipId).slice(0, 20),
+    vehicle: {
+      vin: normalizeSpace(vehicle.vin).slice(0, 20),
+      stockNumber,
+      year: normalizeSpace(vehicle.year).slice(0, 8),
+      make: normalizeSpace(vehicle.make).slice(0, 40),
+      model: normalizeSpace(vehicle.model).slice(0, 60),
+      trim: normalizeSpace(vehicle.trim).slice(0, 80),
+      title: normalizeSpace(vehicle.title || album?.name).slice(0, 160),
+    },
+  };
+}
+
+function shortAuditHash(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 16);
+}
+
+function auditSuffix(value) {
+  return normalizeSpace(value).slice(-8);
+}
+
+function sanitizeAuditDetails(value) {
+  const sanitized = sanitizeAuditValue(value, "", 0);
+  return sanitized && typeof sanitized === "object" && !Array.isArray(sanitized) ? sanitized : {};
+}
+
+function sanitizeAuditValue(value, key, depth) {
+  if (isSensitiveAuditKey(key)) return undefined;
+  if (value === null || value === undefined) return value === null ? null : undefined;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "string") return value.slice(0, 1000);
+  if (value instanceof Date) return value.toISOString();
+  if (depth >= 4) return "[truncated]";
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, 50)
+      .map((item) => sanitizeAuditValue(item, key, depth + 1))
+      .filter((item) => item !== undefined);
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value).slice(0, 50);
+    const result = {};
+    for (const [entryKey, entryValue] of entries) {
+      const cleanKey = normalizeSpace(entryKey).replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 80);
+      if (!cleanKey || isSensitiveAuditKey(cleanKey)) continue;
+      const cleanValue = sanitizeAuditValue(entryValue, cleanKey, depth + 1);
+      if (cleanValue !== undefined) result[cleanKey] = cleanValue;
+    }
+    return result;
+  }
+  return undefined;
+}
+
+function isSensitiveAuditKey(key) {
+  return /password|secret|token|cookie|authorization|session|bearer|credential|privatekey|apikey/i.test(String(key || ""));
+}
+
 async function pushEligibleUserVersions() {
   const eligible = new Map();
   const bootstrap = bootstrapAdminUser();
@@ -5977,6 +7136,55 @@ async function identifyRequestUser(req) {
   return authUserFromAccount(account);
 }
 
+function loginRateLimitForRequest(req, usernameValue) {
+  if (!loginRateLimitMaxAttempts || !loginRateLimitWindowMs) return { limited: false, retryAfterSeconds: 0 };
+  pruneExpiredFailedLoginAttempts();
+
+  const key = failedLoginRateLimitKey(req, usernameValue);
+  const record = failedLoginAttempts.get(key);
+  const now = Date.now();
+  if (!record || record.resetAt <= now) {
+    failedLoginAttempts.delete(key);
+    return { limited: false, retryAfterSeconds: 0 };
+  }
+
+  const retryAfterSeconds = Math.max(1, Math.ceil((record.resetAt - now) / 1000));
+  return {
+    limited: record.count >= loginRateLimitMaxAttempts,
+    retryAfterSeconds,
+  };
+}
+
+function recordFailedLogin(req, usernameValue) {
+  if (!loginRateLimitMaxAttempts || !loginRateLimitWindowMs) return;
+  const key = failedLoginRateLimitKey(req, usernameValue);
+  const now = Date.now();
+  const existing = failedLoginAttempts.get(key);
+  const record = existing && existing.resetAt > now
+    ? existing
+    : { count: 0, resetAt: now + loginRateLimitWindowMs };
+  record.count += 1;
+  failedLoginAttempts.set(key, record);
+}
+
+function clearFailedLoginAttempts(req, usernameValue) {
+  failedLoginAttempts.delete(failedLoginRateLimitKey(req, usernameValue));
+}
+
+function failedLoginRateLimitKey(req, usernameValue) {
+  const username = normalizeAuthUsername(usernameValue) || "_unknown";
+  const ip = normalizeSpace(req.ip || req.socket?.remoteAddress || "unknown").slice(0, 80) || "unknown";
+  return `${ip}:${username}`;
+}
+
+function pruneExpiredFailedLoginAttempts() {
+  if (failedLoginAttempts.size < 1000) return;
+  const now = Date.now();
+  for (const [key, record] of failedLoginAttempts) {
+    if (!record || record.resetAt <= now) failedLoginAttempts.delete(key);
+  }
+}
+
 function readSignedSession(req) {
   const cookie = parseCookies(req.headers.cookie || "")[authCookieName];
   if (!cookie) return null;
@@ -6275,9 +7483,25 @@ function authInviteSignupUrl(invite, req) {
 }
 
 function requestOrigin(req) {
+  return publicOrigin || requestHostOrigin(req);
+}
+
+function requestHostOrigin(req) {
   const host = req.get?.("host") || "127.0.0.1";
   const protocol = req.protocol || (authCookieSecure ? "https" : "http");
   return `${protocol}://${host}`;
+}
+
+function normalizePublicOrigin(value) {
+  const text = normalizeSpace(value);
+  if (!text) return "";
+  try {
+    const url = new URL(text);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return url.origin;
+  } catch {
+    return "";
+  }
 }
 
 function normalizeAuthInviteToken(value) {
@@ -6517,10 +7741,10 @@ function sessionSecret() {
 }
 
 function sendLoginPage(res, options = {}) {
-  const { error = "", next = "" } = typeof options === "string" ? { error: options, next: "" } : options;
+  const { error = "", next = "", status = error ? 401 : 200 } = typeof options === "string" ? { error: options, next: "", status: 401 } : options;
   const nextInput = next ? `<input type="hidden" name="next" value="${escapeHtml(next)}">` : "";
   setPrivateNoStore(res);
-  res.status(error ? 401 : 200).send(renderAuthPage({
+  res.status(status).send(renderAuthPage({
     title: `${appName} Login`,
     heading: "Sign in",
     error,
@@ -6896,7 +8120,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260609-inventory-lifecycle-v56">
+  <link rel="stylesheet" href="/styles.css?v=20260609-gallery-mobile-v57">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">

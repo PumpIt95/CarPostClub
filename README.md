@@ -30,13 +30,39 @@ Use `.env.example` as the starting point. Do not commit real secrets.
 
 `OPENAI_API_KEY` is optional for local testing. Without it, Marketplace copy falls back to local template variants.
 
+Set `CARPOSTCLUB_PUBLIC_ORIGIN=https://carpostclub.com` in production so generated invite links do not depend on
+the request `Host` header. Production also fails closed if no app password/hash is configured; only set
+`CARPOSTCLUB_AUTH_DISABLED=true` for an intentionally unauthenticated deployment.
+
+The macOS/iOS Shortcut inventory endpoint can be protected with `CARPOSTCLUB_SHORTCUTS_BEARER_TOKEN`. When set,
+call `/api/shortcuts/inventory-albums` with `Authorization: Bearer <token>`.
+
+Admin-sensitive actions are written to a bounded audit log in the app data directory. Override this with
+`CARPOSTCLUB_AUDIT_LOG_PATH` and `CARPOSTCLUB_AUDIT_LOG_LIMIT`.
+
 Push notifications work on HTTPS deployments and localhost. If `CARPOSTCLUB_PUSH_VAPID_PUBLIC_KEY` and
 `CARPOSTCLUB_PUSH_VAPID_PRIVATE_KEY` are not set, the server generates stable keys in the app data directory.
+
+The app periodically snapshots O'Regan's inventory for the four Halifax stores into
+`oregans-inventory-snapshots.sqlite` in the app data directory. It tracks every snapshot run plus each vehicle's
+first seen, current seen, last seen, and removed timestamps, so "added today" checks can come from local history.
+After the first quiet baseline snapshot, newly seen or reappearing vehicles send a push notification to subscribed
+users.
+Tune this with `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INTERVAL_MS`; set
+`CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_ENABLED=false` to disable the scheduler.
+
+Failed login attempts are throttled per username/IP in the app process. Tune this with
+`CARPOSTCLUB_LOGIN_RATE_LIMIT_MAX_ATTEMPTS` and `CARPOSTCLUB_LOGIN_RATE_LIMIT_WINDOW_MS`; keep an edge
+rate limit in front of public deployments as a second layer.
 
 Uploaded media defaults to the local filesystem under `UPLOAD_ROOT`. To store media in Hetzner Object Storage,
 set `CARPOSTCLUB_MEDIA_STORAGE_DRIVER=s3` plus `CARPOSTCLUB_S3_BUCKET`, `CARPOSTCLUB_S3_ENDPOINT`,
 `CARPOSTCLUB_S3_REGION`, `CARPOSTCLUB_S3_ACCESS_KEY_ID`, and `CARPOSTCLUB_S3_SECRET_ACCESS_KEY`.
 Each inventory album stores files under its own object-key prefix, for example `car-.../photo.jpg`.
+
+The Docker Compose file runs one app container against the writable state volume. Do not add a second writer
+against the same `UPLOAD_ROOT`/app data directory unless shared JSON state and schedulers are moved behind a
+cross-process lock or database-backed coordination.
 
 ## Useful Commands
 
@@ -45,6 +71,9 @@ npm test
 npm run test:e2e
 sudo npm run qa:gallery
 npm run smoke
+npm run backup:state
+npm run restore:check -- --archive <backup.tar.gz>
+npm run monitor:production
 docker compose up --build
 ```
 
@@ -57,6 +86,12 @@ while running the responsive Playwright checks.
 across desktop, laptop, tablet, and mobile sizes, checks for horizontal overflow, and writes the run to
 `/var/lib/konner-upload/debug-screenshots/gallery-qa`. It reads the password from
 `/var/lib/konner-upload/visual-qa-credentials.txt` and restores that user's unread/read state afterward.
+
+`npm run smoke` also verifies the inventory snapshot endpoints, so production releases that predate the snapshot
+API will fail the smoke check instead of appearing healthy.
+
+See `docs/operations.md` for production backup/restore checks, restart-loop monitoring, Shortcut bearer-token setup,
+and token/session secret rotation.
 
 ## PWA Media Upload
 

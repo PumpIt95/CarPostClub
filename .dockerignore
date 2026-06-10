@@ -1,8 +1,22 @@
 .DS_Store
+._*
 .env
+.git
 node_modules
 npm-debug.log
 release-manifest.json
+production-inventory-current.json
 releases
 backups
 **/*.bak-*
+test
+test-results
+playwright-report
+playwright.config.mjs
+
+# Local Codex automation state
+CHROME_TABS.md
+automation-runs
+chrome-tab-registry.sqlite
+facebook-marketplace-messages*.sqlite
+.automation-locks

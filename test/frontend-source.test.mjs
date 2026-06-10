@@ -124,8 +124,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="galleryModelFilter"/);
   assert.match(html, /id="galleryYearFilter"/);
   assert.match(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260609-inventory-lifecycle-v56/);
-  assert.match(html, /\/styles\.css\?v=20260609-inventory-lifecycle-v56/);
+  assert.match(html, /\/app\.js\?v=20260609-gallery-mobile-v57/);
+  assert.match(html, /\/styles\.css\?v=20260609-gallery-mobile-v57/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -888,7 +888,7 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260609-inventory-lifecycle-v56/);
+  assert.match(source, /\/styles\.css\?v=20260609-gallery-mobile-v57/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });

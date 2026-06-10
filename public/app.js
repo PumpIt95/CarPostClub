@@ -958,6 +958,7 @@ function renderPushPrompt() {
     && Boolean(state.serviceWorkerRegistration)
     && !state.pushSubscription
     && permission === "default"
+    && state.page !== "gallery"
     && !pushPromptAsked();
   els.notificationPrompt.hidden = !shouldAsk;
   if (els.notificationPromptEnable) els.notificationPromptEnable.disabled = state.pushBusy;
@@ -1017,7 +1018,7 @@ function notificationMetaLabel(notification) {
   const labels = [];
   if (notification.kind === "chat") labels.push("Chat");
   else if (notification.kind === "upload") labels.push("Upload");
-  else if (notification.kind === "inventory_removed") labels.push("Inventory");
+  else if (notification.kind === "inventory_removed" || notification.kind === "inventory_added") labels.push("Inventory");
   if (notification.mediaCount) labels.push(`${notification.mediaCount} ${plural(notification.mediaCount, "file")}`);
   if (notification.author) labels.push(notification.author);
   return labels.join(" - ") || "CarPostClub";

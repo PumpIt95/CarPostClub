@@ -4,3 +4,10 @@ npm-debug.log*
 production-inventory-current.json
 test-results/
 playwright-report/
+
+# Local Codex automation state
+CHROME_TABS.md
+automation-runs/
+chrome-tab-registry.sqlite
+facebook-marketplace-messages*.sqlite
+.automation-locks/

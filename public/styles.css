@@ -2490,6 +2490,112 @@ textarea:focus {
     height: 48px;
   }
 
+  .app-shell.is-gallery-page {
+    padding: 10px;
+  }
+
+  .app-shell.is-gallery-page .app-header {
+    margin-bottom: 10px;
+  }
+
+  .app-shell.is-gallery-page .header-actions {
+    max-width: 168px;
+  }
+
+  .app-shell.is-gallery-page .header-actions .icon-button {
+    width: 42px;
+    height: 42px;
+  }
+
+  .app-shell.is-gallery-page .brand-mark {
+    flex-basis: 48px;
+    width: 48px;
+    height: 48px;
+  }
+
+  .app-shell.is-gallery-page .brand-block > div {
+    padding: var(--spacing-8) 10px;
+  }
+
+  .app-shell.is-gallery-page .eyebrow {
+    margin-bottom: 2px;
+    font-size: 10px;
+  }
+
+  .app-shell.is-gallery-page h1 {
+    font-size: 20px;
+  }
+
+  .app-shell.is-gallery-page .album-section {
+    margin-top: 0;
+    padding: var(--spacing-8);
+  }
+
+  .app-shell.is-gallery-page .section-heading {
+    align-items: center;
+    gap: var(--spacing-8);
+    margin-bottom: var(--spacing-8);
+    padding-bottom: var(--spacing-8);
+  }
+
+  .app-shell.is-gallery-page .section-heading h2 {
+    font-size: 16px;
+  }
+
+  .app-shell.is-gallery-page .section-heading p {
+    margin-top: 2px;
+    font-size: 11px;
+  }
+
+  .app-shell.is-gallery-page .section-heading .icon-button {
+    width: 42px;
+    height: 42px;
+  }
+
+  .app-shell.is-gallery-page .album-list.is-folder-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--spacing-8);
+  }
+
+  .app-shell.is-gallery-page .gallery-folder-card {
+    min-height: 0;
+    gap: 6px;
+    border-top-width: 3px;
+    padding: var(--spacing-8);
+  }
+
+  .app-shell.is-gallery-page .gallery-folder-cover {
+    min-height: 58px;
+    aspect-ratio: 16 / 10;
+  }
+
+  .app-shell.is-gallery-page .gallery-folder-cover.has-logo img.gallery-folder-logo {
+    box-sizing: border-box;
+    object-fit: contain;
+    padding: 6px;
+  }
+
+  .app-shell.is-gallery-page .gallery-folder-copy {
+    gap: 1px;
+  }
+
+  .app-shell.is-gallery-page .gallery-folder-copy strong {
+    font-size: 12px;
+    line-height: 1.2;
+  }
+
+  .app-shell.is-gallery-page .gallery-folder-copy span,
+  .app-shell.is-gallery-page .gallery-folder-copy small {
+    font-size: 10px;
+    line-height: 1.15;
+  }
+
+  .app-shell.is-gallery-page .gallery-folder-open {
+    min-height: 28px;
+    padding: 0 var(--spacing-8);
+    font-size: 10px;
+  }
+
   .brand-mark {
     flex-basis: 56px;
     width: 56px;

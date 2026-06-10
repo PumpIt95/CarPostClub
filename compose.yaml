@@ -9,32 +9,12 @@ services:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3911
-      INVENTORY_SYNC_PRIMARY_PORT: 3911
       UPLOAD_ROOT: /var/lib/carpostclub/uploads
       TMP_ROOT: /var/lib/carpostclub/tmp
     volumes:
       - carpostclub-state:/var/lib/carpostclub
     ports:
       - "127.0.0.1:3911:3911"
-    restart: unless-stopped
-
-  upload-secondary:
-    image: carpostclub:local
-    depends_on:
-      - upload-primary
-    env_file:
-      - ${CARPOSTCLUB_ENV_FILE:-/etc/carpostclub.env}
-    environment:
-      NODE_ENV: production
-      HOST: 0.0.0.0
-      PORT: 3912
-      INVENTORY_SYNC_PRIMARY_PORT: 3911
-      UPLOAD_ROOT: /var/lib/carpostclub/uploads
-      TMP_ROOT: /var/lib/carpostclub/tmp
-    volumes:
-      - carpostclub-state:/var/lib/carpostclub
-    ports:
-      - "127.0.0.1:3912:3912"
     restart: unless-stopped
 
 volumes:
