@@ -1749,21 +1749,26 @@ textarea:focus {
   position: relative;
 }
 
+/* Push-enabled indicator; keep it opposite the unread count badge. */
 .notification-toggle.is-on::after {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 6px;
+  left: 6px;
+  z-index: 1;
   width: 9px;
   height: 9px;
   border: 1px solid var(--color-cloud-white);
   background: var(--color-verdant-green);
   content: "";
+  pointer-events: none;
 }
 
+/* Unread notifications badge. This stays on the expected right edge. */
 .notification-unread {
   position: absolute;
   top: 2px;
   right: 2px;
+  z-index: 2;
   display: grid;
   place-items: center;
   min-width: 18px;
