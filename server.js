@@ -1363,7 +1363,7 @@ function carFromAlbum(album) {
     price: normalizeSpace(vehicle.price),
     priceValue: parseCurrency(vehicle.price),
     ownerLocation: normalizeSpace(vehicle.dealershipName || dealership.name),
-    detailUrl: normalizeSpace(vehicle.detailUrl || album?.sourceUrl),
+    detailUrl: sanitizedOregansDetailUrl(vehicle.detailUrl || album?.sourceUrl, source),
     exteriorColor: normalizeSpace(vehicle.exteriorColor),
     interiorColor: normalizeSpace(vehicle.interiorColor),
     odometer: normalizeSpace(vehicle.odometer),
@@ -1869,6 +1869,9 @@ async function readAlbum(albumId) {
   const uploadedByUsers = albumUploadedByUsers(photos);
   const createdBy = albumCreator(metadata, photos);
   const updatedBy = publicUploader(metadata.updatedBy) || publicUploader(latestPhoto?.uploadedBy) || createdBy;
+  const vehicle = sanitizedAlbumVehicle(metadata.vehicle);
+  const sourceUrl = sanitizedOregansDetailUrl(metadata.sourceUrl, vehicle?.source)
+    || sanitizedOregansDetailUrl(vehicle?.detailUrl, vehicle?.source);
 
   return {
     id: albumId,
@@ -1892,9 +1895,9 @@ async function readAlbum(albumId) {
     objectStoragePrefix: storage.prefix,
     storage,
     dealership: metadata.dealership || null,
-    vehicle: metadata.vehicle || null,
+    vehicle,
     inventoryTypeId: metadata.inventoryTypeId || null,
-    sourceUrl: metadata.sourceUrl || metadata.vehicle?.detailUrl || null,
+    sourceUrl: sourceUrl || null,
   };
 }
 
@@ -1961,6 +1964,15 @@ function publicAlbum(album) {
 
 function publicAlbums(albums = []) {
   return Array.isArray(albums) ? albums.map(publicAlbum) : [];
+}
+
+function sanitizedAlbumVehicle(vehicle) {
+  if (!vehicle || typeof vehicle !== "object") return null;
+  const source = normalizeSpace(vehicle.source || "oregans").toLowerCase();
+  return {
+    ...vehicle,
+    detailUrl: sanitizedOregansDetailUrl(vehicle.detailUrl, source),
+  };
 }
 
 function sortAlbumPhotosForDisplay(photos = []) {
@@ -2384,6 +2396,7 @@ async function writeCarAlbumMetadata(albumId, car, user = null) {
   const albumPrefix = albumObjectStoragePrefixForCar(albumId, car, existing);
   const createdBy = publicUploader(existing.createdBy) || publicUploader(user);
   const updatedBy = publicUploader(user) || publicUploader(existing.updatedBy) || createdBy;
+  const detailUrl = sanitizedOregansDetailUrl(car.detailUrl, car.source);
   await writeJson(path.join(albumPath(albumId), ".album.json"), {
     id: albumId,
     name: car.albumName,
@@ -2396,7 +2409,7 @@ async function writeCarAlbumMetadata(albumId, car, user = null) {
     updatedBy,
     dealership: car.dealership,
     inventoryTypeId: car.inventoryTypeId,
-    sourceUrl: car.detailUrl,
+    sourceUrl: detailUrl,
     vehicle: {
       source: car.source || "oregans",
       inventoryKey: car.inventoryKey || car.vin,
@@ -2416,7 +2429,7 @@ async function writeCarAlbumMetadata(albumId, car, user = null) {
       fuelType: car.fuelType,
       transmission: car.transmission,
       descriptionPreview: car.descriptionPreview,
-      detailUrl: car.detailUrl,
+      detailUrl,
       dealershipId: car.dealership.id,
       dealershipName: car.dealership.name,
     },
@@ -2671,7 +2684,7 @@ function shortcutInventoryAlbumItem(car, dealership = null) {
     stockNumber: car.stockNumber || "",
     title: car.title || "",
     price: car.price || "",
-    detailUrl: car.detailUrl || "",
+    detailUrl: sanitizedOregansDetailUrl(car.detailUrl, car.source),
     exteriorColor: car.exteriorColor || "",
     year: car.year || "",
     make: car.make || "",
@@ -3015,7 +3028,7 @@ function normalizeInventoryCar(car, { dealership, inventoryTypeId }) {
     price: car.price || "",
     priceValue: car.priceValue ?? null,
     ownerLocation: car.ownerLocation || dealership.name,
-    detailUrl: car.detailUrl || "",
+    detailUrl: sanitizedOregansDetailUrl(car.detailUrl, car.source),
     exteriorColor: car.exteriorColor || "",
     interiorColor: car.interiorColor || "",
     odometer: car.odometer || "",
@@ -3401,7 +3414,7 @@ function buildMarketplaceDescriptionFactsInput({ car, fields, postingProfiles = 
       condition: fields.vehicleCondition,
       fuelType: fuelType || null,
       transmission: transmission || null,
-      detailUrl: car.detailUrl,
+      detailUrl: sanitizedOregansDetailUrl(car.detailUrl, car.source),
     },
     inventoryCopy: {
       tagline: nullableString(car.tagline),
@@ -3929,7 +3942,7 @@ function publicOregansInventorySnapshotVehicleFromCar(car, scope, observedAt, ve
     bodyStyle: normalizeSpace(car.bodyStyle),
     fuelType: normalizeSpace(car.fuelType),
     transmission: normalizeSpace(car.transmission),
-    detailUrl: normalizeSpace(car.detailUrl),
+    detailUrl: absolutizeOregansUrl(car.detailUrl),
     firstSeenAt: observedAt,
     currentSeenAt: observedAt,
     lastSeenAt: observedAt,
@@ -4196,7 +4209,7 @@ function publicOregansInventorySnapshotVehicle(row) {
     bodyStyle: row.body_style,
     fuelType: row.fuel_type,
     transmission: row.transmission,
-    detailUrl: row.detail_url,
+    detailUrl: absolutizeOregansUrl(row.detail_url),
     firstSeenAt: row.first_seen_at,
     currentSeenAt: row.current_seen_at,
     lastSeenAt: row.last_seen_at,
@@ -7825,8 +7838,28 @@ function extractVin(html) {
 }
 
 function absolutizeOregansUrl(value) {
-  if (!value) return "";
-  return new URL(value, "https://www.oregans.com").toString();
+  const url = cleanExternalHttpUrl(value, { base: "https://www.oregans.com" });
+  if (!url) return "";
+  const hostname = new URL(url).hostname.toLowerCase();
+  if (hostname === "oregans.com" || hostname === "www.oregans.com" || hostname.endsWith(".oregans.com")) return url;
+  return "";
+}
+
+function sanitizedOregansDetailUrl(value, source = "oregans") {
+  if (normalizeSpace(source || "oregans").toLowerCase() === "manual") return "";
+  return absolutizeOregansUrl(value);
+}
+
+function cleanExternalHttpUrl(value, { base = "" } = {}) {
+  const text = normalizeSpace(value);
+  if (!text) return "";
+  try {
+    const url = base ? new URL(text, base) : new URL(text);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
 }
 
 function stripTags(value) {

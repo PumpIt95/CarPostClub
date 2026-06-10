@@ -1346,6 +1346,55 @@ test("vehicle album lookup reuses existing media when live inventory titles drif
   }
 });
 
+test("album responses strip unsafe source listing URLs from stored metadata", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const albumId = "car-used-2026-kia-seltos-unsafe-url-u6247a";
+    const filename = "2026-06-01T10-00-00-000Z-unsafe-url-front.jpg";
+    const albumPath = path.join(harness.uploadRoot, albumId);
+    const body = jpegBytes("unsafe-url-front");
+    await fs.mkdir(albumPath, { recursive: true });
+    await fs.writeFile(path.join(albumPath, filename), body);
+    await fs.writeFile(path.join(albumPath, ".album.json"), `${JSON.stringify({
+      id: albumId,
+      name: "Unsafe URL Album - U6247A",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      dealership: { id: "15", name: "O'Regan's Kia Halifax" },
+      inventoryTypeId: "2",
+      sourceUrl: "https://phishing.example/listing",
+      vehicle: {
+        source: "oregans",
+        inventoryKey: TEST_CAR.vin,
+        vin: TEST_CAR.vin,
+        stockNumber: TEST_CAR.stockNumber,
+        title: TEST_CAR.title,
+        dealershipId: "15",
+        detailUrl: "data:text/html,<script>alert(1)</script>",
+      },
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(albumPath, ".photos.json"), `${JSON.stringify({
+      [filename]: {
+        originalName: "unsafe-url-front.jpg",
+        contentType: "image/jpeg",
+        bytes: body.length,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: { username: TEST_USERNAME, displayName: TEST_USERNAME },
+      },
+    }, null, 2)}\n`);
+
+    const albums = await getJson(harness, "/api/albums");
+    const album = albums.albums.find((candidate) => candidate.id === albumId);
+    assert.ok(album);
+    assert.equal(album.sourceUrl, null);
+    assert.equal(album.vehicle.detailUrl, "");
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("O'Regan's inventory snapshots track newly seen vehicles by dealership", async () => {
   const harness = await startTestServer();
 

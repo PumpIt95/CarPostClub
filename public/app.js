@@ -204,7 +204,7 @@ async function init() {
   applyPageMode();
   bindEvents();
   await loadCurrentUser().catch(() => {});
-  loadNotifications().catch((error) => console.warn(error));
+  loadNotifications().catch(reportBackgroundFetchError);
   initChat().catch((error) => showError(error));
   initAlbumEvents();
   initPwa().catch((error) => {
@@ -926,7 +926,7 @@ function setNotificationsOpen(isOpen, { feedback = false } = {}) {
   if (state.notificationsOpen) {
     loadNotifications()
       .then(() => markNotificationsRead())
-      .catch((error) => console.warn(error));
+      .catch(reportBackgroundFetchError);
   }
 }
 
@@ -1221,11 +1221,15 @@ function handleAlbumStreamMessage(event) {
 
 function handleServiceWorkerMessage(event) {
   if (event.data?.type !== "carpostclub:push") return;
-  loadNotifications().catch((error) => console.warn(error));
+  loadNotifications().catch(reportBackgroundFetchError);
   handleUploadLiveEvent(event.data.payload).catch(reportBackgroundAlbumRefreshError);
 }
 
 function reportBackgroundAlbumRefreshError(error) {
+  reportBackgroundFetchError(error);
+}
+
+function reportBackgroundFetchError(error) {
   if (isTransientFetchError(error)) return;
   console.warn(error);
 }
@@ -2933,15 +2937,29 @@ function userAccountLabel(user) {
 }
 
 function albumActionLink(album, label, href, available) {
+  const cleanHref = cleanActionHref(href);
+  const enabled = Boolean(available && cleanHref);
   const link = document.createElement("a");
   link.className = "icon-text-button subtle";
-  link.href = available ? href : "#";
+  link.href = enabled ? cleanHref : "#";
   link.dataset.albumId = album.id;
   link.textContent = label;
-  link.setAttribute("aria-disabled", String(!available));
-  link.classList.toggle("is-disabled", !available);
-  link.tabIndex = available ? 0 : -1;
+  link.setAttribute("aria-disabled", String(!enabled));
+  link.classList.toggle("is-disabled", !enabled);
+  link.tabIndex = enabled ? 0 : -1;
   return link;
+}
+
+function cleanActionHref(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.startsWith("/") && !text.startsWith("//")) return text;
+  try {
+    const url = new URL(text, window.location.origin);
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : "";
+  } catch {
+    return "";
+  }
 }
 
 function albumCoverThumbnailUrl(album) {

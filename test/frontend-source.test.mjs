@@ -363,6 +363,9 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /function renderPushPrompt\(/);
   assert.match(source, /function markNotificationsRead\(/);
   assert.match(source, /\/api\/notifications/);
+  assert.match(source, /loadNotifications\(\)\.catch\(reportBackgroundFetchError\)/);
+  assert.match(source, /function reportBackgroundFetchError\(error\)/);
+  assert.match(source, /isTransientFetchError\(error\)/);
   assert.match(source, /\/api\/push\/config/);
   assert.match(source, /\/api\/push\/subscriptions/);
   assert.match(source, /\/api\/push\/test/);
@@ -940,6 +943,16 @@ test("album media thumbs keep media inside album tiles", async () => {
   assert.match(source, /deleteAlbumPhoto/);
   assert.doesNotMatch(styles, /\.gallery-grid/);
   assert.doesNotMatch(styles, /\.photo-card/);
+});
+
+test("album action links reject unsafe href schemes", async () => {
+  const source = await fs.readFile(appJsPath, "utf8");
+
+  assert.match(source, /function cleanActionHref/);
+  assert.match(source, /new URL\(text, window\.location\.origin\)/);
+  assert.match(source, /\["http:", "https:"\]\.includes\(url\.protocol\)/);
+  assert.match(source, /const cleanHref = cleanActionHref\(href\)/);
+  assert.match(source, /link\.href = enabled \? cleanHref : "#"/);
 });
 
 test("uploaded package albums show inventory status and mobile download controls", async () => {

@@ -6,6 +6,7 @@ node_modules
 npm-debug.log
 release-manifest.json
 production-inventory-current.json
+output
 releases
 backups
 **/*.bak-*
