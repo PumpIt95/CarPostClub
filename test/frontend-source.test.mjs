@@ -83,10 +83,12 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="notificationPanel"/);
   assert.match(html, /id="notificationList"/);
   assert.match(html, /id="notificationPrompt"/);
-  assert.match(html, /id="notificationPreview"/);
-  assert.match(html, /id="notificationPreviewKind"/);
-  assert.match(html, /id="notificationPreviewSend"/);
-  assert.match(html, /Send preview push to me/);
+  assert.doesNotMatch(html, /id="notificationPreview"/);
+  assert.doesNotMatch(html, /id="notificationPreviewKind"/);
+  assert.doesNotMatch(html, /id="notificationPreviewSend"/);
+  assert.doesNotMatch(html, /Send preview push to me/);
+  assert.doesNotMatch(html, /Upload preview/);
+  assert.doesNotMatch(html, /Inventory added preview/);
   assert.match(html, /id="notificationUnread"/);
   assert.doesNotMatch(html, /id="shortcutButton"/i);
   assert.doesNotMatch(html, /id="shortcutPanel"/i);
@@ -128,8 +130,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="galleryModelFilter"/);
   assert.match(html, /id="galleryYearFilter"/);
   assert.match(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260610-gallery-unread-v58/);
-  assert.match(html, /\/styles\.css\?v=20260610-gallery-unread-v58/);
+  assert.match(html, /\/app\.js\?v=20260610-no-preview-push-v59/);
+  assert.match(html, /\/styles\.css\?v=20260610-no-preview-push-v59/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -359,14 +361,14 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /function setNotificationsOpen\(/);
   assert.match(source, /function renderNotificationPanel\(/);
   assert.match(source, /function renderPushPrompt\(/);
-  assert.match(source, /function sendPreviewPushToMe\(/);
   assert.match(source, /function markNotificationsRead\(/);
   assert.match(source, /\/api\/notifications/);
   assert.match(source, /\/api\/push\/config/);
   assert.match(source, /\/api\/push\/subscriptions/);
   assert.match(source, /\/api\/push\/test/);
-  assert.match(source, /\/api\/push\/preview/);
-  assert.match(source, /state\.currentUser\?\.role === "admin"/);
+  assert.doesNotMatch(source, /function sendPreviewPushToMe\(/);
+  assert.doesNotMatch(source, /\/api\/push\/preview/);
+  assert.doesNotMatch(source, /notificationPreview/);
   assert.doesNotMatch(source, /Turn off notifications/);
   assert.doesNotMatch(source, /\/api\/shortcut/i);
   assert.doesNotMatch(source, /setShortcutPanelOpen/i);
@@ -490,7 +492,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v58/);
+  assert.match(serviceWorker, /carpostclub-pwa-v59/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -967,10 +969,14 @@ test("gallery page is an authenticated app route separate from upload", async ()
   assert.match(source, /res\.sendFile\(path\.join\(publicRoot, "index\.html"\)\)/);
 });
 
-test("push notification server routes expose safe preview and dealership targeting helpers", async () => {
+test("push notification server routes expose production-gated preview and dealership targeting helpers", async () => {
   const source = await fs.readFile(serverPath, "utf8");
 
   assert.match(source, /app\.post\("\/api\/push\/preview", requireAuth/);
+  assert.match(source, /previewPushEnabled/);
+  assert.match(source, /CARPOSTCLUB_INTERNAL_PREVIEW_PUSH_ENABLED/);
+  assert.match(source, /Preview push is disabled/);
+  assert.match(source, /function isPreviewNotification\(/);
   assert.match(source, /app\.post\("\/api\/admin\/push\/dry-run", requireAdmin/);
   assert.match(source, /async function usersForDealership\(/);
   assert.match(source, /async function usernamesForDealership\(/);
@@ -1001,7 +1007,7 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260610-gallery-unread-v58/);
+  assert.match(source, /\/styles\.css\?v=20260610-no-preview-push-v59/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });

@@ -393,7 +393,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260610-gallery-unread-v58/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260610-no-preview-push-v59/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -1424,7 +1424,7 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
   }
 });
 
-test("push preview is self-only and admin dry-run reports dealership targets", async () => {
+test("admin push dry-run reports dealership targets", async () => {
   const harness = await startTestServer();
 
   try {
@@ -1468,50 +1468,75 @@ test("push preview is self-only and admin dry-run reports dealership targets", a
     const nonAdminDryRun = await postJsonWithCookie(harness, michael.cookie, "/api/admin/push/dry-run", {});
     assert.equal(nonAdminDryRun.status, 403);
 
-    const inventoryBeforePreview = await getJson(harness, "/api/inventory/cars?dealershipId=15&inventoryTypeId=2");
-    assert.equal(inventoryBeforePreview.cars.some((car) => car.stockNumber === "STK123"), false);
-
-    const inventoryPreview = await postJson(harness, "/api/push/preview", { kind: "inventory_added" });
-    assert.equal(inventoryPreview.status, 200);
-    assert.equal(inventoryPreview.body.preview, true);
-    assert.equal(inventoryPreview.body.payload.preview, true);
-    assert.equal(inventoryPreview.body.payload.title, "New Kia inventory");
-    assert.equal(inventoryPreview.body.payload.type, "inventory_added");
-    assert.equal(inventoryPreview.body.payload.notificationType, "inventory_added");
-    assert.equal(inventoryPreview.body.payload.route, "vehicle_media_intake");
-    assert.match(inventoryPreview.body.payload.url, /^\//);
-    assert.equal(inventoryPreview.body.delivery.requested, 1);
-    assert.equal(inventoryPreview.body.delivery.skipped, 1);
-    assert.equal(inventoryPreview.body.delivery.logged, 1);
-
-    const uploadPreview = await postJson(harness, "/api/push/preview", { kind: "upload" });
-    assert.equal(uploadPreview.status, 200);
-    assert.equal(uploadPreview.body.payload.preview, true);
-    assert.equal(uploadPreview.body.payload.title, "admin uploaded a car");
-    assert.equal(uploadPreview.body.payload.body, "Photos added for STK123 - 2024 Kia Sportage.");
-    assert.equal(uploadPreview.body.payload.type, "media_upload");
-    assert.equal(uploadPreview.body.payload.notificationType, "media_upload");
-    assert.equal(uploadPreview.body.payload.route, "media_gallery");
-    assert.match(uploadPreview.body.payload.url, /^\/gallery\?/);
-    assert.equal(uploadPreview.body.delivery.requested, 1);
-    assert.equal(uploadPreview.body.delivery.skipped, 1);
-    assert.equal(uploadPreview.body.delivery.logged, 1);
-    assert.notEqual(uploadPreview.body.payload.messageId, inventoryPreview.body.payload.messageId);
-    assert.notEqual(uploadPreview.body.payload.tag, inventoryPreview.body.payload.tag);
-
-    const inventoryAfterPreview = await getJson(harness, "/api/inventory/cars?dealershipId=15&inventoryTypeId=2");
-    assert.equal(inventoryAfterPreview.cars.length, inventoryBeforePreview.cars.length);
-    assert.equal(inventoryAfterPreview.cars.some((car) => car.stockNumber === "STK123"), false);
-
-    const adminNotifications = await getJson(harness, "/api/notifications");
-    assert.equal(adminNotifications.unreadCount, 2);
-    assert.ok(adminNotifications.notifications.every((notification) => notification.preview === true));
-    assert.ok(adminNotifications.notifications.some((notification) => notification.title === "New Kia inventory"));
-    assert.ok(adminNotifications.notifications.some((notification) => notification.title === "admin uploaded a car"));
-
     const michaelNotifications = await getJsonWithCookie(harness, michael.cookie, "/api/notifications");
     assert.equal(michaelNotifications.unreadCount, 0);
     assert.deepEqual(michaelNotifications.notifications, []);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("preview push endpoint is disabled in production and old preview notifications stay hidden", async () => {
+  const harness = await startTestServer({ env: { NODE_ENV: "production" } });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    await postJson(harness, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("admin-preview-disabled"),
+    });
+
+    const disabledPreview = await postJson(harness, "/api/push/preview", { kind: "upload" });
+    assert.equal(disabledPreview.status, 404);
+    assert.equal(disabledPreview.body.ok, false);
+    assert.match(disabledPreview.body.error, /Preview push is disabled/);
+
+    const now = new Date().toISOString();
+    await fs.writeFile(path.join(harness.tempRoot, "notification-log.json"), `${JSON.stringify({
+      notifications: [
+        {
+          id: "preview-upload-hidden",
+          username: TEST_USERNAME,
+          title: "admin uploaded a car",
+          body: "Photos added for STK123 - 2024 Kia Sportage.",
+          url: "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=STK123&openAlbum=1",
+          kind: "upload",
+          type: "media_upload",
+          route: "media_gallery",
+          notificationType: "media_upload",
+          tag: "carpostclub-preview-preview-upload-hidden",
+          messageId: "preview-upload-hidden",
+          preview: true,
+          createdAt: now,
+          receivedAt: now,
+        },
+        {
+          id: "real-upload-visible",
+          username: TEST_USERNAME,
+          title: "Konner uploaded a car",
+          body: "Photos added for U6247A - 2026 Kia Seltos X-Line AWD.",
+          url: `/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&albumId=${TEST_ALBUM_ID}&openAlbum=1`,
+          kind: "upload",
+          type: "media_upload",
+          route: "media_gallery",
+          notificationType: "media_upload",
+          messageId: "upload-real-visible",
+          preview: false,
+          dealershipId: "15",
+          inventoryTypeId: "2",
+          inventoryKey: TEST_CAR.vin,
+          stockNumber: TEST_CAR.stockNumber,
+          createdAt: now,
+          receivedAt: now,
+        },
+      ],
+    }, null, 2)}\n`);
+
+    const notifications = await getJson(harness, "/api/notifications");
+    assert.equal(notifications.unreadCount, 1);
+    assert.equal(notifications.notifications.length, 1);
+    assert.equal(notifications.notifications[0].id, "real-upload-visible");
+    assert.equal(notifications.notifications[0].preview, false);
+    assert.equal(notifications.notifications[0].route, "media_gallery");
   } finally {
     await stopTestServer(harness);
   }

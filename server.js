@@ -109,6 +109,7 @@ const pushSubject = process.env.CARPOSTCLUB_PUSH_SUBJECT || process.env.KONNER_P
 const pushTtlSeconds = positiveInteger(process.env.CARPOSTCLUB_PUSH_TTL_SECONDS || process.env.KONNER_PUSH_TTL_SECONDS, 60 * 60);
 const pushDeliveryDisabled = parseBooleanEnv("CARPOSTCLUB_PUSH_DELIVERY_DISABLED", parseBooleanEnv("KONNER_PUSH_DELIVERY_DISABLED", false));
 const pushAwaitDelivery = parseBooleanEnv("CARPOSTCLUB_PUSH_AWAIT_DELIVERY", parseBooleanEnv("KONNER_PUSH_AWAIT_DELIVERY", process.env.NODE_ENV === "test"));
+const previewPushEnabled = nodeEnv !== "production" || parseBooleanEnv("CARPOSTCLUB_INTERNAL_PREVIEW_PUSH_ENABLED", false);
 const notificationLogLimitPerUser = positiveInteger(process.env.CARPOSTCLUB_NOTIFICATION_LOG_LIMIT_PER_USER || process.env.KONNER_NOTIFICATION_LOG_LIMIT_PER_USER, 200);
 const auditLogLimit = positiveInteger(process.env.CARPOSTCLUB_AUDIT_LOG_LIMIT || process.env.KONNER_AUDIT_LOG_LIMIT || process.env.AUDIT_LOG_LIMIT, 1000);
 const authUsername = process.env.CARPOSTCLUB_AUTH_USERNAME || process.env.KONNER_AUTH_USERNAME || "admin";
@@ -864,6 +865,7 @@ app.post("/api/push/test", requireAuth, async (req, res, next) => {
 
 app.post("/api/push/preview", requireAuth, async (req, res, next) => {
   try {
+    if (!previewPushEnabled) throw httpError(404, "Preview push is disabled.");
     const payload = previewPushPayload(req.body || {}, req.authUser);
     const delivery = await sendPushNotifications({
       usernames: [req.authUser.username],
@@ -6723,11 +6725,16 @@ async function notificationLogForUser(user, { limit = 50 } = {}) {
   const store = await readNotificationLog();
   const notifications = store.notifications
     .filter((entry) => entry.username === username)
+    .filter((entry) => !isPreviewNotification(entry))
     .sort((left, right) => new Date(right.receivedAt || right.createdAt || 0).getTime() - new Date(left.receivedAt || left.createdAt || 0).getTime());
   return {
     notifications: notifications.slice(0, limit).map(publicNotificationRecord),
     unreadCount: notifications.filter((entry) => !entry.readAt).length,
   };
+}
+
+function isPreviewNotification(entry) {
+  return Boolean(entry?.preview) || /^preview-/i.test(normalizeSpace(entry?.messageId || entry?.id));
 }
 
 async function markNotificationsRead(user, ids = null) {
@@ -8873,7 +8880,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260610-gallery-unread-v58">
+  <link rel="stylesheet" href="/styles.css?v=20260610-no-preview-push-v59">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">
