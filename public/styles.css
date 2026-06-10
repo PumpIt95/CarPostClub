@@ -1903,6 +1903,40 @@ textarea:focus {
   justify-self: start;
 }
 
+.notification-preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--spacing-8);
+  align-items: end;
+  border-bottom: 1px solid var(--color-stone-gray);
+  padding: var(--spacing-12) var(--spacing-16);
+  background: #eef6ff;
+}
+
+.notification-preview label {
+  display: grid;
+  gap: 4px;
+  color: var(--color-smoke-gray);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+}
+
+.notification-preview select {
+  min-width: 0;
+  border: 1px solid var(--color-stone-gray);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--color-midnight-graphite);
+  background: var(--color-cloud-white);
+  font: inherit;
+}
+
+.notification-preview .icon-text-button {
+  min-height: 40px;
+  white-space: nowrap;
+}
+
 .notification-list {
   display: grid;
   align-content: start;
@@ -2751,6 +2785,17 @@ textarea:focus {
   .notification-prompt-actions {
     display: grid;
     grid-template-columns: 1fr 48px;
+  }
+
+  .notification-preview {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .notification-preview .icon-text-button {
+    justify-content: center;
+    width: 100%;
+    white-space: normal;
   }
 
   .notification-panel {

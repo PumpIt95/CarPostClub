@@ -458,6 +458,22 @@
         <span>Enable notifications</span>
       </button>
     </div>
+    <div id="notificationPreview" class="notification-preview" hidden>
+      <label for="notificationPreviewKind">
+        <span>Preview type</span>
+        <select id="notificationPreviewKind">
+          <option value="inventory_added">Inventory</option>
+          <option value="upload">Upload</option>
+        </select>
+      </label>
+      <button id="notificationPreviewSend" class="icon-text-button subtle" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m22 2-7 20-4-9-9-4Z"/>
+          <path d="M22 2 11 13"/>
+        </svg>
+        <span>Send preview push to me</span>
+      </button>
+    </div>
     <div id="notificationList" class="notification-list" role="list"></div>
     <div id="notificationEmpty" class="notification-empty">No notifications yet</div>
   </section>

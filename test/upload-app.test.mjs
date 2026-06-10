@@ -98,6 +98,25 @@ const SNAPSHOT_NEW_CAR = {
   transmission: "Automatic",
   detailUrl: "https://www.oregans.com/inventory/Used-2024-Chevrolet-Silverado-Custom-UG9999/",
 };
+const SNAPSHOT_NEW_KIA_CAR = {
+  dealershipId: "15",
+  inventoryTypeId: "2",
+  vin: "KNDPUCAF1S7123456",
+  stockNumber: "UK1111",
+  title: "Used 2025 Kia Sportage EX",
+  year: "2025",
+  make: "Kia",
+  model: "Sportage",
+  trim: "EX",
+  price: "$34,990",
+  odometer: "6,100 km",
+  exteriorColor: "Blue",
+  interiorColor: "Black",
+  bodyStyle: "SUV",
+  fuelType: "Gas",
+  transmission: "Automatic",
+  detailUrl: "https://www.oregans.com/inventory/Used-2025-Kia-Sportage-EX-UK1111/",
+};
 const MANUAL_CAR = {
   dealershipId: "15",
   inventoryTypeId: "2",
@@ -1273,43 +1292,79 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
       && count.count === 1
     )));
 
+    const michael = await createApprovedAccount(harness, {
+      username: "michael",
+      displayName: "Michael",
+      dealershipId: "18",
+      password: "michael-password-123",
+    });
+
     const pushSubscription = await postJson(harness, "/api/push/subscriptions", {
       subscription: pushSubscriptionFor("admin-inventory-added"),
     });
     assert.equal(pushSubscription.status, 201);
+    const michaelPushSubscription = await postJsonWithCookie(harness, michael.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("michael-inventory-added"),
+    });
+    assert.equal(michaelPushSubscription.status, 201);
 
     await sleep(20);
     const sinceAfterFirstRun = new Date(Date.parse(firstRun.body.snapshot.finishedAt) + 1).toISOString();
-    await fs.writeFile(harness.inventoryMockFile, `${JSON.stringify({
-      cars: [TEST_CAR, SNAPSHOT_NEW_CAR],
-    }, null, 2)}\n`);
+    await writeInventoryMock(harness, [TEST_CAR, SNAPSHOT_NEW_CAR, SNAPSHOT_NEW_KIA_CAR]);
 
     const secondRun = await postJson(harness, "/api/inventory/snapshots/run", {});
     assert.equal(secondRun.status, 201);
     assert.equal(secondRun.body.snapshot.status, "completed");
-    assert.equal(secondRun.body.snapshot.observed, 2);
-    assert.equal(secondRun.body.snapshot.newInventory.count, 1);
-    assert.equal(secondRun.body.snapshot.newInventory.vehicles[0].stockNumber, SNAPSHOT_NEW_CAR.stockNumber);
-    assert.equal(secondRun.body.snapshot.pushDelivery.requested, 1);
-    assert.equal(secondRun.body.snapshot.pushDelivery.skipped, 1);
-    assert.equal(secondRun.body.snapshot.pushDelivery.logged, 1);
+    assert.equal(secondRun.body.snapshot.observed, 3);
+    assert.equal(secondRun.body.snapshot.newInventory.count, 2);
+    assert.deepEqual(
+      secondRun.body.snapshot.newInventory.vehicles.map((vehicle) => vehicle.stockNumber).sort(),
+      [SNAPSHOT_NEW_CAR.stockNumber, SNAPSHOT_NEW_KIA_CAR.stockNumber].sort(),
+    );
+    assert.equal(secondRun.body.snapshot.pushDelivery.requested, 2);
+    assert.equal(secondRun.body.snapshot.pushDelivery.skipped, 2);
+    assert.equal(secondRun.body.snapshot.pushDelivery.logged, 2);
+    assert.deepEqual(
+      secondRun.body.snapshot.pushDelivery.dealerships.map((dealership) => ({
+        dealershipId: dealership.dealershipId,
+        label: dealership.label,
+        count: dealership.count,
+        requested: dealership.requested,
+        logged: dealership.logged,
+      })).sort((left, right) => left.dealershipId.localeCompare(right.dealershipId)),
+      [
+        { dealershipId: "15", label: "Kia", count: 1, requested: 1, logged: 1 },
+        { dealershipId: "18", label: "GM", count: 1, requested: 1, logged: 1 },
+      ],
+    );
 
     const notifications = await getJson(harness, "/api/notifications");
     assert.equal(notifications.unreadCount, 1);
-    assert.equal(notifications.notifications[0].title, "New O'Regan's inventory");
-    assert.match(notifications.notifications[0].body, /GM UG9999 added to O'Regan's inventory/);
+    assert.equal(notifications.notifications[0].title, "New Kia inventory");
+    assert.match(notifications.notifications[0].body, /UK1111 2025 Kia Sportage EX added\./);
+    assert.doesNotMatch(notifications.notifications[0].body, /UG9999|Chevrolet|GM/);
     assert.equal(notifications.notifications[0].kind, "inventory_added");
+    assert.equal(notifications.notifications[0].dealershipId, "15");
+    assert.match(notifications.notifications[0].url, /dealershipId=15/);
+
+    const michaelNotifications = await getJsonWithCookie(harness, michael.cookie, "/api/notifications");
+    assert.equal(michaelNotifications.unreadCount, 1);
+    assert.equal(michaelNotifications.notifications[0].title, "New GM inventory");
+    assert.match(michaelNotifications.notifications[0].body, /UG9999 2024 Chevrolet Silverado Custom added\./);
+    assert.doesNotMatch(michaelNotifications.notifications[0].body, /UK1111|Kia/);
+    assert.equal(michaelNotifications.notifications[0].kind, "inventory_added");
+    assert.equal(michaelNotifications.notifications[0].dealershipId, "18");
+    assert.match(michaelNotifications.notifications[0].url, /dealershipId=18/);
 
     const added = await getJson(harness, `/api/inventory/snapshots/added?since=${encodeURIComponent(sinceAfterFirstRun)}`);
     assert.equal(added.ok, true);
-    assert.equal(added.count, 1);
-    assert.equal(added.vehicles[0].stockNumber, SNAPSHOT_NEW_CAR.stockNumber);
-    assert.equal(added.vehicles[0].dealershipId, "18");
-    assert.equal(added.vehicles[0].currentSeenAt, secondRun.body.snapshot.finishedAt);
+    assert.equal(added.count, 2);
+    const addedByStock = new Map(added.vehicles.map((vehicle) => [vehicle.stockNumber, vehicle]));
+    assert.equal(addedByStock.get(SNAPSHOT_NEW_CAR.stockNumber).dealershipId, "18");
+    assert.equal(addedByStock.get(SNAPSHOT_NEW_KIA_CAR.stockNumber).dealershipId, "15");
+    assert.equal(addedByStock.get(SNAPSHOT_NEW_CAR.stockNumber).currentSeenAt, secondRun.body.snapshot.finishedAt);
 
-    await fs.writeFile(harness.inventoryMockFile, `${JSON.stringify({
-      cars: [SNAPSHOT_NEW_CAR],
-    }, null, 2)}\n`);
+    await writeInventoryMock(harness, [SNAPSHOT_NEW_CAR]);
     const thirdRun = await postJson(harness, "/api/inventory/snapshots/run", {});
     assert.equal(thirdRun.status, 201);
     assert.equal(thirdRun.body.snapshot.newInventory.count, 0);
@@ -1319,6 +1374,88 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     const gmUsed = finalStatus.presentCounts.find((count) => count.dealershipId === "18" && count.inventoryTypeId === "2");
     assert.equal(kiaUsed, undefined);
     assert.equal(gmUsed.count, 1);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("push preview is self-only and admin dry-run reports dealership targets", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const michael = await createApprovedAccount(harness, {
+      username: "michael",
+      displayName: "Michael",
+      dealershipId: "18",
+      password: "michael-password-123",
+    });
+
+    await postJson(harness, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("admin-preview"),
+    });
+    await postJsonWithCookie(harness, michael.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("michael-preview"),
+    });
+
+    const dryRun = await postJson(harness, "/api/admin/push/dry-run", {
+      uploadUploaderUsernames: [TEST_USERNAME, "michael"],
+    });
+    assert.equal(dryRun.status, 200);
+    assert.equal(dryRun.body.ok, true);
+    assert.equal(dryRun.body.dryRun, true);
+    const targetsByLabel = new Map(dryRun.body.dealerships.map((dealership) => [dealership.label, dealership]));
+    assert.deepEqual(targetsByLabel.get("Kia").usernames, [TEST_USERNAME]);
+    assert.deepEqual(targetsByLabel.get("GM").usernames, ["michael"]);
+    assert.deepEqual(targetsByLabel.get("Nissan").usernames, []);
+    assert.deepEqual(targetsByLabel.get("VW").usernames, []);
+    assert.deepEqual(targetsByLabel.get("Kia").pushEnabledUsernames, [TEST_USERNAME]);
+    assert.deepEqual(targetsByLabel.get("GM").pushEnabledUsernames, ["michael"]);
+    const uploadDryRuns = new Map(dryRun.body.upload.simulations.map((simulation) => [simulation.uploaderUsername, simulation]));
+    assert.deepEqual(uploadDryRuns.get(TEST_USERNAME).usernames, ["michael"]);
+    assert.deepEqual(uploadDryRuns.get(TEST_USERNAME).pushEnabledUsernames, ["michael"]);
+    assert.deepEqual(uploadDryRuns.get("michael").usernames, [TEST_USERNAME]);
+    assert.deepEqual(uploadDryRuns.get("michael").pushEnabledUsernames, [TEST_USERNAME]);
+
+    const nonAdminDryRun = await postJsonWithCookie(harness, michael.cookie, "/api/admin/push/dry-run", {});
+    assert.equal(nonAdminDryRun.status, 403);
+
+    const inventoryBeforePreview = await getJson(harness, "/api/inventory/cars?dealershipId=15&inventoryTypeId=2");
+    assert.equal(inventoryBeforePreview.cars.some((car) => car.stockNumber === "STK123"), false);
+
+    const inventoryPreview = await postJson(harness, "/api/push/preview", { kind: "inventory_added" });
+    assert.equal(inventoryPreview.status, 200);
+    assert.equal(inventoryPreview.body.preview, true);
+    assert.equal(inventoryPreview.body.payload.preview, true);
+    assert.equal(inventoryPreview.body.payload.title, "New Kia inventory");
+    assert.equal(inventoryPreview.body.delivery.requested, 1);
+    assert.equal(inventoryPreview.body.delivery.skipped, 1);
+    assert.equal(inventoryPreview.body.delivery.logged, 1);
+
+    const uploadPreview = await postJson(harness, "/api/push/preview", { kind: "upload" });
+    assert.equal(uploadPreview.status, 200);
+    assert.equal(uploadPreview.body.payload.preview, true);
+    assert.equal(uploadPreview.body.payload.title, "admin uploaded a car");
+    assert.equal(uploadPreview.body.payload.body, "Photos added for STK123 - 2024 Kia Sportage.");
+    assert.equal(uploadPreview.body.delivery.requested, 1);
+    assert.equal(uploadPreview.body.delivery.skipped, 1);
+    assert.equal(uploadPreview.body.delivery.logged, 1);
+    assert.notEqual(uploadPreview.body.payload.messageId, inventoryPreview.body.payload.messageId);
+    assert.notEqual(uploadPreview.body.payload.tag, inventoryPreview.body.payload.tag);
+
+    const inventoryAfterPreview = await getJson(harness, "/api/inventory/cars?dealershipId=15&inventoryTypeId=2");
+    assert.equal(inventoryAfterPreview.cars.length, inventoryBeforePreview.cars.length);
+    assert.equal(inventoryAfterPreview.cars.some((car) => car.stockNumber === "STK123"), false);
+
+    const adminNotifications = await getJson(harness, "/api/notifications");
+    assert.equal(adminNotifications.unreadCount, 2);
+    assert.ok(adminNotifications.notifications.every((notification) => notification.preview === true));
+    assert.ok(adminNotifications.notifications.some((notification) => notification.title === "New Kia inventory"));
+    assert.ok(adminNotifications.notifications.some((notification) => notification.title === "admin uploaded a car"));
+
+    const michaelNotifications = await getJsonWithCookie(harness, michael.cookie, "/api/notifications");
+    assert.equal(michaelNotifications.unreadCount, 0);
+    assert.deepEqual(michaelNotifications.notifications, []);
   } finally {
     await stopTestServer(harness);
   }
@@ -1733,7 +1870,8 @@ test("vehicle gallery unread state is tracked per user", async () => {
       assert.equal(event.albumId, TEST_ALBUM_ID);
       assert.equal(event.mediaCount, 1);
       assert.equal(event.uploadedBy.username, TEST_USERNAME);
-      assert.match(event.body, /1 file added for U6247A/);
+      assert.equal(event.title, "admin uploaded a car");
+      assert.match(event.body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
       assert.equal(event.url, `/?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&openAlbum=1`);
     }
 
@@ -1767,6 +1905,152 @@ test("vehicle gallery unread state is tracked per user", async () => {
     assert.equal(secondRead.body.unreadTotal, 0);
   } finally {
     await Promise.all(albumCollectors.map((collector) => collector.close()));
+    await stopTestServer(harness);
+  }
+});
+
+test("vehicle upload push notifications go to all approved push-enabled users except uploader", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const kiaViewer = await createApprovedAccount(harness, {
+      username: "kia.viewer",
+      displayName: "Kia Viewer",
+      dealershipId: "15",
+      password: "kia-viewer-123",
+    });
+    const gmViewer = await createApprovedAccount(harness, {
+      username: "gm.viewer",
+      displayName: "GM Viewer",
+      dealershipId: "18",
+      password: "gm-viewer-123",
+    });
+    const nissanViewer = await createApprovedAccount(harness, {
+      username: "nissan.viewer",
+      displayName: "Nissan Viewer",
+      dealershipId: "3",
+      password: "nissan-viewer-123",
+    });
+    const noPushViewer = await createApprovedAccount(harness, {
+      username: "no.push.viewer",
+      displayName: "No Push Viewer",
+      dealershipId: "31",
+      password: "no-push-viewer-123",
+    });
+    const rejectedViewer = await createApprovedAccount(harness, {
+      username: "rejected.viewer",
+      displayName: "Rejected Viewer",
+      dealershipId: "31",
+      password: "rejected-viewer-123",
+    });
+
+    await postJson(harness, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("admin-upload-targeted"),
+    });
+    await postJsonWithCookie(harness, kiaViewer.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("kia-viewer-upload-targeted"),
+    });
+    await postJsonWithCookie(harness, gmViewer.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("gm-viewer-upload-targeted"),
+    });
+    await postJsonWithCookie(harness, nissanViewer.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("nissan-viewer-upload-targeted"),
+    });
+    await postJsonWithCookie(harness, rejectedViewer.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("rejected-viewer-upload-targeted"),
+    });
+
+    const rejected = await fetch(`${harness.baseUrl}/admin/users/${encodeURIComponent(rejectedViewer.username)}/reject`, {
+      method: "POST",
+      headers: { Cookie: harness.cookie },
+      redirect: "manual",
+    });
+    assert.equal(rejected.status, 303);
+
+    const uploaded = await uploadPhotosWithCookie(harness, harness.cookie, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [
+        { filename: "targeted-front.jpg", type: "image/jpeg", body: jpegBytes("targeted-front") },
+      ],
+    });
+    assert.equal(uploaded.status, 201);
+
+    const kiaNotifications = await waitForNotificationCount(harness, kiaViewer.cookie, 1);
+    assert.equal(kiaNotifications.notifications[0].title, "admin uploaded a car");
+    assert.match(kiaNotifications.notifications[0].body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
+    assert.equal(kiaNotifications.notifications[0].kind, "upload");
+    assert.equal(kiaNotifications.notifications[0].dealershipId, "15");
+    assert.equal(kiaNotifications.notifications[0].url, `/?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&openAlbum=1`);
+
+    const gmNotifications = await waitForNotificationCount(harness, gmViewer.cookie, 1);
+    assert.equal(gmNotifications.notifications[0].title, "admin uploaded a car");
+    assert.match(gmNotifications.notifications[0].body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
+    assert.equal(gmNotifications.notifications[0].kind, "upload");
+    assert.equal(gmNotifications.notifications[0].dealershipId, "15");
+
+    const nissanNotifications = await waitForNotificationCount(harness, nissanViewer.cookie, 1);
+    assert.equal(nissanNotifications.notifications[0].title, "admin uploaded a car");
+    assert.match(nissanNotifications.notifications[0].body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
+    assert.equal(nissanNotifications.notifications[0].kind, "upload");
+    assert.equal(nissanNotifications.notifications[0].dealershipId, "15");
+
+    const adminNotifications = await getJson(harness, "/api/notifications");
+    assert.equal(adminNotifications.unreadCount, 0);
+    assert.deepEqual(adminNotifications.notifications, []);
+
+    const noPushNotifications = await getJsonWithCookie(harness, noPushViewer.cookie, "/api/notifications");
+    assert.equal(noPushNotifications.unreadCount, 0);
+    assert.deepEqual(noPushNotifications.notifications, []);
+
+    assert.deepEqual(await notificationLogForUsername(harness, rejectedViewer.username), []);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("gm uploader is excluded while kia users receive the upload push", async () => {
+  const harness = await startTestServer({ inventoryCars: [TEST_CAR, SNAPSHOT_NEW_CAR] });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const michael = await createApprovedAccount(harness, {
+      username: "michael",
+      displayName: "Michael",
+      dealershipId: "18",
+      password: "michael-password-123",
+    });
+
+    await postJson(harness, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("admin-gm-upload"),
+    });
+    await postJsonWithCookie(harness, michael.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("michael-gm-upload"),
+    });
+
+    const uploaded = await uploadPhotosWithCookie(harness, michael.cookie, {
+      dealershipId: "18",
+      inventoryTypeId: "2",
+      vin: SNAPSHOT_NEW_CAR.vin,
+      photos: [
+        { filename: "gm-front.jpg", type: "image/jpeg", body: jpegBytes("gm-front") },
+      ],
+    });
+    assert.equal(uploaded.status, 201);
+
+    const adminNotifications = await waitForNotificationCount(harness, harness.cookie, 1);
+    assert.equal(adminNotifications.notifications[0].title, "Michael uploaded a car");
+    assert.match(adminNotifications.notifications[0].body, /Photos added for UG9999 - 2024 Chevrolet Silverado Custom\./);
+    assert.equal(adminNotifications.notifications[0].kind, "upload");
+    assert.equal(adminNotifications.notifications[0].dealershipId, "18");
+    assert.equal(adminNotifications.notifications[0].url, `/?dealershipId=18&inventoryTypeId=2&inventoryKey=${SNAPSHOT_NEW_CAR.vin}&openAlbum=1`);
+
+    const michaelNotifications = await getJsonWithCookie(harness, michael.cookie, "/api/notifications");
+    assert.equal(michaelNotifications.unreadCount, 0);
+    assert.deepEqual(michaelNotifications.notifications, []);
+  } finally {
     await stopTestServer(harness);
   }
 });
@@ -2143,6 +2427,7 @@ async function createApprovedAccount(harness, account) {
     invite: invite.token,
     displayName: account.displayName,
     username: account.username,
+    dealershipId: account.dealershipId || "15",
     password: account.password,
     confirmPassword: account.password,
   });
@@ -2166,6 +2451,27 @@ async function getJsonWithCookie(harness, cookie, pathname) {
   const body = await response.json();
   assert.equal(response.status, 200, JSON.stringify(body));
   return body;
+}
+
+async function waitForNotificationCount(harness, cookie, count) {
+  const deadline = Date.now() + 3000;
+  let latest = null;
+  while (Date.now() < deadline) {
+    latest = await getJsonWithCookie(harness, cookie, "/api/notifications");
+    if (latest.unreadCount === count && latest.notifications.length === count) return latest;
+    await sleep(40);
+  }
+  assert.fail(`Timed out waiting for ${count} notifications; latest=${JSON.stringify(latest)}`);
+}
+
+async function notificationLogForUsername(harness, username) {
+  const storePath = path.join(harness.tempRoot, "notification-log.json");
+  const raw = await fs.readFile(storePath, "utf8").catch(() => "{\"notifications\":[]}");
+  const store = JSON.parse(raw);
+  const notifications = Array.isArray(store) ? store : store.notifications;
+  return Array.isArray(notifications)
+    ? notifications.filter((notification) => notification.username === username)
+    : [];
 }
 
 function albumUnread(gallery, albumId) {

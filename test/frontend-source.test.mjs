@@ -83,6 +83,10 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="notificationPanel"/);
   assert.match(html, /id="notificationList"/);
   assert.match(html, /id="notificationPrompt"/);
+  assert.match(html, /id="notificationPreview"/);
+  assert.match(html, /id="notificationPreviewKind"/);
+  assert.match(html, /id="notificationPreviewSend"/);
+  assert.match(html, /Send preview push to me/);
   assert.match(html, /id="notificationUnread"/);
   assert.doesNotMatch(html, /id="shortcutButton"/i);
   assert.doesNotMatch(html, /id="shortcutPanel"/i);
@@ -353,11 +357,14 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /function setNotificationsOpen\(/);
   assert.match(source, /function renderNotificationPanel\(/);
   assert.match(source, /function renderPushPrompt\(/);
+  assert.match(source, /function sendPreviewPushToMe\(/);
   assert.match(source, /function markNotificationsRead\(/);
   assert.match(source, /\/api\/notifications/);
   assert.match(source, /\/api\/push\/config/);
   assert.match(source, /\/api\/push\/subscriptions/);
   assert.match(source, /\/api\/push\/test/);
+  assert.match(source, /\/api\/push\/preview/);
+  assert.match(source, /state\.currentUser\?\.role === "admin"/);
   assert.doesNotMatch(source, /Turn off notifications/);
   assert.doesNotMatch(source, /\/api\/shortcut/i);
   assert.doesNotMatch(source, /setShortcutPanelOpen/i);
@@ -865,6 +872,19 @@ test("gallery page is an authenticated app route separate from upload", async ()
   assert.match(source, /app\.get\("\/", requireAuth/);
   assert.match(source, /app\.get\("\/gallery", requireAuth/);
   assert.match(source, /res\.sendFile\(path\.join\(publicRoot, "index\.html"\)\)/);
+});
+
+test("push notification server routes expose safe preview and dealership targeting helpers", async () => {
+  const source = await fs.readFile(serverPath, "utf8");
+
+  assert.match(source, /app\.post\("\/api\/push\/preview", requireAuth/);
+  assert.match(source, /app\.post\("\/api\/admin\/push\/dry-run", requireAdmin/);
+  assert.match(source, /async function usersForDealership\(/);
+  assert.match(source, /async function usernamesForDealership\(/);
+  assert.match(source, /async function pushTargetingForDealership\(/);
+  assert.match(source, /function queueInventoryAddedPushNotifications\(/);
+  assert.match(source, /queuePushNotifications\(\{\s*excludeUsername: req\.authUser\.username,\s*payload: uploadPushPayload\(car, result\.photos\.length, uploadEvent\),\s*\}\)/);
+  assert.match(source, /function pushDryRunUploadTargets\(/);
 });
 
 test("disabled auth controls are visibly unavailable", async () => {

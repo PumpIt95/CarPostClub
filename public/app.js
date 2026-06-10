@@ -32,6 +32,7 @@ const state = {
   notificationUnreadCount: 0,
   notificationsOpen: false,
   notificationsLoading: false,
+  notificationPreviewBusy: false,
   selectedDealershipId: safeStorageGet("carpostclub.selectedDealershipId", "15"),
   selectedInventoryTypeId: safeStorageGet("carpostclub.selectedInventoryTypeId", "2"),
   selectedMake: safeStorageGet("carpostclub.selectedMake"),
@@ -161,6 +162,9 @@ const els = {
   notificationPanelEnable: document.querySelector("#notificationPanelEnable"),
   notificationPanelOptIn: document.querySelector("#notificationPanelOptIn"),
   notificationPanelStatus: document.querySelector("#notificationPanelStatus"),
+  notificationPreview: document.querySelector("#notificationPreview"),
+  notificationPreviewKind: document.querySelector("#notificationPreviewKind"),
+  notificationPreviewSend: document.querySelector("#notificationPreviewSend"),
   notificationPrompt: document.querySelector("#notificationPrompt"),
   notificationPromptDismiss: document.querySelector("#notificationPromptDismiss"),
   notificationPromptEnable: document.querySelector("#notificationPromptEnable"),
@@ -454,6 +458,7 @@ function bindEvents() {
   els.notificationPromptEnable?.addEventListener("click", enablePushNotificationsFromPrompt);
   els.notificationPanelEnable?.addEventListener("click", enablePushNotificationsFromPrompt);
   els.notificationPromptDismiss?.addEventListener("click", dismissPushPrompt);
+  els.notificationPreviewSend?.addEventListener("click", sendPreviewPushToMe);
   els.notificationList?.addEventListener("click", handleNotificationListClick);
 
   document.addEventListener("keydown", (event) => {
@@ -659,6 +664,35 @@ async function enablePushNotifications() {
   } finally {
     state.pushBusy = false;
     renderPwaControls();
+  }
+}
+
+async function sendPreviewPushToMe(event) {
+  event?.preventDefault?.();
+  if (state.notificationPreviewBusy) return;
+  haptic("tap");
+  state.notificationPreviewBusy = true;
+  renderNotificationPanel();
+
+  try {
+    if (!state.pushSubscription) await enablePushNotifications();
+    if (!state.pushSubscription) throw new Error("Enable push notifications on this device before sending a preview.");
+
+    const kind = els.notificationPreviewKind?.value === "upload" ? "upload" : "inventory_added";
+    const response = await apiJson("/api/push/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind }),
+    });
+    await loadNotifications();
+    haptic("success");
+    const requested = Number(response?.delivery?.requested) || 0;
+    showStatus(requested ? "Sent preview push to this device." : "Preview saved, but this device has no active push endpoint.");
+  } catch (error) {
+    showError(error);
+  } finally {
+    state.notificationPreviewBusy = false;
+    renderNotificationPanel();
   }
 }
 
@@ -890,6 +924,8 @@ function normalizeNotification(notification) {
     albumId: String(notification.albumId || "").trim(),
     mediaCount: Number.isFinite(Number(notification.mediaCount)) ? Math.max(0, Math.floor(Number(notification.mediaCount))) : 0,
     author: String(notification.author || "").trim(),
+    preview: Boolean(notification.preview),
+    dealershipId: String(notification.dealershipId || "").trim(),
     createdAt: normalizeDateString(notification.createdAt),
     receivedAt: normalizeDateString(notification.receivedAt || notification.createdAt),
     readAt: normalizeDateString(notification.readAt),
@@ -945,6 +981,13 @@ function renderNotificationPanel() {
   }
   if (els.notificationPanelEnable) {
     els.notificationPanelEnable.disabled = state.pushBusy || !supported || subscribed || permission === "denied";
+  }
+  const canPreviewPush = state.currentUser?.role === "admin";
+  if (els.notificationPreview) {
+    els.notificationPreview.hidden = !canPreviewPush;
+  }
+  if (els.notificationPreviewSend) {
+    els.notificationPreviewSend.disabled = !canPreviewPush || state.pushBusy || state.notificationPreviewBusy || !supported || permission === "denied";
   }
 
   renderNotificationList();
@@ -1019,6 +1062,7 @@ function notificationMetaLabel(notification) {
   if (notification.kind === "chat") labels.push("Chat");
   else if (notification.kind === "upload") labels.push("Upload");
   else if (notification.kind === "inventory_removed" || notification.kind === "inventory_added") labels.push("Inventory");
+  if (notification.preview) labels.push("Preview");
   if (notification.mediaCount) labels.push(`${notification.mediaCount} ${plural(notification.mediaCount, "file")}`);
   if (notification.author) labels.push(notification.author);
   return labels.join(" - ") || "CarPostClub";

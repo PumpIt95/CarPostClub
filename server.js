@@ -225,6 +225,7 @@ const authDealershipOptions = Object.freeze([
   ...option,
   name: oregansDealerships.find((dealership) => dealership.id === option.id)?.name || option.label,
 })));
+const pushDryRunDealershipIds = Object.freeze(["15", "18", "3", "31"]);
 const authBootstrapDealershipId = normalizeAuthDealershipId(
   process.env.CARPOSTCLUB_AUTH_DEALERSHIP_ID
     || process.env.KONNER_AUTH_DEALERSHIP_ID
@@ -668,6 +669,31 @@ app.get("/api/admin/audit-log", requireAdmin, async (req, res, next) => {
   }
 });
 
+app.post("/api/admin/push/dry-run", requireAdmin, async (req, res, next) => {
+  try {
+    const uploadUploaderUsernames = normalizeDryRunUploadUsernames(req.body || {}, req.authUser);
+    const uploadSimulations = [];
+    for (const uploaderUsername of uploadUploaderUsernames) {
+      uploadSimulations.push(await pushDryRunUploadTargets(uploaderUsername));
+    }
+    const inventoryDealerships = await pushDryRunDealershipTargets();
+    setPrivateNoStore(res);
+    res.json({
+      ok: true,
+      dryRun: true,
+      dealerships: inventoryDealerships,
+      inventory: {
+        dealerships: inventoryDealerships,
+      },
+      upload: {
+        simulations: uploadSimulations,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/", requireAuth, (_req, res) => {
   setPrivateNoStore(res);
   res.sendFile(path.join(publicRoot, "index.html"));
@@ -831,6 +857,25 @@ app.post("/api/push/test", requireAuth, async (req, res, next) => {
       },
     });
     res.json({ ok: true, delivery });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/push/preview", requireAuth, async (req, res, next) => {
+  try {
+    const payload = previewPushPayload(req.body || {}, req.authUser);
+    const delivery = await sendPushNotifications({
+      usernames: [req.authUser.username],
+      payload,
+    });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      preview: true,
+      payload: cleanPushPayload(payload),
+      delivery,
+    });
   } catch (error) {
     next(error);
   }
@@ -2208,7 +2253,10 @@ async function recordAlbumInventoryLifecycle(album, inventoryStatus) {
   });
 
   if (notificationPayload) {
-    queuePushNotifications({ payload: notificationPayload });
+    queuePushNotifications({
+      dealershipId: notificationPayload.dealershipId,
+      payload: notificationPayload,
+    });
   }
 }
 
@@ -2229,6 +2277,7 @@ function inventoryRemovedPushPayload(album, inventoryStatus, timestamp) {
     url: vehicleDeepLink(car, { openAlbum: true }),
     timestamp,
     mediaCount: album.mediaCount || 0,
+    dealershipId: car.dealership?.id || car.dealershipId,
     inventoryStatus,
   };
 }
@@ -3563,11 +3612,8 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
     successfulScopes,
     errors,
   });
-  const pushPayload = writeResult.newlyObserved.length
-    ? oregansInventoryAddedPushPayload(writeResult.newlyObserved, finishedAt)
-    : null;
-  const pushDeliveryPromise = pushPayload
-    ? queuePushNotifications({ payload: pushPayload })
+  const pushDeliveryPromise = writeResult.newlyObserved.length
+    ? queueInventoryAddedPushNotifications(writeResult.newlyObserved, finishedAt)
     : null;
   const pushDelivery = pushDeliveryPromise && pushAwaitDelivery
     ? await pushDeliveryPromise
@@ -3880,28 +3926,94 @@ function publicOregansInventorySnapshotVehicleFromCar(car, scope, observedAt, ve
   };
 }
 
+async function queueInventoryAddedPushNotifications(vehicles, timestamp) {
+  const groups = vehiclesByTargetDealership(vehicles);
+  const deliveries = [];
+  for (const [dealershipId, dealershipVehicles] of groups) {
+    const targeting = await pushTargetingForDealership(dealershipId);
+    const delivery = await queuePushNotifications({
+      dealershipId,
+      payload: oregansInventoryAddedPushPayload(dealershipVehicles, timestamp),
+    });
+    deliveries.push({
+      dealershipId,
+      label: targeting.label,
+      count: dealershipVehicles.length,
+      delivery,
+    });
+  }
+  return aggregatePushDeliveries(deliveries);
+}
+
+function vehiclesByTargetDealership(vehicles) {
+  const groups = new Map();
+  for (const vehicle of Array.isArray(vehicles) ? vehicles : []) {
+    const dealershipId = normalizeAuthDealershipId(vehicle?.dealershipId || vehicle?.dealership?.id || vehicle?.dealershipName);
+    if (!dealershipId) continue;
+    if (!groups.has(dealershipId)) groups.set(dealershipId, []);
+    groups.get(dealershipId).push(vehicle);
+  }
+  return groups;
+}
+
+function aggregatePushDeliveries(deliveries) {
+  const totals = {
+    requested: 0,
+    delivered: 0,
+    failed: 0,
+    skipped: 0,
+    staleRemoved: 0,
+    retiredRemoved: 0,
+    logged: 0,
+    dealerships: [],
+  };
+  for (const item of deliveries) {
+    const delivery = item.delivery || {};
+    totals.requested += Number(delivery.requested) || 0;
+    totals.delivered += Number(delivery.delivered) || 0;
+    totals.failed += Number(delivery.failed) || 0;
+    totals.skipped += Number(delivery.skipped) || 0;
+    totals.staleRemoved += Number(delivery.staleRemoved) || 0;
+    totals.retiredRemoved += Number(delivery.retiredRemoved) || 0;
+    totals.logged += Number(delivery.logged) || 0;
+    totals.dealerships.push({
+      dealershipId: item.dealershipId,
+      label: item.label,
+      count: item.count,
+      requested: Number(delivery.requested) || 0,
+      delivered: Number(delivery.delivered) || 0,
+      failed: Number(delivery.failed) || 0,
+      skipped: Number(delivery.skipped) || 0,
+      staleRemoved: Number(delivery.staleRemoved) || 0,
+      retiredRemoved: Number(delivery.retiredRemoved) || 0,
+      logged: Number(delivery.logged) || 0,
+    });
+  }
+  return totals;
+}
+
 function oregansInventoryAddedPushPayload(vehicles, timestamp) {
-  const count = vehicles.length;
-  const first = vehicles[0] || {};
-  const examples = vehicles.slice(0, 4).map((vehicle) => {
-    const dealership = publicAuthDealership(vehicle.dealershipId)?.label || vehicle.dealershipName || "Inventory";
-    const stock = vehicle.stockNumber || vehicle.title || "vehicle";
-    return `${dealership} ${stock}`;
-  });
+  const cleanVehicles = Array.isArray(vehicles) ? vehicles.filter(Boolean) : [];
+  const count = cleanVehicles.length;
+  const first = cleanVehicles[0] || {};
+  const dealership = publicAuthDealership(first.dealershipId || first.dealership?.id || first.dealershipName);
+  const dealershipLabel = dealership?.label || normalizeSpace(first.dealershipName) || "O'Regan's";
+  const examples = cleanVehicles.slice(0, 3).map(vehiclePushLabel).filter(Boolean);
+  const moreCount = Math.max(0, count - examples.length);
   const body = count === 1
-    ? `${examples[0]} added to O'Regan's inventory.`
-    : `${count} vehicles added to O'Regan's inventory: ${examples.join(", ")}${count > examples.length ? ", ..." : ""}.`;
+    ? `${examples[0] || "Vehicle"} added.`
+    : `${count} ${dealershipLabel} vehicles added: ${examples.join(", ")}${moreCount ? `, + ${moreCount} more` : ""}.`;
   return {
     kind: "inventory_added",
     messageId: `inventory-added-${Date.parse(timestamp) || Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
-    title: "New O'Regan's inventory",
+    title: `New ${dealershipLabel} inventory`,
     body,
-    tag: `carpostclub-inventory-added-${Date.parse(timestamp) || Date.now()}`,
+    tag: `carpostclub-inventory-added-${dealership?.id || "unknown"}-${Date.parse(timestamp) || Date.now()}`,
     url: vehicleDeepLink({
-      dealershipId: first.dealershipId,
+      dealershipId: dealership?.id || first.dealershipId,
       inventoryTypeId: first.inventoryTypeId,
-      inventoryKey: first.vin,
     }),
+    dealershipId: dealership?.id || normalizeAuthDealershipId(first.dealershipId),
     timestamp,
   };
 }
@@ -6041,10 +6153,21 @@ async function removePushEndpoints(endpoints) {
   return removed;
 }
 
-async function sendPushNotifications({ payload, usernames = null, excludeUsername = "" }) {
-  const usernameSet = usernames
+async function sendPushNotifications({ payload, usernames = null, dealershipId = "", dealershipIds = null, excludeUsername = "" }) {
+  let usernameSet = usernames
     ? new Set(usernames.map(normalizeAuthUsername).filter(Boolean))
     : null;
+  if (!usernameSet) {
+    const targetDealershipIds = normalizePushTargetDealershipIds({ dealershipId, dealershipIds });
+    if (targetDealershipIds) {
+      usernameSet = new Set();
+      for (const targetDealershipId of targetDealershipIds) {
+        for (const username of await usernamesForDealership(targetDealershipId)) {
+          usernameSet.add(username);
+        }
+      }
+    }
+  }
   const excluded = normalizeAuthUsername(excludeUsername);
   const eligibleUserVersions = await pushEligibleUserVersions();
   const cleanPayload = cleanPushPayload({
@@ -6106,6 +6229,171 @@ async function sendPushNotifications({ payload, usernames = null, excludeUsernam
   };
 }
 
+function normalizePushTargetDealershipIds({ dealershipId = "", dealershipIds = null } = {}) {
+  const rawValues = [];
+  const addRawValue = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) addRawValue(item);
+      return;
+    }
+    if (value === null || value === undefined || value === "") return;
+    rawValues.push(value);
+  };
+  addRawValue(dealershipIds);
+  addRawValue(dealershipId);
+  if (!rawValues.length) return null;
+  const ids = [];
+  const seen = new Set();
+  for (const value of rawValues) {
+    const id = normalizeAuthDealershipId(value);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+async function usersForDealership(dealershipIdValue) {
+  const dealershipId = normalizeAuthDealershipId(dealershipIdValue);
+  if (!dealershipId) return [];
+  return (await approvedPushUsers()).filter((user) => normalizeAuthDealershipId(user.dealershipId) === dealershipId);
+}
+
+async function approvedPushUsers() {
+  const users = [];
+  const seen = new Set();
+  const addUser = (user) => {
+    const username = normalizeAuthUsername(user?.username);
+    if (!username || seen.has(username)) return;
+    if (user?.status && user.status !== "approved") return;
+    seen.add(username);
+    users.push(user.bootstrap ? user : authUserFromAccount(user));
+  };
+
+  addUser(bootstrapAdminUser());
+  if (authEnabled) {
+    const store = await readAuthUsers();
+    for (const user of store.users) addUser(user);
+  }
+  return users;
+}
+
+async function usernamesForDealership(dealershipIdValue) {
+  return (await usersForDealership(dealershipIdValue)).map((user) => user.username);
+}
+
+async function pushTargetingForDealership(dealershipIdValue) {
+  const dealership = publicAuthDealership(dealershipIdValue);
+  const usernames = dealership ? await usernamesForDealership(dealership.id) : [];
+  const pushEnabledUsernames = await pushEnabledUsernamesForUsernames(usernames);
+  return {
+    dealershipId: dealership?.id || "",
+    label: dealership?.label || "",
+    name: dealership?.name || "",
+    dealership,
+    usernames,
+    pushEnabledUsernames,
+  };
+}
+
+async function pushDryRunDealershipTargets() {
+  const ids = [];
+  const seen = new Set();
+  for (const value of [...pushDryRunDealershipIds, ...authDealershipOptions.map((dealership) => dealership.id)]) {
+    const id = normalizeAuthDealershipId(value);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  const targets = [];
+  for (const id of ids) {
+    const targeting = await pushTargetingForDealership(id);
+    targets.push({
+      dealershipId: targeting.dealershipId,
+      label: targeting.label,
+      name: targeting.name,
+      usernames: targeting.usernames,
+      pushEnabledUsernames: targeting.pushEnabledUsernames,
+    });
+  }
+  return targets;
+}
+
+async function pushDryRunUploadTargets(uploaderUsernameValue) {
+  const uploaderUsername = normalizeAuthUsername(uploaderUsernameValue);
+  if (!uploaderUsername) throw httpError(400, "Choose an uploader username.");
+  const users = await approvedPushUsers();
+  const uploader = users.find((user) => user.username === uploaderUsername);
+  const recipientUsers = users.filter((user) => user.username !== uploaderUsername);
+  const usernames = recipientUsers.map((user) => user.username);
+  const pushEnabledUsernames = await pushEnabledUsernamesForUsernames(usernames);
+  const pushEnabledSet = new Set(pushEnabledUsernames);
+  return {
+    uploaderUsername,
+    uploaderDisplayName: uploader?.displayName || uploaderUsername,
+    usernames,
+    pushEnabledUsernames,
+    recipients: recipientUsers.map((user) => {
+      const publicUser = publicAuthUser(user);
+      return {
+        username: publicUser.username,
+        displayName: publicUser.displayName,
+        dealershipId: publicUser.dealershipId,
+        dealershipLabel: publicUser.dealershipLabel,
+        pushEnabled: pushEnabledSet.has(publicUser.username),
+      };
+    }),
+  };
+}
+
+function normalizeDryRunUploadUsernames(body = {}, authUser = {}) {
+  const values = [];
+  const add = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) add(item);
+      return;
+    }
+    const username = normalizeAuthUsername(value);
+    if (username) values.push(username);
+  };
+  add(body.uploadUploaderUsernames);
+  add(body.uploaderUsernames);
+  add(body.upload?.uploaderUsernames);
+  add(body.uploadUploaderUsername);
+  add(body.uploaderUsername);
+  add(body.upload?.uploaderUsername);
+  if (!values.length) add(authUser?.username);
+  const seen = new Set();
+  return values.filter((username) => {
+    if (seen.has(username)) return false;
+    seen.add(username);
+    return true;
+  });
+}
+
+async function pushEnabledUsernamesForUsernames(usernames = null, { excludeUsername = "" } = {}) {
+  const usernameSet = usernames
+    ? new Set(usernames.map(normalizeAuthUsername).filter(Boolean))
+    : null;
+  const excluded = normalizeAuthUsername(excludeUsername);
+  const eligibleUserVersions = await pushEligibleUserVersions();
+  const { subscriptions } = await readPushSubscriptions();
+  const seen = new Set();
+  const results = [];
+  for (const record of subscriptions) {
+    const username = normalizeAuthUsername(record.username);
+    if (!username || seen.has(username)) continue;
+    const expectedPasswordVersion = eligibleUserVersions.get(username);
+    if (expectedPasswordVersion === undefined) continue;
+    if (record.passwordVersion !== expectedPasswordVersion) continue;
+    if (excluded && username === excluded) continue;
+    if (usernameSet && !usernameSet.has(username)) continue;
+    seen.add(username);
+    results.push(username);
+  }
+  return results;
+}
+
 async function readNotificationLog() {
   const store = await readJson(notificationLogPath, { notifications: [] });
   const rawNotifications = Array.isArray(store) ? store : store.notifications;
@@ -6159,6 +6447,8 @@ async function appendNotificationLogEntries(payload, targetRecords) {
         albumId: cleanPayload.albumId,
         mediaCount: cleanPayload.mediaCount,
         author: cleanPayload.author,
+        preview: cleanPayload.preview,
+        dealershipId: cleanPayload.dealershipId,
         createdAt: cleanPayload.timestamp || now,
         receivedAt: existing?.receivedAt || now,
         readAt: existing?.readAt || "",
@@ -6385,37 +6675,175 @@ function chatPushPayload(message) {
   };
 }
 
+function previewPushPayload(input = {}, user = {}) {
+  const requestedKind = normalizeSpace(input.kind || input.type || "inventory_added").toLowerCase();
+  const kind = requestedKind === "upload" ? "upload" : requestedKind === "inventory_added" ? "inventory_added" : "";
+  if (!kind) throw httpError(400, "Choose inventory_added or upload preview.");
+
+  const now = new Date().toISOString();
+  const messageId = `preview-${kind}-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+  const requestedDealership = publicAuthDealership(input.dealershipId || user?.dealershipId);
+  const userDealership = publicAuthDealership(user?.dealershipId);
+  const dealership = requestedDealership || userDealership || publicAuthDealership(shortcutDefaultDealershipId);
+  const dealershipLabel = normalizeSpace(input.dealershipLabel).slice(0, 40) || dealership?.label || "CarPostClub";
+  const titleOverride = normalizeSpace(input.title).slice(0, 80);
+  const bodyOverride = normalizeSpace(input.body).slice(0, 180);
+
+  if (kind === "upload") {
+    const sampleVehicle = previewVehicleSample(dealershipLabel);
+    const previewUploader = normalizeDisplayName(input.uploaderDisplayName || input.uploader || user?.displayName || user?.username) || "Someone";
+    const previewCar = {
+      dealershipId: dealership?.id || "",
+      inventoryTypeId: defaultInventoryTypeId,
+      inventoryKey: "STK123",
+      stockNumber: "STK123",
+      year: "2024",
+      make: sampleVehicle.make,
+      model: sampleVehicle.model,
+      trim: sampleVehicle.trim,
+    };
+    return {
+      kind,
+      preview: true,
+      messageId,
+      title: titleOverride || uploadPushTitle({ displayName: previewUploader, username: user?.username }),
+      body: bodyOverride || uploadPushBody(previewCar),
+      tag: `carpostclub-preview-${messageId}`,
+      url: vehicleDeepLink(previewCar, { openAlbum: true }),
+      dealershipId: dealership?.id || "",
+      mediaCount: 12,
+      author: previewUploader,
+      timestamp: now,
+    };
+  }
+
+  return {
+    kind,
+    preview: true,
+    messageId,
+    title: titleOverride || `New ${dealershipLabel} inventory`,
+    body: bodyOverride || defaultInventoryPreviewBody(dealershipLabel),
+    tag: `carpostclub-preview-${messageId}`,
+    url: vehicleDeepLink({
+      dealershipId: dealership?.id || "",
+      inventoryTypeId: defaultInventoryTypeId,
+    }),
+    dealershipId: dealership?.id || "",
+    timestamp: now,
+  };
+}
+
+function defaultInventoryPreviewBody(dealershipLabel) {
+  const examples = defaultInventoryPreviewExamples(dealershipLabel);
+  return `3 ${dealershipLabel} vehicles added: ${examples.join(", ")}.`;
+}
+
+function defaultInventoryPreviewExamples(dealershipLabel) {
+  const label = normalizeSpace(dealershipLabel).toLowerCase();
+  if (label === "gm") {
+    return [
+      "STK123 2024 Chevrolet Silverado",
+      "STK456 2023 GMC Sierra",
+      "STK789 2025 Chevrolet Equinox",
+    ];
+  }
+  if (label === "nissan") {
+    return [
+      "STK123 2024 Nissan Rogue",
+      "STK456 2023 Nissan Sentra",
+      "STK789 2025 Nissan Kicks",
+    ];
+  }
+  if (label === "vw") {
+    return [
+      "STK123 2024 Volkswagen Tiguan",
+      "STK456 2023 Volkswagen Jetta",
+      "STK789 2025 Volkswagen Atlas",
+    ];
+  }
+  return [
+    "STK123 2024 Kia Sportage",
+    "STK456 2023 Kia Forte",
+    "STK789 2025 Kia Seltos",
+  ];
+}
+
+function previewVehicleSample(dealershipLabel) {
+  const label = normalizeSpace(dealershipLabel).toLowerCase();
+  if (label === "gm") return { make: "Chevrolet", model: "Silverado", trim: "Custom" };
+  if (label === "nissan") return { make: "Nissan", model: "Rogue", trim: "SV" };
+  if (label === "vw") return { make: "Volkswagen", model: "Tiguan", trim: "Comfortline" };
+  if (label === "kia") return { make: "Kia", model: "Sportage", trim: "" };
+  return { make: dealershipLabel, model: "Preview", trim: "" };
+}
+
 function uploadAlbumEventPayload(car, result, user) {
   const mediaCount = Array.isArray(result?.photos) ? result.photos.length : 0;
   const album = result?.album || null;
-  const label = car?.stockNumber || car?.title || album?.name || "a vehicle";
+  const uploadedBy = publicAuthUser(user);
   return {
     kind: "upload",
     uploadId: `upload-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`,
     albumId: album?.id || "",
     mediaCount,
-    title: "Media uploaded",
-    body: `${mediaCount} ${mediaCount === 1 ? "file" : "files"} added for ${label}.`,
+    title: uploadPushTitle(uploadedBy),
+    body: uploadPushBody(car || album?.vehicle),
     tag: `carpostclub-upload-${carInventoryNotificationKey(car)}`,
     url: vehicleDeepLink(car, { openAlbum: true }),
-    uploadedBy: publicAuthUser(user),
+    uploadedBy,
     uploadedAt: new Date().toISOString(),
   };
 }
 
 function uploadPushPayload(car, mediaCount, uploadEvent = null) {
-  const label = car?.stockNumber || car?.title || "a vehicle";
+  const uploadedBy = uploadEvent?.uploadedBy || null;
   return {
     kind: "upload",
     messageId: uploadEvent?.uploadId || `upload-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`,
     albumId: uploadEvent?.albumId || "",
     mediaCount,
-    title: "Media uploaded",
-    body: uploadEvent?.body || `${mediaCount} ${mediaCount === 1 ? "file" : "files"} added for ${label}.`,
+    title: uploadEvent?.title || uploadPushTitle(uploadedBy),
+    body: uploadEvent?.body || uploadPushBody(car),
     tag: uploadEvent?.tag || `carpostclub-upload-${carInventoryNotificationKey(car)}`,
     url: uploadEvent?.url || vehicleDeepLink(car, { openAlbum: true }),
+    dealershipId: car?.dealership?.id || car?.dealershipId,
+    author: uploadedBy?.displayName || uploadedBy?.username || "",
     timestamp: uploadEvent?.uploadedAt || new Date().toISOString(),
   };
+}
+
+function uploadPushTitle(uploadedBy) {
+  const name = normalizeDisplayName(uploadedBy?.displayName || uploadedBy?.username) || "Someone";
+  return `${name} uploaded a car`;
+}
+
+function uploadPushBody(car) {
+  const label = vehicleUploadPushLabel(car) || car?.stockNumber || car?.title || "a vehicle";
+  return `Photos added for ${label}.`;
+}
+
+function vehicleUploadPushLabel(car) {
+  const stock = normalizeSpace(car?.stockNumber || car?.inventoryKey);
+  const vehicleName = vehiclePushName(car);
+  if (stock && vehicleName) return `${stock} - ${vehicleName}`;
+  return stock || vehicleName;
+}
+
+function vehiclePushLabel(vehicle) {
+  const stock = normalizeSpace(vehicle?.stockNumber || vehicle?.inventoryKey);
+  const name = vehiclePushName(vehicle);
+  return normalizeSpace([stock, name].filter(Boolean).join(" ")) || "Vehicle";
+}
+
+function vehiclePushName(vehicle) {
+  const structured = normalizeSpace([
+    vehicle?.year,
+    vehicle?.make,
+    vehicle?.model,
+    vehicle?.trim,
+  ].filter(Boolean).join(" "));
+  if (structured) return structured;
+  return normalizeSpace(vehicle?.title).replace(/^(Used|New|Certified)\s+/i, "");
 }
 
 function carInventoryNotificationKey(car) {
@@ -6468,6 +6896,8 @@ function publicNotificationRecord(record) {
     albumId: record.albumId,
     mediaCount: record.mediaCount,
     author: record.author,
+    preview: Boolean(record.preview),
+    dealershipId: record.dealershipId,
     createdAt: record.createdAt,
     receivedAt: record.receivedAt,
     readAt: record.readAt,
@@ -6493,6 +6923,8 @@ function normalizeStoredNotification(record) {
     albumId: normalizeSpace(record.albumId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 120),
     mediaCount: positiveInteger(record.mediaCount, 0),
     author: record.author ? normalizeChatAuthor(record.author) : "",
+    preview: Boolean(record.preview),
+    dealershipId: normalizeAuthDealershipId(record.dealershipId),
     createdAt: normalizeIsoDate(record.createdAt || record.timestamp) || now,
     receivedAt: normalizeIsoDate(record.receivedAt) || normalizeIsoDate(record.createdAt || record.timestamp) || now,
     readAt: normalizeIsoDate(record.readAt) || "",
@@ -6590,6 +7022,8 @@ function cleanPushPayload(payload = {}) {
     albumId: normalizeSpace(payload.albumId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 120),
     mediaCount: positiveInteger(payload.mediaCount, 0),
     author: payload.author ? normalizeChatAuthor(payload.author) : "",
+    preview: Boolean(payload.preview),
+    dealershipId: normalizeAuthDealershipId(payload.dealershipId || payload.dealership?.id),
     timestamp,
   };
 }
