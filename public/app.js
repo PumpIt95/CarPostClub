@@ -1007,7 +1007,7 @@ function renderNotificationItem(notification) {
 
   const body = document.createElement("span");
   body.className = "notification-item-body";
-  body.textContent = notification.body || "Open CarPostClub.";
+  body.textContent = Object.prototype.hasOwnProperty.call(notification, "body") ? String(notification.body || "") : "Open CarPostClub.";
 
   const meta = document.createElement("span");
   meta.className = "notification-item-meta";

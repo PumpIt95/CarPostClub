@@ -102,12 +102,12 @@ const SNAPSHOT_NEW_KIA_CAR = {
   dealershipId: "15",
   inventoryTypeId: "2",
   vin: "KNDPUCAF1S7123456",
-  stockNumber: "UK1111",
-  title: "Used 2025 Kia Sportage EX",
-  year: "2025",
+  stockNumber: "a10412a",
+  title: "Used 2020 Kia Sedona One Owner and Fully Certified",
+  year: "2020",
   make: "Kia",
-  model: "Sportage",
-  trim: "EX",
+  model: "Sedona",
+  trim: "One Owner and Fully Certified",
   price: "$34,990",
   odometer: "6,100 km",
   exteriorColor: "Blue",
@@ -115,7 +115,45 @@ const SNAPSHOT_NEW_KIA_CAR = {
   bodyStyle: "SUV",
   fuelType: "Gas",
   transmission: "Automatic",
-  detailUrl: "https://www.oregans.com/inventory/Used-2025-Kia-Sportage-EX-UK1111/",
+  detailUrl: "https://www.oregans.com/inventory/Used-2020-Kia-Sedona-One-Owner-Fully-Certified-a10412a/",
+};
+const SNAPSHOT_BATCH_HONDA_CAR = {
+  dealershipId: "15",
+  inventoryTypeId: "2",
+  vin: "2HGFC2F59MH205555",
+  stockNumber: "b20555b",
+  title: "Used 2021 Honda Civic Touring",
+  year: "2021",
+  make: "Honda",
+  model: "Civic",
+  trim: "Touring",
+  price: "$25,990",
+  odometer: "21,500 km",
+  exteriorColor: "White",
+  interiorColor: "Black",
+  bodyStyle: "Sedan",
+  fuelType: "Gas",
+  transmission: "Automatic",
+  detailUrl: "https://www.oregans.com/inventory/Used-2021-Honda-Civic-b20555b/",
+};
+const SNAPSHOT_BATCH_TOYOTA_CAR = {
+  dealershipId: "15",
+  inventoryTypeId: "2",
+  vin: "5YFBPMBE9NP309999",
+  stockNumber: "c30999c",
+  title: "Used 2022 Toyota Corolla LE",
+  year: "2022",
+  make: "Toyota",
+  model: "Corolla",
+  trim: "LE",
+  price: "$27,490",
+  odometer: "18,250 km",
+  exteriorColor: "Silver",
+  interiorColor: "Black",
+  bodyStyle: "Sedan",
+  fuelType: "Gas",
+  transmission: "Automatic",
+  detailUrl: "https://www.oregans.com/inventory/Used-2022-Toyota-Corolla-c30999c/",
 };
 const MANUAL_CAR = {
   dealershipId: "15",
@@ -1385,8 +1423,9 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
 
     const notifications = await getJson(harness, "/api/notifications");
     assert.equal(notifications.unreadCount, 1);
-    assert.equal(notifications.notifications[0].title, "New Kia inventory");
-    assert.match(notifications.notifications[0].body, /UK1111 2025 Kia Sportage EX added\./);
+    assert.equal(notifications.notifications[0].title, "new Kia Inventory a10412a 2020 Kia Sedona");
+    assert.equal(notifications.notifications[0].body, "");
+    assert.doesNotMatch(notifications.notifications[0].title, /from carpostclub|fully certified|added/i);
     assert.doesNotMatch(notifications.notifications[0].body, /UG9999|Chevrolet|GM/);
     assert.equal(notifications.notifications[0].kind, "inventory_added");
     assert.equal(notifications.notifications[0].dealershipId, "15");
@@ -1394,9 +1433,10 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
 
     const michaelNotifications = await getJsonWithCookie(harness, michael.cookie, "/api/notifications");
     assert.equal(michaelNotifications.unreadCount, 1);
-    assert.equal(michaelNotifications.notifications[0].title, "New GM inventory");
-    assert.match(michaelNotifications.notifications[0].body, /UG9999 2024 Chevrolet Silverado Custom added\./);
-    assert.doesNotMatch(michaelNotifications.notifications[0].body, /UK1111|Kia/);
+    assert.equal(michaelNotifications.notifications[0].title, "new Chevrolet Inventory UG9999 2024 Chevrolet Silverado");
+    assert.equal(michaelNotifications.notifications[0].body, "");
+    assert.doesNotMatch(michaelNotifications.notifications[0].title, /from carpostclub|Custom|added/i);
+    assert.doesNotMatch(michaelNotifications.notifications[0].body, /a10412a|Kia/);
     assert.equal(michaelNotifications.notifications[0].kind, "inventory_added");
     assert.equal(michaelNotifications.notifications[0].dealershipId, "18");
     assert.match(michaelNotifications.notifications[0].url, /dealershipId=18/);
@@ -1419,6 +1459,95 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     const gmUsed = finalStatus.presentCounts.find((count) => count.dealershipId === "18" && count.inventoryTypeId === "2");
     assert.equal(kiaUsed, undefined);
     assert.equal(gmUsed.count, 1);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("inventory-added batch sends one separate notification per vehicle", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+
+    const firstRun = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(firstRun.status, 201);
+    assert.equal(firstRun.body.snapshot.newInventory.count, 0);
+
+    const pushSubscription = await postJson(harness, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("admin-inventory-added-batch"),
+    });
+    assert.equal(pushSubscription.status, 201);
+
+    await sleep(20);
+    await writeInventoryMock(harness, [
+      TEST_CAR,
+      SNAPSHOT_NEW_KIA_CAR,
+      SNAPSHOT_BATCH_HONDA_CAR,
+      SNAPSHOT_BATCH_TOYOTA_CAR,
+    ]);
+
+    const secondRun = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(secondRun.status, 201);
+    assert.equal(secondRun.body.snapshot.status, "completed");
+    assert.equal(secondRun.body.snapshot.newInventory.count, 3);
+    assert.deepEqual(
+      secondRun.body.snapshot.newInventory.vehicles.map((vehicle) => vehicle.stockNumber).sort(),
+      ["a10412a", "b20555b", "c30999c"],
+    );
+    assert.equal(secondRun.body.snapshot.pushDelivery.requested, 3);
+    assert.equal(secondRun.body.snapshot.pushDelivery.skipped, 3);
+    assert.equal(secondRun.body.snapshot.pushDelivery.logged, 3);
+    assert.deepEqual(
+      secondRun.body.snapshot.pushDelivery.dealerships.map((dealership) => ({
+        dealershipId: dealership.dealershipId,
+        label: dealership.label,
+        count: dealership.count,
+        requested: dealership.requested,
+        logged: dealership.logged,
+      })),
+      [
+        { dealershipId: "15", label: "Kia", count: 3, requested: 3, logged: 3 },
+      ],
+    );
+
+    const notifications = await getJson(harness, "/api/notifications");
+    assert.equal(notifications.unreadCount, 3);
+    assert.equal(notifications.notifications.length, 3);
+
+    const expectedTitles = [
+      "new Kia Inventory a10412a 2020 Kia Sedona",
+      "new Honda Inventory b20555b 2021 Honda Civic",
+      "new Toyota Inventory c30999c 2022 Toyota Corolla",
+    ];
+    const notificationsByTitle = new Map(notifications.notifications.map((notification) => [notification.title, notification]));
+    for (const title of expectedTitles) {
+      assert.ok(notificationsByTitle.has(title), `Missing notification title: ${title}`);
+    }
+
+    for (const [title, stockNumber] of [
+      ["new Kia Inventory a10412a 2020 Kia Sedona", "a10412a"],
+      ["new Honda Inventory b20555b 2021 Honda Civic", "b20555b"],
+      ["new Toyota Inventory c30999c 2022 Toyota Corolla", "c30999c"],
+    ]) {
+      const notification = notificationsByTitle.get(title);
+      assert.equal(notification.body, "");
+      assert.equal(notification.stockNumber, stockNumber);
+      assert.match(notification.messageId, /^inventory-added-/);
+      assert.match(notification.tag, new RegExp(stockNumber.toLowerCase()));
+      const notificationText = `${notification.title} ${notification.body}`;
+      assert.doesNotMatch(notificationText, /\badded\b/i);
+      assert.doesNotMatch(notificationText, /from carpostclub/i);
+      assert.doesNotMatch(notificationText, /Open CarPostClub\./);
+      assert.doesNotMatch(notificationText, /\btrim\b/i);
+      assert.doesNotMatch(notificationText, /one owner|certified|fully certified/i);
+    }
+
+    assert.equal(new Set(notifications.notifications.map((notification) => notification.id)).size, 3);
+    assert.equal(new Set(notifications.notifications.map((notification) => notification.notificationId)).size, 3);
+    assert.equal(new Set(notifications.notifications.map((notification) => notification.messageId)).size, 3);
+    assert.equal(new Set(notifications.notifications.map((notification) => notification.tag)).size, 3);
+    assert.ok(notifications.notifications.every((notification) => notification.body === ""));
   } finally {
     await stopTestServer(harness);
   }
@@ -1465,12 +1594,53 @@ test("admin push dry-run reports dealership targets", async () => {
     assert.deepEqual(uploadDryRuns.get("mwebber2030").usernames, [TEST_USERNAME]);
     assert.deepEqual(uploadDryRuns.get("mwebber2030").pushEnabledUsernames, [TEST_USERNAME]);
 
+    const inventoryPreview = await postJson(harness, "/api/push/preview", {
+      kind: "inventory_added",
+      dealershipId: "15",
+    });
+    assert.equal(inventoryPreview.status, 200);
+    assert.equal(inventoryPreview.body.payload.title, "new Kia Inventory a10412a 2020 Kia Sportage");
+    assert.equal(inventoryPreview.body.payload.body, "");
+    assert.equal(inventoryPreview.body.payload.stockNumber, "a10412a");
+    assert.doesNotMatch(inventoryPreview.body.payload.title, /from carpostclub|added|fully certified/i);
+
     const nonAdminDryRun = await postJsonWithCookie(harness, michael.cookie, "/api/admin/push/dry-run", {});
     assert.equal(nonAdminDryRun.status, 403);
 
     const michaelNotifications = await getJsonWithCookie(harness, michael.cookie, "/api/notifications");
     assert.equal(michaelNotifications.unreadCount, 0);
     assert.deepEqual(michaelNotifications.notifications, []);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("inventory preview push uses short copy and empty body", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    await postJson(harness, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("admin-inventory-preview"),
+    });
+
+    const preview = await postJson(harness, "/api/push/preview", {
+      kind: "inventory_added",
+      dealershipId: "15",
+      body: "Open CarPostClub.",
+    });
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.payload.title, "new Kia Inventory a10412a 2020 Kia Sportage");
+    assert.equal(preview.body.payload.body, "");
+    assert.equal(preview.body.payload.stockNumber, "a10412a");
+    assert.equal(preview.body.payload.kind, "inventory_added");
+    assert.equal(preview.body.delivery.requested, 1);
+    assert.equal(preview.body.delivery.skipped, 1);
+    assert.equal(preview.body.delivery.logged, 1);
+
+    const notifications = await getJson(harness, "/api/notifications");
+    assert.equal(notifications.unreadCount, 0);
+    assert.deepEqual(notifications.notifications, []);
   } finally {
     await stopTestServer(harness);
   }

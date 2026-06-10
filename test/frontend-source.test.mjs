@@ -593,10 +593,19 @@ test("service worker routes media upload notifications to gallery and inventory 
 
   await dispatchPush(pushHandler, {
     kind: "inventory_added",
-    title: "New inventory",
+    title: "new Kia Inventory STK123 2024 Kia Sportage",
     url: "/?dealershipId=15&inventoryTypeId=2",
   });
   assert.equal(notifications.at(-1).options.data.url, "/?dealershipId=15&inventoryTypeId=2");
+
+  await dispatchPush(pushHandler, {
+    kind: "inventory_added",
+    title: "new Kia Inventory a10412a 2020 Kia Sedona",
+    body: "",
+    url: "/?dealershipId=15&inventoryTypeId=2",
+  });
+  assert.equal(notifications.at(-1).title, "new Kia Inventory a10412a 2020 Kia Sedona");
+  assert.equal(notifications.at(-1).options.body, "");
 
   const clickHandler = handlers.get("notificationclick");
   assert.equal(typeof clickHandler, "function");
