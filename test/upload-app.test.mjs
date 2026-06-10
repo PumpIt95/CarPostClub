@@ -134,6 +134,7 @@ const MANUAL_CAR = {
   transmission: "Automatic transmission",
   descriptionPreview: "Heated seats, backup camera, lane keep assist",
 };
+const LEAD_CONTROL_CLOSING_PHRASE = "(please message for more details)";
 
 function assertCleanMarketplaceDescription(description) {
   assert.doesNotMatch(description, /\b(?:I(?:'|’)m listing|I am listing|Listing this|Posting this|Sharing the details)\b/i);
@@ -141,6 +142,17 @@ function assertCleanMarketplaceDescription(description) {
   assert.doesNotMatch(description, /\b(?:Message me|Send me a message)\b/i);
   assert.ok((description.match(/automatic transmission/gi) || []).length <= 1);
   assert.ok((description.match(/gasoline/gi) || []).length <= 1);
+}
+
+function assertLeadControlSafeMarketplaceDescription(description) {
+  assert.ok(
+    String(description || "").trim().endsWith(LEAD_CONTROL_CLOSING_PHRASE),
+    `Description must end with ${LEAD_CONTROL_CLOSING_PHRASE}: ${description}`,
+  );
+  assert.doesNotMatch(description, /O'Regan's Kia Halifax/i);
+  assert.doesNotMatch(description, /\b(?:located at|available at|available through|come in|come see|visit us|stop by|walk in)\b/i);
+  assert.doesNotMatch(description, /\b(?:source listing|source location|inventory source|lot location|store|branch)\b/i);
+  assert.doesNotMatch(description, new RegExp(TEST_CAR.stockNumber, "i"));
 }
 
 function marketplaceDocumentDescriptionBody(documentText) {
@@ -783,10 +795,30 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(uploadedMarketplaceDraft.draft.descriptionSource, "template-upload");
     assert.equal(photoTechMarketplaceDraft.body.draft.descriptionSource, "template-upload");
     assert.notEqual(uploadedMarketplaceDraft.draft.description, photoTechMarketplaceDraft.body.draft.description);
-    assert.match(photoTechMarketplaceDraft.body.draft.description, /O'Regan's Kia Halifax/);
-    assert.match(photoTechMarketplaceDraft.body.draft.description, /ask for Photo Tech/i);
-    assert.match(photoTechMarketplaceDraft.body.draft.copyText, /Ask for: Photo Tech/);
+    assert.match(photoTechMarketplaceDraft.body.draft.description, /2026 Kia Seltos/);
+    assertLeadControlSafeMarketplaceDescription(photoTechMarketplaceDraft.body.draft.description);
+    assert.doesNotMatch(photoTechMarketplaceDraft.body.draft.copyText, /Dealership: O'Regan's Kia Halifax/i);
+    assert.doesNotMatch(photoTechMarketplaceDraft.body.draft.copyText, /Ask for: Photo Tech/i);
+    assertLeadControlSafeMarketplaceDescription(marketplaceDocumentDescriptionBody(photoTechMarketplaceDraft.body.draft.copyText));
     assertCleanMarketplaceDescription(photoTechMarketplaceDraft.body.draft.description);
+
+    const poisonedMarketplaceCopy = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
+    poisonedMarketplaceCopy.users[NEW_USERNAME] = {
+      ...poisonedMarketplaceCopy.users[NEW_USERNAME],
+      description: [
+        "2026 Kia Seltos X-Line AWD with AWD, a backup camera, heated seats, and useful everyday utility.",
+        "Located at O'Regan's Kia Halifax. Come in today or visit us at the store.",
+        "Available at the O'Regan's Kia Halifax lot from the inventory source.",
+      ].join("\n\n"),
+    };
+    await writeMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID, poisonedMarketplaceCopy);
+    const poisonedPhotoTechMarketplaceDraft = await fetchJson(
+      `${harness.baseUrl}/api/marketplace-draft?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
+      { headers: { Cookie: approvedCookie } },
+    );
+    assert.match(poisonedPhotoTechMarketplaceDraft.body.draft.description, /2026 Kia Seltos/);
+    assertLeadControlSafeMarketplaceDescription(poisonedPhotoTechMarketplaceDraft.body.draft.description);
+    assertCleanMarketplaceDescription(poisonedPhotoTechMarketplaceDraft.body.draft.description);
 
     const regeneratedMarketplaceDraft = await postJson(harness, "/api/marketplace-draft/regenerate", {
       dealershipId: "15",
@@ -969,9 +1001,11 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.match(photoTechDescriptionText, /Prepared for: Photo Tech/);
     assert.match(photoTechDescriptionText, /Ready to post: Yes/);
     assert.doesNotMatch(photoTechDescriptionText, /Missing fields: Description/);
-    assert.match(photoTechDescriptionText, /Ask for: Photo Tech/);
+    assert.doesNotMatch(photoTechDescriptionText, /Dealership: O'Regan's Kia Halifax/i);
+    assert.doesNotMatch(photoTechDescriptionText, /Ask for: Photo Tech/i);
     const photoTechDescriptionBody = marketplaceDocumentDescriptionBody(photoTechDescriptionText);
-    assert.match(photoTechDescriptionBody, /ask for Photo Tech/i);
+    assert.match(photoTechDescriptionBody, /2026 Kia Seltos/);
+    assertLeadControlSafeMarketplaceDescription(photoTechDescriptionBody);
     assert.doesNotMatch(photoTechDescriptionText, /Ask for: Konner/);
     assertCleanMarketplaceDescription(photoTechDescriptionBody);
     assert.notEqual(descriptionText, photoTechDescriptionText);
@@ -993,9 +1027,10 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       assert.match(lateDescriptionText, new RegExp(`Prepared for: ${lateUser.displayName}`));
       assert.match(lateDescriptionText, /Ready to post: Yes/);
       assert.doesNotMatch(lateDescriptionText, /Missing fields: Description/);
-      assert.match(lateDescriptionText, new RegExp(`Ask for: ${lateUser.displayName}`));
+      assert.doesNotMatch(lateDescriptionText, new RegExp(`Ask for: ${lateUser.displayName}`));
       const lateDescriptionBody = marketplaceDocumentDescriptionBody(lateDescriptionText);
-      assert.match(lateDescriptionBody, new RegExp(`ask for ${lateUser.displayName}`, "i"));
+      assert.match(lateDescriptionBody, /2026 Kia Seltos/);
+      assertLeadControlSafeMarketplaceDescription(lateDescriptionBody);
       assert.doesNotMatch(lateDescriptionText, /Ask for: Konner/);
       assert.doesNotMatch(lateDescriptionText, /Ask for: Photo Tech/);
       assertCleanMarketplaceDescription(lateDescriptionBody);
@@ -1023,6 +1058,16 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.ok(packageDownloadBytes.includes(Buffer.from("package-manifest.json")));
     const packageManifest = JSON.parse(zipEntryText(packageDownloadBytes, "package-manifest.json"));
     assert.equal(packageManifest.readyToPost, true);
+
+    const regularPackageDownload = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/package`, {
+      headers: { Cookie: approvedCookie },
+    });
+    assert.equal(regularPackageDownload.status, 200);
+    const regularPackageDownloadBytes = Buffer.from(await regularPackageDownload.arrayBuffer());
+    const regularPackageDescriptionText = zipEntryText(regularPackageDownloadBytes, "facebook-marketplace-description.txt");
+    assert.doesNotMatch(regularPackageDescriptionText, /Dealership: O'Regan's Kia Halifax/i);
+    assert.doesNotMatch(regularPackageDescriptionText, /Ask for: Photo Tech/i);
+    assertLeadControlSafeMarketplaceDescription(marketplaceDocumentDescriptionBody(regularPackageDescriptionText));
 
     const regularDelete = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/photos/${encodeURIComponent(firstPhoto.filename)}`, {
       method: "DELETE",

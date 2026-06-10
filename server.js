@@ -98,12 +98,13 @@ const chatMessageMaxLength = positiveInteger(process.env.CHAT_MESSAGE_MAX_LENGTH
 const marketplaceDescriptionModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_MODEL || "gpt-5-nano";
 const marketplaceDescriptionFallbackModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_FALLBACK_MODEL || "gpt-4.1-nano";
 const marketplaceDescriptionVariantCount = positiveInteger(process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_VARIANT_COUNT, 6);
-const marketplaceDescriptionPromptVersion = "facebook-marketplace-user-description-v3";
+const marketplaceDescriptionPromptVersion = "facebook-marketplace-user-description-v4";
 const marketplaceLocation = process.env.FACEBOOK_MARKETPLACE_LOCATION || "Halifax, Nova Scotia";
 const marketplaceCleanTitleDefault = parseBooleanEnv("FACEBOOK_MARKETPLACE_CLEAN_TITLE_DEFAULT", true);
 const marketplacePriceDisclosureFee = 499.95;
 const marketplacePriceDisclosureHst = 14;
 const marketplaceContactPerson = normalizeSpace(process.env.FACEBOOK_MARKETPLACE_CONTACT_NAME || "Konner") || "Konner";
+const marketplaceLeadControlClosingPhrase = "(please message for more details)";
 const pushSubject = process.env.CARPOSTCLUB_PUSH_SUBJECT || process.env.KONNER_PUSH_SUBJECT || process.env.WEB_PUSH_SUBJECT || "mailto:hello@carpostclub.local";
 const pushTtlSeconds = positiveInteger(process.env.CARPOSTCLUB_PUSH_TTL_SECONDS || process.env.KONNER_PUSH_TTL_SECONDS, 60 * 60);
 const pushDeliveryDisabled = parseBooleanEnv("CARPOSTCLUB_PUSH_DELIVERY_DISABLED", parseBooleanEnv("KONNER_PUSH_DELIVERY_DISABLED", false));
@@ -1397,6 +1398,7 @@ function marketplaceDescriptionDocument({ album, car, draft, photos, user, inven
       fields: draft.fields || {},
       description: draft.description || "",
       car,
+      user,
     }),
   ].filter((line, index, lines) => line || lines[index - 1] !== "").join("\n").trimEnd() + "\n";
 }
@@ -3064,7 +3066,7 @@ async function buildMarketplaceDraftForUser(car, user, { album = null, force = f
     title,
     fields,
     description,
-    copyText: description ? buildMarketplaceCopyText({ title, fields, description, car }) : "",
+    copyText: description ? buildMarketplaceCopyText({ title, fields, description, car, user }) : "",
     missingFields,
     reviewFields: [...new Set(reviewFields)],
     descriptionSource: generated.source,
@@ -3247,11 +3249,13 @@ async function generateMarketplaceDescriptionVariants(input, count) {
               "Each one should sound like a real salesperson wrote a clean dealership Facebook Marketplace post: specific, plain-spoken, helpful, and not like AI, a database export, or a private sale.",
               "Use the supplied postingProfiles in order. Let each profile subtly change rhythm and word choice, but do not mention app usernames or that the copy is assigned to a profile.",
               "Never start with 'I'm listing', 'I am listing', 'Listing this', 'Posting this', or similar listing-process language.",
-              "Open naturally with the vehicle and dealership, for example '<year> <make> <model> - <trim/status> at <dealership>.'",
-              "Every description must mention the vehicle year, make, model, trim/status when available, price, mileage, dealership name, and location. Include VIN when available.",
+              "Open naturally with the vehicle, for example '<year> <make> <model> - <trim/status>.'",
+              "Every description must mention the vehicle year, make, model, trim/status when available, price, and mileage. Include VIN when available.",
               "Mention exterior color, transmission, fuel type, body style, interior color, and supplied highlights only when the supplied value is useful and specific.",
               "Do not mention missing, vague, or placeholder facts such as Other, Unknown, N/A, not specified, body style not specified, or interior color is Other.",
-              "Do not repeat the same facts. Price, mileage, VIN, color, transmission, fuel type, dealership, and location should each appear at most once inside the generated body/details.",
+              "Do not include exact dealership branch names, store names, street addresses, lot locations, source locations, source URLs, or inventory source wording.",
+              "Do not use wording that encourages a walk-in, including 'come in', 'located at', 'available at', 'come see it at', 'visit us at', 'stop by', or 'walk in'.",
+              "Do not repeat the same facts. Price, mileage, VIN, color, transmission, and fuel type should each appear at most once inside the generated body/details.",
               "Avoid emojis, hashtags, exclamation marks, generic hype, and phrases like 'look no further', 'turn heads', 'perfect blend', 'must-see', 'priced to sell', 'won't last long', or 'don't miss out'.",
               "For each description, write one short opening line, one concise useful paragraph, and a simple details block or details line. Keep each one between 80 and 145 words.",
               "The details block or line should include VIN, price, and mileage when available.",
@@ -4559,7 +4563,75 @@ function marketplaceArticlePhrase(value) {
   return /^[aeiou]/i.test(text) ? `an ${text}` : `a ${text}`;
 }
 
+function buildMarketplaceLeadControlBaseDescription(car, fields = {}, variantSeed = "", user = null) {
+  const lead = marketplaceVehicleLead(car, fields);
+  const posterKey = marketplaceUserKey(user);
+  const modelName = marketplaceUsefulFact(fields.model || car.model) || "vehicle";
+  const mileageText = marketplaceMileageText(fields, car);
+  const priceText = marketplacePriceText(fields, car);
+  const exteriorColor = marketplaceUsefulFact(fields.exteriorColor);
+  const interiorColor = marketplaceUsefulInteriorColor(fields.interiorColor);
+  const transmission = marketplaceTransmissionPhrase(fields.transmission);
+  const fuelType = marketplaceFuelPhrase(fields.fuelType);
+  const openers = [
+    `${lead}.`,
+    `Here is a ${lead}.`,
+    `${lead} with the key details ready to review.`,
+    `${lead} with practical equipment and clear vehicle details.`,
+  ];
+  const opener = openers[marketplaceVariantIndex(variantSeed, openers.length, `${car.vin}:${posterKey}`)];
+  const summarySentences = [];
+
+  const colorAndMileage = [];
+  if (exteriorColor) {
+    colorAndMileage.push(`finished in ${exteriorColor}${interiorColor ? ` with ${interiorColor} interior` : ""}`);
+  }
+  if (mileageText) colorAndMileage.push(`${mileageText} on the odometer`);
+  if (colorAndMileage.length) {
+    summarySentences.push(`This ${modelName} is ${naturalList(colorAndMileage)}.`);
+  }
+
+  const drivetrain = [transmission, fuelType].filter(Boolean).map(marketplaceArticlePhrase);
+  if (drivetrain.length) {
+    summarySentences.push(`It comes with ${naturalList(drivetrain)}.`);
+  }
+
+  const highlights = featureHighlights(car);
+  if (highlights.length) {
+    const highlightIntro = [
+      "Highlights include",
+      "Useful features include",
+      "The feature list includes",
+      "Notable equipment includes",
+    ][marketplaceVariantIndex(`${variantSeed}:lead-control-highlights`, 4, posterKey)];
+    summarySentences.push(`${highlightIntro} ${naturalList(highlights.slice(0, 5))}.`);
+  }
+
+  const lines = [
+    opener,
+    summarySentences.filter(Boolean).join(" "),
+  ].filter(Boolean);
+
+  const detailLines = [
+    priceText && `Price: ${priceText}`,
+    car.vin && `VIN: ${car.vin}`,
+    mileageText && `Mileage: ${mileageText}`,
+  ].filter(Boolean);
+  if (detailLines.length) lines.push(detailLines.join("\n"));
+
+  return lines.join("\n\n");
+}
+
 function buildMarketplaceDescription(car, fields, user, variantSeed = "") {
+  if (shouldLeadControlMarketplaceDescription(user)) {
+    return finalizeMarketplaceBuyerDescription(
+      buildMarketplaceLeadControlBaseDescription(car, fields, variantSeed, user),
+      fields,
+      car,
+      user,
+    );
+  }
+
   const lead = marketplaceVehicleLead(car, fields);
   const dealership = marketplaceDealershipContext(car);
   const dealershipName = fields.dealershipName || dealership.name;
@@ -4631,13 +4703,16 @@ function marketplaceVariantIndex(variantSeed, count, salt = "") {
   return Number.parseInt(hashJson(`${variantSeed}:${salt}`).slice(0, 2), 16) % count;
 }
 
-function buildMarketplaceCopyText({ title, fields, description, car }) {
+function buildMarketplaceCopyText({ title, fields, description, car, user = null }) {
+  const leadControl = shouldLeadControlMarketplaceDescription(user);
   const rows = [
     ["Title", title],
     ["Vehicle type", fields.vehicleType],
     ["Location", fields.location],
-    ["Dealership", fields.dealershipName],
-    ["Ask for", fields.contactName],
+    ...(!leadControl ? [
+      ["Dealership", fields.dealershipName],
+      ["Ask for", fields.contactName],
+    ] : []),
     ["Year", fields.year],
     ["Make", fields.make],
     ["Model", fields.model],
@@ -4660,6 +4735,15 @@ function buildMarketplaceCopyText({ title, fields, description, car }) {
 }
 
 function finalizeMarketplaceBuyerDescription(description, fields, car = null, user = null) {
+  if (shouldLeadControlMarketplaceDescription(user)) {
+    const safeDescription = sanitizeMarketplaceLeadControlDescription(description, fields, car)
+      || buildMarketplaceLeadControlBaseDescription(car || {}, fields || {}, "", user);
+    return stripMarketplaceInventoryNumbers(
+      appendMarketplaceLeadControlClosing(appendMarketplacePriceDisclosure(safeDescription, fields, car)),
+      car,
+    );
+  }
+
   return stripMarketplaceInventoryNumbers(
     appendMarketplaceContactLine(appendMarketplacePriceDisclosure(description, fields, car), fields, car, user),
     car,
@@ -4719,6 +4803,148 @@ function buildMarketplaceContactLine(fields = {}, car = null, user = null) {
     `For more details, contact ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
   ];
   return lines[marketplaceVariantIndex(seed, lines.length, fields.location || "")];
+}
+
+function appendMarketplaceLeadControlClosing(description) {
+  const text = String(description || "").trim();
+  const paragraphs = text.split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
+    .filter((paragraph) => !isMarketplaceLeadControlClosingParagraph(paragraph));
+  return [...paragraphs, marketplaceLeadControlClosingPhrase].join("\n\n").trim();
+}
+
+function sanitizeMarketplaceLeadControlDescription(description, fields = {}, car = null) {
+  const blockedNames = marketplaceLeadControlBlockedLocationNames(fields, car);
+  const paragraphs = String(description || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n/g, "\n")
+    .split(/\n{2,}/)
+    .map((paragraph) => sanitizeMarketplaceLeadControlParagraph(paragraph, blockedNames))
+    .filter(Boolean);
+  const text = paragraphs.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (!text || text.length < 20) return "";
+  return hasMarketplaceLeadControlUnsafeText(text, blockedNames) ? "" : text;
+}
+
+function sanitizeMarketplaceLeadControlParagraph(paragraph, blockedNames) {
+  const text = String(paragraph || "").trim();
+  if (!text || isMarketplaceContactParagraph(text) || isMarketplaceLeadControlClosingParagraph(text)) return "";
+  const lines = text.split("\n").map((line) => sanitizeMarketplaceLeadControlLine(line, blockedNames)).filter(Boolean);
+  return lines.join("\n").trim();
+}
+
+function sanitizeMarketplaceLeadControlLine(line, blockedNames) {
+  const text = String(line || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (/^\s*(?:https?:\/\/|source listing|source url|detail url)\b/i.test(text)) return "";
+  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
+  return sentences
+    .map((sentence) => sanitizeMarketplaceLeadControlSentence(sentence, blockedNames))
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function sanitizeMarketplaceLeadControlSentence(sentence, blockedNames) {
+  let text = String(sentence || "").trim();
+  if (!text || isMarketplaceLeadControlClosingParagraph(text)) return "";
+  text = text
+    .replace(/\bhttps?:\/\/\S+/gi, "")
+    .replace(/\b(?:source listing|source url|detail url)\s*[:#-]?\s*\S*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  text = stripMarketplaceLeadControlBlockedNames(text, blockedNames);
+  text = text
+    .replace(/\b(?:located|available)\s+(?:at|from|through|on|in)\b\s*[,.:-]*/gi, "")
+    .replace(/\b(?:come\s+see(?:\s+it)?|come\s+in|come\s+by|stop\s+by|drop\s+by|walk\s+in|visit\s+us|visit)\b.*$/i, "")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/^[\s,.;:-]+|[\s,.;:-]+$/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (!text || hasMarketplaceLeadControlUnsafeText(text, blockedNames)) return "";
+  if (!/[.!?]$/.test(text) && /[A-Za-z0-9)]$/.test(text)) text += ".";
+  return text;
+}
+
+function stripMarketplaceLeadControlBlockedNames(text, blockedNames) {
+  let result = String(text || "");
+  for (const name of blockedNames) {
+    const escapedName = normalizeSpace(name).split(/\s+/).map(escapeRegExp).join("\\s+");
+    const pattern = new RegExp(`\\b${escapedName}\\b`, "ig");
+    result = result
+      .replace(new RegExp(`\\b(?:at|from|through|by)\\s+${escapedName}\\b`, "ig"), "")
+      .replace(new RegExp(`\\b${escapedName}\\s+(?:has|offers|presents)\\s+this\\b`, "ig"), "This")
+      .replace(pattern, "");
+  }
+  return result;
+}
+
+function hasMarketplaceLeadControlUnsafeText(value, blockedNames = []) {
+  const text = String(value || "");
+  const normalized = normalizeSearchToken(text);
+  if (!normalized) return false;
+  const compactNormalized = normalized.replace(/\s+/g, "");
+  if (blockedNames.some((name) => {
+    const token = normalizeSearchToken(name);
+    return token && (
+      normalized.includes(token)
+      || compactNormalized.includes(token.replace(/\s+/g, ""))
+    );
+  })) return true;
+  if (/\b(?:located|available)\b/i.test(text)) return true;
+  if (/\b(?:located\s+at|available\s+(?:at|from|through)|come\s+in|come\s+by|come\s+see|stop\s+by|drop\s+by|walk\s+in|visit\s+us|visit)\b/i.test(text)) return true;
+  if (/\b(?:source\s+(?:listing|location)|inventory\s+source|lot\s+location|store|branch|dealership)\b/i.test(text)) return true;
+  if (/\b\d{1,6}\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,5}\s+(?:street|st\.?|avenue|ave\.?|road|rd\.?|drive|dr\.?|boulevard|blvd\.?|lane|ln\.?|highway|hwy\.?|court|ct\.?|way)\b/i.test(text)) return true;
+  return false;
+}
+
+function marketplaceLeadControlBlockedLocationNames(fields = {}, car = null) {
+  const dealership = marketplaceDealershipContext(car || {});
+  const values = [
+    fields?.dealershipName,
+    fields?.dealershipLabel,
+    dealership.name,
+    dealership.label,
+    car?.dealershipName,
+    car?.ownerLocation,
+    car?.dealership?.name,
+    ...oregansDealerships.map((candidate) => candidate.name),
+  ];
+  const seen = new Set();
+  return values
+    .map(normalizeSpace)
+    .filter(Boolean)
+    .filter((name) => {
+      const token = normalizeSearchToken(name);
+      if (!token || token === "o regan s" || token === "oregans") return false;
+      if (seen.has(token)) return false;
+      seen.add(token);
+      return true;
+    });
+}
+
+function shouldLeadControlMarketplaceDescription(user = null) {
+  return !isInternalMarketplaceDescriptionUser(user);
+}
+
+function isInternalMarketplaceDescriptionUser(user = null) {
+  if (user?.role === "admin") return true;
+  const username = normalizeAuthUsername(user?.username);
+  const bootstrapUsername = normalizeAuthUsername(authUsername);
+  if (username && bootstrapUsername && username === bootstrapUsername) return true;
+  return isKonnerIdentityText(user?.username) || isKonnerIdentityText(user?.displayName);
+}
+
+function isKonnerIdentityText(value) {
+  const token = normalizeSearchToken(value);
+  return token === "konner" || token.startsWith("konner ");
+}
+
+function isMarketplaceLeadControlClosingParagraph(value) {
+  return normalizeSpace(value).toLowerCase() === marketplaceLeadControlClosingPhrase;
 }
 
 function isMarketplaceContactParagraph(value) {
