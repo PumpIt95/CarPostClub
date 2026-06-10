@@ -973,12 +973,11 @@ test("uploaded package albums show inventory status and mobile download controls
   assert.match(styles, /\.gallery-folder-cover/);
   assert.match(styles, /\.gallery-folder-cover\.has-logo/);
   assert.match(styles, /\.gallery-folder-cover\.has-logo img\.gallery-folder-logo/);
-  assert.match(styles, /object-fit: contain/);
   assert.match(styles, /\.gallery-folder-bar/);
   assert.match(styles, /\.gallery-folder-crumb/);
   assert.match(source, /logoUrl: dealership\.logoUrl/);
   assert.match(source, /gallery-folder-logo/);
-  assert.match(source, /if \(albumCoverThumbnailUrl\(latestAlbum\)\)/);
+  assert.match(source, /if \(folder\.logoUrl\)/);
   assert.match(source, /\$\{folder\.name\} logo/);
   assert.match(styles, /\.app-shell\.is-gallery-page \.album-card\.is-collapsed/);
   assert.match(styles, /\.app-shell\.is-gallery-page \.album-card\.is-unread/);

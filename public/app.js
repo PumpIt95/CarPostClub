@@ -2337,19 +2337,19 @@ function renderGalleryFolderCard(folder) {
   button.classList.toggle("has-unread", stats.unread > 0);
   const cover = document.createElement("span");
   cover.className = "gallery-folder-cover";
-  if (albumCoverThumbnailUrl(latestAlbum)) {
-    const image = document.createElement("img");
-    image.src = albumCoverThumbnailUrl(latestAlbum);
-    image.alt = "";
-    image.loading = "lazy";
-    image.decoding = "async";
-    cover.append(image);
-  } else if (folder.logoUrl) {
+  if (folder.logoUrl) {
     cover.classList.add("has-logo");
     const image = document.createElement("img");
     image.className = "gallery-folder-logo";
     image.src = folder.logoUrl;
     image.alt = `${folder.name} logo`;
+    image.loading = "lazy";
+    image.decoding = "async";
+    cover.append(image);
+  } else if (albumCoverThumbnailUrl(latestAlbum)) {
+    const image = document.createElement("img");
+    image.src = albumCoverThumbnailUrl(latestAlbum);
+    image.alt = "";
     image.loading = "lazy";
     image.decoding = "async";
     cover.append(image);

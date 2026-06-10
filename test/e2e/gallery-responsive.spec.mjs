@@ -114,8 +114,8 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
     await expect(page.getByRole("button", { name: "Remove sold uploads" })).toHaveCount(0);
     await expect(page.locator(".gallery-folder-card.has-unread")).toHaveCount(2);
     const firstUnreadFolderCover = page.locator(".gallery-folder-card.has-unread").first().locator(".gallery-folder-cover img");
-    await expect(firstUnreadFolderCover).toHaveAttribute("src", /\/thumbnail$/);
-    await expect(firstUnreadFolderCover).not.toHaveClass(/gallery-folder-logo/);
+    await expect(firstUnreadFolderCover).toHaveAttribute("src", /\/dealership-logos\//);
+    await expect(firstUnreadFolderCover).toHaveClass(/gallery-folder-logo/);
 
     for (const viewport of VIEWPORTS) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
