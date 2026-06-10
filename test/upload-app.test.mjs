@@ -1385,7 +1385,7 @@ test("push preview is self-only and admin dry-run reports dealership targets", a
   try {
     harness.cookie = await login(harness.baseUrl);
     const michael = await createApprovedAccount(harness, {
-      username: "michael",
+      username: "mwebber2030",
       displayName: "Michael",
       dealershipId: "18",
       password: "michael-password-123",
@@ -1406,16 +1406,19 @@ test("push preview is self-only and admin dry-run reports dealership targets", a
     assert.equal(dryRun.body.dryRun, true);
     const targetsByLabel = new Map(dryRun.body.dealerships.map((dealership) => [dealership.label, dealership]));
     assert.deepEqual(targetsByLabel.get("Kia").usernames, [TEST_USERNAME]);
-    assert.deepEqual(targetsByLabel.get("GM").usernames, ["michael"]);
+    assert.deepEqual(targetsByLabel.get("GM").usernames, ["mwebber2030"]);
+    assert.deepEqual(targetsByLabel.get("GM").users.map((user) => user.displayName), ["Michael"]);
     assert.deepEqual(targetsByLabel.get("Nissan").usernames, []);
     assert.deepEqual(targetsByLabel.get("VW").usernames, []);
     assert.deepEqual(targetsByLabel.get("Kia").pushEnabledUsernames, [TEST_USERNAME]);
-    assert.deepEqual(targetsByLabel.get("GM").pushEnabledUsernames, ["michael"]);
+    assert.deepEqual(targetsByLabel.get("GM").pushEnabledUsernames, ["mwebber2030"]);
+    assert.deepEqual(targetsByLabel.get("GM").pushEnabledUsers.map((user) => user.displayName), ["Michael"]);
     const uploadDryRuns = new Map(dryRun.body.upload.simulations.map((simulation) => [simulation.uploaderUsername, simulation]));
-    assert.deepEqual(uploadDryRuns.get(TEST_USERNAME).usernames, ["michael"]);
-    assert.deepEqual(uploadDryRuns.get(TEST_USERNAME).pushEnabledUsernames, ["michael"]);
-    assert.deepEqual(uploadDryRuns.get("michael").usernames, [TEST_USERNAME]);
-    assert.deepEqual(uploadDryRuns.get("michael").pushEnabledUsernames, [TEST_USERNAME]);
+    assert.deepEqual(uploadDryRuns.get(TEST_USERNAME).usernames, ["mwebber2030"]);
+    assert.deepEqual(uploadDryRuns.get(TEST_USERNAME).pushEnabledUsernames, ["mwebber2030"]);
+    assert.equal(uploadDryRuns.get("mwebber2030").requestedUploaderUsername, "michael");
+    assert.deepEqual(uploadDryRuns.get("mwebber2030").usernames, [TEST_USERNAME]);
+    assert.deepEqual(uploadDryRuns.get("mwebber2030").pushEnabledUsernames, [TEST_USERNAME]);
 
     const nonAdminDryRun = await postJsonWithCookie(harness, michael.cookie, "/api/admin/push/dry-run", {});
     assert.equal(nonAdminDryRun.status, 403);

@@ -6284,8 +6284,10 @@ async function usernamesForDealership(dealershipIdValue) {
 
 async function pushTargetingForDealership(dealershipIdValue) {
   const dealership = publicAuthDealership(dealershipIdValue);
-  const usernames = dealership ? await usernamesForDealership(dealership.id) : [];
+  const users = dealership ? await usersForDealership(dealership.id) : [];
+  const usernames = users.map((user) => user.username);
   const pushEnabledUsernames = await pushEnabledUsernamesForUsernames(usernames);
+  const pushEnabledSet = new Set(pushEnabledUsernames);
   return {
     dealershipId: dealership?.id || "",
     label: dealership?.label || "",
@@ -6293,6 +6295,8 @@ async function pushTargetingForDealership(dealershipIdValue) {
     dealership,
     usernames,
     pushEnabledUsernames,
+    users: users.map(publicAuthUser),
+    pushEnabledUsers: users.filter((user) => pushEnabledSet.has(user.username)).map(publicAuthUser),
   };
 }
 
@@ -6314,21 +6318,25 @@ async function pushDryRunDealershipTargets() {
       name: targeting.name,
       usernames: targeting.usernames,
       pushEnabledUsernames: targeting.pushEnabledUsernames,
+      users: targeting.users,
+      pushEnabledUsers: targeting.pushEnabledUsers,
     });
   }
   return targets;
 }
 
 async function pushDryRunUploadTargets(uploaderUsernameValue) {
-  const uploaderUsername = normalizeAuthUsername(uploaderUsernameValue);
-  if (!uploaderUsername) throw httpError(400, "Choose an uploader username.");
+  const requestedUploaderUsername = normalizeAuthUsername(uploaderUsernameValue);
+  if (!requestedUploaderUsername) throw httpError(400, "Choose an uploader username.");
   const users = await approvedPushUsers();
-  const uploader = users.find((user) => user.username === uploaderUsername);
+  const uploader = dryRunUploaderFromUsers(users, uploaderUsernameValue);
+  const uploaderUsername = uploader?.username || requestedUploaderUsername;
   const recipientUsers = users.filter((user) => user.username !== uploaderUsername);
   const usernames = recipientUsers.map((user) => user.username);
   const pushEnabledUsernames = await pushEnabledUsernamesForUsernames(usernames);
   const pushEnabledSet = new Set(pushEnabledUsernames);
   return {
+    requestedUploaderUsername,
     uploaderUsername,
     uploaderDisplayName: uploader?.displayName || uploaderUsername,
     usernames,
@@ -6344,6 +6352,14 @@ async function pushDryRunUploadTargets(uploaderUsernameValue) {
       };
     }),
   };
+}
+
+function dryRunUploaderFromUsers(users, value) {
+  const requested = normalizeAuthUsername(value);
+  if (!requested) return null;
+  return users.find((user) => user.username === requested)
+    || users.find((user) => normalizeAuthUsername(user.displayName) === requested)
+    || null;
 }
 
 function normalizeDryRunUploadUsernames(body = {}, authUser = {}) {
