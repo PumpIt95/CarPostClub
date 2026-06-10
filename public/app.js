@@ -1281,7 +1281,7 @@ async function refreshAlbumsAfterLiveUpload(event = null) {
           && (!event?.albumId || selectedAlbum.id === event.albumId || selectedAlbum.id === selectedAlbumId),
       );
       if (shouldRefreshSelectedAlbum) {
-        await loadSelectedCarAlbum({ force: true });
+        await loadSelectedCarAlbum({ force: true, markSeen: false });
       }
 
       if (event?.albumId && expandedAlbumId === event.albumId) {
@@ -1919,7 +1919,7 @@ async function selectCar(inventoryKey) {
   renderActiveCar();
 }
 
-async function loadSelectedCarAlbum({ force = false } = {}) {
+async function loadSelectedCarAlbum({ force = false, markSeen = true } = {}) {
   const car = selectedCar();
   if (!car) {
     state.activeAlbum = null;
@@ -1931,15 +1931,16 @@ async function loadSelectedCarAlbum({ force = false } = {}) {
   }
 
   const params = new URLSearchParams(carRequestPayload(car));
+  if (!markSeen) params.set("markSeen", "0");
   const response = await apiJson(`/api/vehicle-album?${params}`);
   state.activeAlbum = response.album || null;
   state.photos = Array.isArray(response.photos) ? response.photos : [];
   if (state.activeAlbum?.id) {
     const localAlbum = albumById(state.activeAlbum.id);
-    rememberOpenedUnreadAlbum(localAlbum);
+    if (markSeen) rememberOpenedUnreadAlbum(localAlbum);
     state.expandedAlbumId = state.activeAlbum.id;
     persistAccountPreferences();
-    markGalleryAlbumSeen(state.activeAlbum.id).catch((error) => console.warn(error));
+    if (markSeen) markGalleryAlbumSeen(state.activeAlbum.id).catch((error) => console.warn(error));
   }
 }
 
@@ -3802,7 +3803,7 @@ async function uploadFiles(files) {
     };
     state.activeAlbum = response.album;
     state.photos = [...response.photos, ...state.photos];
-    await loadSelectedCarAlbum({ force: true });
+    await loadSelectedCarAlbum({ force: true, markSeen: false });
     await loadAlbums();
     uploadSucceeded = true;
     triggerUploadConfetti();

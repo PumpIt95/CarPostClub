@@ -663,6 +663,59 @@ test("live upload events refresh gallery without reload and keep duplicate lock 
   }
 });
 
+test("uploader sees their own live upload as unread until opening the album", async ({ page }) => {
+  const harness = await startTestServer();
+  const liveCar = INVENTORY_CARS[1];
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const uploader = await createApprovedAccount(harness, {
+      username: "gallery.uploader",
+      displayName: "Gallery Uploader",
+      password: "gallery-uploader-123"
+    });
+    await loginWithPage(page, harness.baseUrl, uploader.username, uploader.password);
+
+    const streamRequest = page.waitForRequest((request) => request.url().endsWith("/api/albums/stream"));
+    await page.goto(`${harness.baseUrl}/gallery`);
+    await streamRequest;
+    await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
+    await expect(page.locator(".gallery-folder-card.has-unread")).toHaveCount(0);
+
+    const upload = await uploadPhotosWithCookie(harness, uploader.cookie, {
+      dealershipId: liveCar.dealershipId,
+      inventoryTypeId: liveCar.inventoryTypeId,
+      vin: liveCar.vin,
+      photos: [
+        {
+          filename: "uploader-live-front.png",
+          type: "image/png",
+          body: pngBytes(1)
+        }
+      ]
+    });
+    expect(upload.status).toBe(201);
+
+    await expect(page.locator("#statusBar")).toContainText("Photos added for U7001");
+    const unreadFolder = page.locator(".gallery-folder-card.has-unread", { hasText: "O'Regan's Kia Halifax" });
+    await expect(unreadFolder).toContainText("1 new");
+
+    await unreadFolder.click();
+    const ownAlbum = page.locator(".album-card", { hasText: liveCar.stockNumber });
+    await expect(ownAlbum).toBeVisible();
+    await expect(ownAlbum).toContainText("New Post");
+    await expect(page.locator(".album-card.is-unread")).toHaveCount(1);
+
+    const seenResponse = page.waitForResponse((response) => /\/api\/albums\/[^/]+\/seen$/.test(new URL(response.url()).pathname));
+    await ownAlbum.locator(".album-summary-button").click();
+    await seenResponse;
+    await expect(ownAlbum).not.toContainText("New Post");
+    await expect(page.locator(".album-card.is-unread")).toHaveCount(0);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 async function enableIPhoneShareMocks(page, { timeoutMs = 1000, singleFileOnly = false } = {}) {
   await page.addInitScript(({ timeoutMs, singleFileOnly }) => {
     Object.defineProperty(window.navigator, "userAgent", {

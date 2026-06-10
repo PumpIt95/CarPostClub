@@ -1093,7 +1093,9 @@ app.get("/api/vehicle-album", requireAuth, async (req, res, next) => {
     const { car } = await resolveInventoryCar(req.query);
     const album = await findExistingVehicleAlbum(car);
     const photos = album ? await listAlbumPhotos(album.id) : [];
-    if (album && photos.length) await markAlbumObjectsSeen(req.authUser, [album]);
+    if (album && photos.length && shouldMarkVehicleAlbumSeen(req.query)) {
+      await markAlbumObjectsSeen(req.authUser, [album]);
+    }
     res.json({
       ok: true,
       album: publicAlbum(await albumWithInventoryStatus(album)),
@@ -1161,7 +1163,7 @@ app.post("/api/upload", requireAuth, upload.array("photos", maxUploadFiles), asy
       marketplaceGeneration: result.marketplaceGeneration,
       marketplaceDraft: result.marketplaceDraft,
     });
-    broadcastAlbumEvent(uploadEvent, { excludeUsername: req.authUser.username });
+    broadcastAlbumEvent(uploadEvent);
     queuePushNotifications({
       excludeUsername: req.authUser.username,
       payload: uploadPushPayload(car, result.photos.length, uploadEvent),
@@ -1743,12 +1745,10 @@ function withAlbumReadState(album, user, seenStore) {
   const albumUpdatedAt = albumReadVersion(album);
   const albumUpdatedMs = Date.parse(albumUpdatedAt || "");
   const seenMs = Date.parse(seen?.albumUpdatedAt || seen?.seenAt || "");
-  const latestUploaderUsername = normalizeAuthUsername(album.latestUploadedBy?.username || album.updatedBy?.username);
   const hasSeenVersion = Number.isFinite(seenMs) && (!Number.isFinite(albumUpdatedMs) || seenMs >= albumUpdatedMs);
   const unread = Boolean(
     username
     && album.mediaCount > 0
-    && latestUploaderUsername !== username
     && !hasSeenVersion
   );
 
@@ -1765,6 +1765,10 @@ function withAlbumReadState(album, user, seenStore) {
 
 function albumReadVersion(album) {
   return album?.latestUploadedAt || album?.updatedAt || album?.createdAt || "";
+}
+
+function shouldMarkVehicleAlbumSeen(query = {}) {
+  return normalizeSpace(query.markSeen || query.markAsSeen || query.seen || "1") !== "0";
 }
 
 function albumDealershipKey(album) {
@@ -7449,7 +7453,6 @@ async function saveUploadedMediaForCarLocked({ files, car, user }) {
     }
 
     let updatedAlbum = await readAlbum(album.id) || album;
-    await markAlbumObjectsSeen(user, [updatedAlbum]);
     const marketplaceGeneration = await prepareMarketplaceDescriptionsForUpload(car, user, {
       album: updatedAlbum,
       uploadedMediaCount: saved.length,
@@ -8880,7 +8883,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260610-no-preview-push-v59">
+  <link rel="stylesheet" href="/styles.css?v=20260610-uploader-unread-v60">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">

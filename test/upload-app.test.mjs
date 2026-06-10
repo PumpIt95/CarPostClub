@@ -393,7 +393,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260610-no-preview-push-v59/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260610-uploader-unread-v60/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -1964,8 +1964,8 @@ test("vehicle gallery unread state is tracked per user", async () => {
     }
 
     const adminGallery = await getJsonWithCookie(harness, harness.cookie, "/api/albums");
-    assert.equal(albumUnread(adminGallery, TEST_ALBUM_ID), false);
-    assert.equal(adminGallery.unreadTotal, 0);
+    assert.equal(albumUnread(adminGallery, TEST_ALBUM_ID), true);
+    assert.equal(adminGallery.unreadTotal, 1);
 
     const firstGallery = await getJsonWithCookie(harness, firstViewer.cookie, "/api/albums");
     const secondGallery = await getJsonWithCookie(harness, secondViewer.cookie, "/api/albums");
@@ -1973,6 +1973,24 @@ test("vehicle gallery unread state is tracked per user", async () => {
     assert.equal(albumUnread(secondGallery, TEST_ALBUM_ID), true);
     assert.equal(firstGallery.unreadTotal, 1);
     assert.equal(secondGallery.unreadTotal, 1);
+
+    const uploaderNoMarkRefresh = await getJsonWithCookie(
+      harness,
+      harness.cookie,
+      `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}&markSeen=0`,
+    );
+    assert.equal(uploaderNoMarkRefresh.album.id, TEST_ALBUM_ID);
+    assert.equal(uploaderNoMarkRefresh.photos.length, 1);
+    const adminAfterNoMarkRefresh = await getJsonWithCookie(harness, harness.cookie, "/api/albums");
+    assert.equal(albumUnread(adminAfterNoMarkRefresh, TEST_ALBUM_ID), true);
+    assert.equal(adminAfterNoMarkRefresh.unreadTotal, 1);
+
+    const adminFolderRead = await postJsonWithCookie(harness, harness.cookie, "/api/gallery/dealerships/15/seen", {});
+    assert.equal(adminFolderRead.status, 200);
+    assert.equal(adminFolderRead.body.marked, 0);
+    assert.equal(adminFolderRead.body.deprecated, true);
+    assert.equal(albumUnread(adminFolderRead.body, TEST_ALBUM_ID), true);
+    assert.equal(adminFolderRead.body.unreadTotal, 1);
 
     const firstRead = await postJsonWithCookie(harness, firstViewer.cookie, "/api/gallery/dealerships/15/seen", {});
     assert.equal(firstRead.status, 200);
@@ -1987,11 +2005,28 @@ test("vehicle gallery unread state is tracked per user", async () => {
     assert.equal(albumUnread(secondAfterFirstRead, TEST_ALBUM_ID), true);
     assert.equal(secondAfterFirstRead.unreadTotal, 1);
 
+    const adminAlbumRead = await postJsonWithCookie(harness, harness.cookie, `/api/albums/${TEST_ALBUM_ID}/seen`, {});
+    assert.equal(adminAlbumRead.status, 200);
+    assert.equal(adminAlbumRead.body.marked, 1);
+    assert.equal(albumUnread(adminAlbumRead.body, TEST_ALBUM_ID), false);
+    assert.equal(adminAlbumRead.body.unreadTotal, 0);
+
+    const firstAfterAdminRead = await getJsonWithCookie(harness, firstViewer.cookie, "/api/albums");
+    const secondAfterAdminRead = await getJsonWithCookie(harness, secondViewer.cookie, "/api/albums");
+    assert.equal(albumUnread(firstAfterAdminRead, TEST_ALBUM_ID), true);
+    assert.equal(albumUnread(secondAfterAdminRead, TEST_ALBUM_ID), true);
+    assert.equal(firstAfterAdminRead.unreadTotal, 1);
+    assert.equal(secondAfterAdminRead.unreadTotal, 1);
+
     const firstAlbumRead = await postJsonWithCookie(harness, firstViewer.cookie, `/api/albums/${TEST_ALBUM_ID}/seen`, {});
     assert.equal(firstAlbumRead.status, 200);
     assert.equal(firstAlbumRead.body.marked, 1);
     assert.equal(albumUnread(firstAlbumRead.body, TEST_ALBUM_ID), false);
     assert.equal(firstAlbumRead.body.unreadTotal, 0);
+
+    const secondAfterFirstAlbumRead = await getJsonWithCookie(harness, secondViewer.cookie, "/api/albums");
+    assert.equal(albumUnread(secondAfterFirstAlbumRead, TEST_ALBUM_ID), true);
+    assert.equal(secondAfterFirstAlbumRead.unreadTotal, 1);
 
     const secondRead = await postJsonWithCookie(harness, secondViewer.cookie, `/api/albums/${TEST_ALBUM_ID}/seen`, {});
     assert.equal(secondRead.status, 200);
