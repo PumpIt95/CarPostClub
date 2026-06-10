@@ -716,6 +716,73 @@ test("uploader sees their own live upload as unread until opening the album", as
   }
 });
 
+test("legacy media notification route keeps New Post unread until manual album open", async ({ page }) => {
+  const harness = await startTestServer();
+  const liveCar = INVENTORY_CARS[1];
+  const seenRequests = [];
+  const vehicleAlbumRequests = [];
+
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (/\/api\/albums\/[^/]+\/seen$/.test(url.pathname)) seenRequests.push(request.url());
+    if (url.pathname === "/api/vehicle-album") vehicleAlbumRequests.push(request.url());
+  });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const viewer = await createApprovedAccount(harness, {
+      username: "gallery.deep.viewer",
+      displayName: "Gallery Deep Viewer",
+      password: "gallery-deep-viewer-123"
+    });
+    const upload = await uploadPhotosWithCookie(harness, harness.cookie, {
+      dealershipId: liveCar.dealershipId,
+      inventoryTypeId: liveCar.inventoryTypeId,
+      vin: liveCar.vin,
+      photos: [
+        {
+          filename: "notification-route-front.png",
+          type: "image/png",
+          body: pngBytes(2)
+        }
+      ]
+    });
+    expect(upload.status).toBe(201);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await loginWithPage(page, harness.baseUrl, viewer.username, viewer.password);
+    const legacyNotificationRoute = `${harness.baseUrl}/gallery?dealershipId=${liveCar.dealershipId}&inventoryTypeId=${liveCar.inventoryTypeId}&inventoryKey=${liveCar.vin}&albumId=${upload.body.album.id}&openAlbum=1`;
+    await page.goto(legacyNotificationRoute);
+    await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
+
+    const targetAlbum = page.locator(".album-card", { hasText: liveCar.stockNumber });
+    await expect(targetAlbum).toBeVisible();
+    await expect(targetAlbum).toContainText("New Post");
+    await expect(targetAlbum).toHaveClass(/is-collapsed/);
+    await expect(targetAlbum).toHaveClass(/is-unread/);
+    await expect(page.locator(".album-card.is-unread")).toHaveCount(1);
+    expect(new URL(page.url()).searchParams.has("openAlbum")).toBe(false);
+    expect(seenRequests).toEqual([]);
+    expect(vehicleAlbumRequests).toEqual([]);
+
+    await page.getByRole("button", { name: "Back" }).click();
+    const unreadFolder = page.locator(".gallery-folder-card.has-unread", { hasText: "O'Regan's Kia Halifax" });
+    await expect(unreadFolder).toContainText("1 new");
+    expect(seenRequests).toEqual([]);
+    await unreadFolder.click();
+    await expect(targetAlbum).toContainText("New Post");
+
+    const seenResponse = page.waitForResponse((response) => /\/api\/albums\/[^/]+\/seen$/.test(new URL(response.url()).pathname));
+    await targetAlbum.locator(".album-summary-button").click();
+    await seenResponse;
+    await expect(targetAlbum).not.toContainText("New Post");
+    await expect(page.locator(".album-card.is-unread")).toHaveCount(0);
+    expect(seenRequests).toHaveLength(1);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 async function enableIPhoneShareMocks(page, { timeoutMs = 1000, singleFileOnly = false } = {}) {
   await page.addInitScript(({ timeoutMs, singleFileOnly }) => {
     Object.defineProperty(window.navigator, "userAgent", {

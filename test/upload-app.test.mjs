@@ -431,7 +431,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260610-uploader-unread-v60/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260610-gallery-notification-v61/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -2130,7 +2130,7 @@ test("vehicle gallery unread state is tracked per user", async () => {
       assert.equal(event.inventoryTypeId, "2");
       assert.equal(event.inventoryKey, TEST_CAR.vin);
       assert.equal(event.stockNumber, TEST_CAR.stockNumber);
-      assert.equal(event.url, `/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&albumId=${TEST_ALBUM_ID}&openAlbum=1`);
+      assert.equal(event.url, `/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&albumId=${TEST_ALBUM_ID}`);
     }
 
     const adminGallery = await getJsonWithCookie(harness, harness.cookie, "/api/albums");
@@ -2143,6 +2143,15 @@ test("vehicle gallery unread state is tracked per user", async () => {
     assert.equal(albumUnread(secondGallery, TEST_ALBUM_ID), true);
     assert.equal(firstGallery.unreadTotal, 1);
     assert.equal(secondGallery.unreadTotal, 1);
+
+    const brandNewViewer = await createApprovedAccount(harness, {
+      username: "brand.new.viewer",
+      displayName: "Brand New Viewer",
+      password: "brand-new-viewer-123",
+    });
+    const brandNewGallery = await getJsonWithCookie(harness, brandNewViewer.cookie, "/api/albums");
+    assert.equal(albumUnread(brandNewGallery, TEST_ALBUM_ID), true);
+    assert.equal(brandNewGallery.unreadTotal, 1);
 
     const uploaderNoMarkRefresh = await getJsonWithCookie(
       harness,
@@ -2289,7 +2298,7 @@ test("vehicle upload push notifications go to all approved push-enabled users ex
     assert.equal(kiaNotifications.notifications[0].inventoryTypeId, "2");
     assert.equal(kiaNotifications.notifications[0].inventoryKey, TEST_CAR.vin);
     assert.equal(kiaNotifications.notifications[0].stockNumber, TEST_CAR.stockNumber);
-    assert.equal(kiaNotifications.notifications[0].url, `/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&albumId=${TEST_ALBUM_ID}&openAlbum=1`);
+    assert.equal(kiaNotifications.notifications[0].url, `/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&albumId=${TEST_ALBUM_ID}`);
 
     const gmNotifications = await waitForNotificationCount(harness, gmViewer.cookie, 1);
     assert.equal(gmNotifications.notifications[0].title, "admin uploaded a car");
@@ -2354,7 +2363,7 @@ test("gm uploader is excluded while kia users receive the upload push", async ()
     assert.equal(adminNotifications.notifications[0].kind, "upload");
     assert.equal(adminNotifications.notifications[0].route, "media_gallery");
     assert.equal(adminNotifications.notifications[0].dealershipId, "18");
-    assert.equal(adminNotifications.notifications[0].url, `/gallery?dealershipId=18&inventoryTypeId=2&inventoryKey=${SNAPSHOT_NEW_CAR.vin}&albumId=${uploaded.body.album.id}&openAlbum=1`);
+    assert.equal(adminNotifications.notifications[0].url, `/gallery?dealershipId=18&inventoryTypeId=2&inventoryKey=${SNAPSHOT_NEW_CAR.vin}&albumId=${uploaded.body.album.id}`);
 
     const michaelNotifications = await getJsonWithCookie(harness, michael.cookie, "/api/notifications");
     assert.equal(michaelNotifications.unreadCount, 0);

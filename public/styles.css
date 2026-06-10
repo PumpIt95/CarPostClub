@@ -865,6 +865,11 @@ textarea:focus {
   border-left-width: 4px;
 }
 
+.app-shell.is-gallery-page .album-card.is-route-target {
+  outline: 2px solid var(--color-electric-blue);
+  outline-offset: 2px;
+}
+
 .album-card.is-source-removed {
   border-color: #b7bcc2;
   background: #f0f2f3;

@@ -2284,7 +2284,7 @@ function inventoryRemovedPushPayload(album, inventoryStatus, timestamp) {
     title: "Inventory removed",
     body: `${label} is no longer in O'Regan's inventory. Mark any matching Facebook Marketplace listing sold.`,
     tag: `carpostclub-inventory-removed-${album.id}`.slice(0, 80),
-    url: mediaGalleryDeepLink(car, { openAlbum: true, albumId: album.id }),
+    url: mediaGalleryDeepLink(car, { albumId: album.id }),
     timestamp,
     mediaCount: album.mediaCount || 0,
     dealershipId: car.dealership?.id || car.dealershipId,
@@ -7004,7 +7004,7 @@ function previewPushPayload(input = {}, user = {}) {
       title: titleOverride || uploadPushTitle({ displayName: previewUploader, username: user?.username }),
       body: bodyOverride || uploadPushBody(previewCar),
       tag: `carpostclub-preview-${messageId}`,
-      url: mediaGalleryDeepLink(previewCar, { openAlbum: true }),
+      url: mediaGalleryDeepLink(previewCar),
       dealershipId: dealership?.id || "",
       inventoryTypeId: previewCar.inventoryTypeId,
       inventoryKey: previewCar.inventoryKey,
@@ -7071,7 +7071,7 @@ function uploadAlbumEventPayload(car, result, user) {
     title: uploadPushTitle(uploadedBy),
     body: uploadPushBody(car || album?.vehicle),
     tag: `carpostclub-upload-${carInventoryNotificationKey(car)}`,
-    url: mediaGalleryDeepLink(car, { openAlbum: true, albumId: album?.id || "" }),
+    url: mediaGalleryDeepLink(car, { albumId: album?.id || "" }),
     dealershipId: car?.dealership?.id || car?.dealershipId,
     inventoryTypeId: car?.inventoryTypeId || defaultInventoryTypeId,
     inventoryKey: car?.inventoryKey || car?.manualInventoryId || car?.vin || "",
@@ -7095,7 +7095,7 @@ function uploadPushPayload(car, mediaCount, uploadEvent = null) {
     title: uploadEvent?.title || uploadPushTitle(uploadedBy),
     body: uploadEvent?.body || uploadPushBody(car),
     tag: uploadEvent?.tag || `carpostclub-upload-${carInventoryNotificationKey(car)}`,
-    url: uploadEvent?.url || mediaGalleryDeepLink(car, { openAlbum: true }),
+    url: uploadEvent?.url || mediaGalleryDeepLink(car),
     dealershipId: car?.dealership?.id || car?.dealershipId,
     inventoryTypeId: car?.inventoryTypeId || defaultInventoryTypeId,
     inventoryKey: car?.inventoryKey || car?.manualInventoryId || car?.vin || "",
@@ -8926,7 +8926,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260610-uploader-unread-v60">
+  <link rel="stylesheet" href="/styles.css?v=20260610-gallery-notification-v61">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">

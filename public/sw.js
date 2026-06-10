@@ -1,6 +1,6 @@
 const APP_ICON = "/icons/carpostclub-icon-192.png";
 const APP_BADGE = "/icons/carpostclub-apple-touch-icon.png";
-const CACHE_VERSION = "carpostclub-pwa-v60";
+const CACHE_VERSION = "carpostclub-pwa-v61";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/offline.html",
@@ -150,7 +150,10 @@ function notificationActions(payload) {
 function notificationTargetPath(payload = {}) {
   const explicitPath = cleanNavigationPath(payload.url);
   const routePath = cleanNavigationPath(payload.route);
-  if (routePath) return routePath;
+  if (routePath) {
+    if (routePath.startsWith("/gallery")) return mediaGalleryPath(payload, routePath);
+    return routePath;
+  }
 
   const route = notificationToken(payload.route);
   if (route === "media_gallery" || route === "gallery") {
@@ -174,8 +177,8 @@ function notificationTargetPath(payload = {}) {
 
 function mediaGalleryPath(payload = {}, fallbackPath = "") {
   const fallback = cleanNavigationPath(fallbackPath);
-  if (fallback.startsWith("/gallery")) return fallback;
   const params = notificationParams(payload, fallback);
+  params.delete("openAlbum");
   const query = params.toString();
   return query ? `/gallery?${query}` : "/gallery";
 }
@@ -204,7 +207,6 @@ function notificationParams(payload = {}, fallbackPath = "") {
   setParamIfMissing(params, "inventoryKey", payload.inventoryKey || payload.vin);
   setParamIfMissing(params, "albumId", payload.albumId);
   if (payload.stockNumber && !params.has("stockNumber")) params.set("stockNumber", String(payload.stockNumber).slice(0, 80));
-  if (payload.openAlbum || params.has("albumId")) params.set("openAlbum", "1");
   return params;
 }
 

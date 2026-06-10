@@ -130,8 +130,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="galleryModelFilter"/);
   assert.match(html, /id="galleryYearFilter"/);
   assert.match(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260610-uploader-unread-v60/);
-  assert.match(html, /\/styles\.css\?v=20260610-uploader-unread-v60/);
+  assert.match(html, /\/app\.js\?v=20260610-gallery-notification-v61/);
+  assert.match(html, /\/styles\.css\?v=20260610-gallery-notification-v61/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -492,7 +492,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v60/);
+  assert.match(serviceWorker, /carpostclub-pwa-v61/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -582,14 +582,32 @@ test("service worker routes media upload notifications to gallery and inventory 
     title: "Upload ready",
     url: "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&albumId=album-1&openAlbum=1",
   });
-  assert.equal(notifications.at(-1).options.data.url, "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&albumId=album-1&openAlbum=1");
+  assert.equal(notifications.at(-1).options.data.url, "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&albumId=album-1");
+
+  await dispatchPush(pushHandler, {
+    kind: "upload",
+    route: "media_gallery",
+    title: "Upload ready from fields",
+    dealershipId: "15",
+    inventoryTypeId: "2",
+    inventoryKey: "VIN123",
+    albumId: "album-1",
+  });
+  assert.equal(notifications.at(-1).options.data.url, "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&albumId=album-1");
 
   await dispatchPush(pushHandler, {
     kind: "upload",
     title: "Legacy upload",
     url: "/?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&openAlbum=1",
   });
-  assert.equal(notifications.at(-1).options.data.url, "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&openAlbum=1");
+  assert.equal(notifications.at(-1).options.data.url, "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123");
+
+  await dispatchPush(pushHandler, {
+    kind: "upload",
+    title: "Legacy route path",
+    route: "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&albumId=album-1&openAlbum=1",
+  });
+  assert.equal(notifications.at(-1).options.data.url, "/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&albumId=album-1");
 
   await dispatchPush(pushHandler, {
     kind: "inventory_added",
@@ -624,7 +642,7 @@ test("service worker routes media upload notifications to gallery and inventory 
   };
   clickHandler(clickEvent);
   await clickEvent.promise;
-  assert.equal(openedWindow, "https://carpostclub.test/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123&openAlbum=1");
+  assert.equal(openedWindow, "https://carpostclub.test/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=VIN123");
 });
 
 test("service worker repairs changed push subscriptions with authenticated endpoints", async () => {
@@ -1016,7 +1034,7 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260610-uploader-unread-v60/);
+  assert.match(source, /\/styles\.css\?v=20260610-gallery-notification-v61/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });

@@ -47,6 +47,7 @@ const state = {
   galleryYearFilter: safeStorageGet("carpostclub.galleryYearFilter"),
   galleryUploaderFilter: safeStorageGet("carpostclub.galleryUploaderFilter"),
   initialOpenAlbum: false,
+  galleryFocusAlbumId: "",
   expandedAlbumId: safeStorageGet("carpostclub.expandedAlbumId"),
   albumsLoading: false,
   openedUnreadAlbumIds: new Map(),
@@ -1064,7 +1065,21 @@ function applyInitialSelectionFromUrl() {
     changed = true;
   }
   if (state.page === "gallery" && albumId) {
-    state.expandedAlbumId = albumId;
+    state.galleryFocusAlbumId = albumId;
+    state.expandedAlbumId = "";
+    state.gallerySearch = "";
+    state.galleryStatusFilter = "all";
+    state.galleryMakeFilter = "";
+    state.galleryModelFilter = "";
+    state.galleryYearFilter = "";
+    state.galleryUploaderFilter = "";
+    safeStorageRemove("carpostclub.expandedAlbumId");
+    safeStorageRemove("carpostclub.gallerySearch");
+    safeStorageSet("carpostclub.galleryStatusFilter", state.galleryStatusFilter);
+    safeStorageRemove("carpostclub.galleryMakeFilter");
+    safeStorageRemove("carpostclub.galleryModelFilter");
+    safeStorageRemove("carpostclub.galleryYearFilter");
+    safeStorageRemove("carpostclub.galleryUploaderFilter");
     changed = true;
   }
   if (inventoryKey) {
@@ -1075,7 +1090,8 @@ function applyInitialSelectionFromUrl() {
     safeStorageRemove("carpostclub.carSearch");
     changed = true;
   }
-  state.initialOpenAlbum = params.get("openAlbum") === "1";
+  state.initialOpenAlbum = state.page !== "gallery" && params.get("openAlbum") === "1";
+  if (state.page === "gallery" && params.has("openAlbum")) clearInitialOpenAlbumUrlParam();
   if (changed) persistSelection();
 }
 
@@ -1759,7 +1775,12 @@ async function loadCars({ keepSelectedCar = false, forceAlbumRefresh = false } =
     if (!keepSelectedCar || !selected || !carMatchesVehicleFilters(selected)) clearSelectedCarSelection();
     renderCarOptions();
     persistSelection();
-    await loadSelectedCarAlbum({ force: forceAlbumRefresh });
+    if (state.page === "gallery") {
+      state.activeAlbum = null;
+      state.photos = [];
+    } else {
+      await loadSelectedCarAlbum({ force: forceAlbumRefresh });
+    }
     applyInitialAlbumView();
     renderActiveCar();
     renderInventoryFreshness();
@@ -2483,6 +2504,7 @@ function renderAlbumCard(album) {
   const article = document.createElement("article");
   article.className = "album-card";
   article.classList.toggle("is-gallery-album", isGalleryPage);
+  article.classList.toggle("is-route-target", isGalleryPage && state.galleryFocusAlbumId === album.id);
   article.classList.toggle("is-collapsed", isGalleryPage && !isOpen);
   article.classList.toggle("is-open", isOpen);
   article.classList.toggle("is-selected", Boolean(album.isSelected));
@@ -4211,6 +4233,13 @@ function clearInitialSelectionUrl() {
     changed = true;
   }
   if (changed) window.history.replaceState({}, "", url);
+}
+
+function clearInitialOpenAlbumUrlParam() {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has("openAlbum")) return;
+  url.searchParams.delete("openAlbum");
+  window.history.replaceState({}, "", url);
 }
 
 function cleanQueryValue(value) {
