@@ -33,6 +33,9 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="pageTitle"/);
   assert.match(html, /id="galleryPageLink"[^>]*href="\/gallery"/);
   assert.match(html, /Open media gallery/);
+  assert.match(html, /id="galleryUnread"/);
+  assert.match(html, /class="gallery-nav-unread"/);
+  assert.match(html, /id="galleryPageLink"[^>]*class="[^"]*gallery-page-link[^"]*"[\s\S]*?<span id="galleryUnread" class="gallery-nav-unread" hidden>0<\/span>[\s\S]*?<\/a>/);
   assert.match(html, /id="uploadPageLink"[^>]*href="\/"[^>]*hidden/);
   assert.match(html, /aria-label="Home"/);
   assert.match(html, /title="Home"/);
@@ -90,6 +93,7 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.doesNotMatch(html, /Upload preview/);
   assert.doesNotMatch(html, /Inventory added preview/);
   assert.match(html, /id="notificationUnread"/);
+  assert.match(html, /id="chatUnread"/);
   assert.doesNotMatch(html, /id="shortcutButton"/i);
   assert.doesNotMatch(html, /id="shortcutPanel"/i);
   assert.doesNotMatch(html, /Photos Shortcut/i);
@@ -115,23 +119,25 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="videoInput"[^>]*type="file"[^>]*hidden/);
   assert.match(html, /class="upload-panel"/);
   assert.match(html, /class="album-section"/);
+  assert.match(html, /is-gallery-route/);
+  assert.match(html, /is-upload-route/);
   assert.match(html, /class="upload-progress-marker"/);
   assert.match(html, /class="upload-monkey"/);
   assert.match(html, /src="\/upload-monkey\.svg"/);
   assert.match(html, /class="progress-confetti"/);
   assert.doesNotMatch(html, /&#128018;/);
-  assert.match(html, /id="galleryFilterBar"/);
-  assert.match(html, /id="gallerySearchInput"/);
-  assert.match(html, /Search stock, VIN, make, model, year, uploader/);
-  assert.match(html, /id="galleryStatusFilter"/);
-  assert.match(html, /Active only/);
-  assert.match(html, /Inactive only/);
-  assert.match(html, /id="galleryMakeFilter"/);
-  assert.match(html, /id="galleryModelFilter"/);
-  assert.match(html, /id="galleryYearFilter"/);
-  assert.match(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260610-gallery-notification-v61/);
-  assert.match(html, /\/styles\.css\?v=20260610-gallery-notification-v61/);
+  assert.doesNotMatch(html, /id="galleryFilterBar"/);
+  assert.doesNotMatch(html, /id="gallerySearchInput"/);
+  assert.doesNotMatch(html, /Search stock, VIN, make, model, year, uploader/);
+  assert.doesNotMatch(html, /id="galleryStatusFilter"/);
+  assert.doesNotMatch(html, /Active only/);
+  assert.doesNotMatch(html, /Inactive only/);
+  assert.doesNotMatch(html, /id="galleryMakeFilter"/);
+  assert.doesNotMatch(html, /id="galleryModelFilter"/);
+  assert.doesNotMatch(html, /id="galleryYearFilter"/);
+  assert.doesNotMatch(html, /id="galleryUploaderFilter"/);
+  assert.match(html, /\/app\.js\?v=20260611-availability-filter-v66/);
+  assert.match(html, /\/styles\.css\?v=20260611-availability-filter-v66/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -164,6 +170,7 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /Loading dealership folders/);
   assert.match(source, /galleryFolderStatusSummary/);
   assert.match(source, /galleryFolderStats/);
+  assert.doesNotMatch(source, /\$\{stats\.inactive\} inactive/);
   assert.match(source, /galleryAlbumIsUnread/);
   assert.match(source, /openedUnreadAlbumIds/);
   assert.match(source, /markGalleryAlbumSeen/);
@@ -172,21 +179,33 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /\/api\/albums\/\$\{encodeURIComponent\(albumId\)\}\/seen/);
   assert.match(source, /albumReadVersion/);
   assert.match(source, /galleryAlbumWasOpenedLocally/);
-  assert.match(source, /renderGalleryFilterBar/);
-  assert.match(source, /gallerySearchInput/);
-  assert.match(source, /galleryStatusFilter/);
-  assert.match(source, /filteredGalleryAlbums/);
-  assert.match(source, /galleryAlbumMatchesFilters/);
-  assert.match(source, /galleryAlbumSearchText/);
-  assert.match(source, /carpostclub\.galleryStatusFilter/);
+  assert.doesNotMatch(source, /renderGalleryFilterBar/);
+  assert.doesNotMatch(source, /gallerySearchInput/);
+  assert.match(source, /galleryStatusFilter: "active"/);
+  assert.match(source, /set-gallery-status-filter/);
+  assert.doesNotMatch(source, /filteredGalleryAlbums/);
+  assert.doesNotMatch(source, /galleryAlbumMatchesFilters/);
+  assert.doesNotMatch(source, /galleryAlbumSearchText/);
+  assert.doesNotMatch(source, /carpostclub\.galleryStatusFilter/);
   assert.match(source, /open-dealership-folder/);
   assert.match(source, /back-gallery-folders/);
   assert.match(source, /No vehicles posted yet/);
-  assert.match(source, /No vehicles match these filters/);
+  assert.doesNotMatch(source, /No vehicles match these filters/);
   assert.match(source, /Dealership folders/);
   assert.match(source, /is-gallery-page/);
   assert.match(source, /is-upload-page/);
+  assert.match(source, /document\.documentElement\.classList\.toggle\("is-gallery-route"/);
+  assert.match(source, /document\.documentElement\.classList\.toggle\("is-upload-route"/);
   assert.match(source, /galleryPageLink/);
+  assert.match(source, /galleryUnread/);
+  assert.match(source, /galleryUnreadCount/);
+  assert.match(source, /function updateGalleryUnreadFromSources/);
+  assert.match(source, /function galleryUnreadKeysFromSources/);
+  assert.match(source, /function updateGalleryChrome/);
+  assert.match(source, /function galleryNotificationIsUnreadPost/);
+  assert.match(source, /function galleryNotificationTargetsGallery/);
+  assert.match(source, /function unreadGalleryNotificationIdsForAlbum/);
+  assert.match(source, /function renderUnreadCountBadge/);
   assert.match(source, /uploadPageLink/);
   assert.match(source, /albumSectionTitle/);
   assert.match(source, /Shared albums/);
@@ -362,6 +381,7 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /function enablePushNotifications\(/);
   assert.match(source, /function setNotificationsOpen\(/);
   assert.match(source, /function renderNotificationPanel\(/);
+  assert.match(source, /openNotifications/);
   assert.match(source, /function renderPushPrompt\(/);
   assert.match(source, /function markNotificationsRead\(/);
   assert.match(source, /\/api\/notifications/);
@@ -497,7 +517,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v61/);
+  assert.match(serviceWorker, /carpostclub-pwa-v66/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -629,6 +649,19 @@ test("service worker routes media upload notifications to gallery and inventory 
   });
   assert.equal(notifications.at(-1).title, "new Kia Inventory a10412a 2020 Kia Sedona");
   assert.equal(notifications.at(-1).options.body, "");
+
+  await dispatchPush(pushHandler, {
+    kind: "price_change",
+    title: "(PRICE CHANGE!!!) U6247A 2026 Kia",
+    body: "$30,990 -> $29,990",
+    dealershipId: "15",
+    inventoryTypeId: "2",
+    inventoryKey: "KNDETCA76T7828611",
+    stockNumber: "U6247A",
+  });
+  assert.equal(notifications.at(-1).title, "(PRICE CHANGE!!!) U6247A 2026 Kia");
+  assert.equal(notifications.at(-1).options.body, "$30,990 -> $29,990");
+  assert.equal(notifications.at(-1).options.data.url, "/?dealershipId=15&inventoryTypeId=2&inventoryKey=KNDETCA76T7828611&stockNumber=U6247A&openNotifications=1");
 
   const clickHandler = handlers.get("notificationclick");
   assert.equal(typeof clickHandler, "function");
@@ -886,6 +919,7 @@ test("pwa haptics provide tactile feedback on mobile interaction paths", async (
   assert.match(source, /window\.webkit\?\.messageHandlers\?\.carpostclubHaptics/);
   assert.match(source, /function haptic\(kind = "tap", options = {}\)/);
   assert.match(source, /"vibrate" in navigator/);
+  assert.match(source, /navigator\.userActivation/);
   assert.match(source, /navigator\.vibrate\(pattern\)/);
   assert.match(source, /haptic\("tap"\)/);
   assert.match(source, /haptic\("select"\)/);
@@ -962,7 +996,10 @@ test("uploaded package albums show inventory status and mobile download controls
   const source = await fs.readFile(appJsPath, "utf8");
 
   assert.match(styles, /\.album-section/);
+  assert.match(styles, /html\.is-upload-route \.album-section/);
   assert.match(styles, /\.app-shell\.is-upload-page \.album-section/);
+  assert.match(styles, /html\.is-gallery-route \.picker-panel/);
+  assert.match(styles, /html\.is-gallery-route \.upload-panel/);
   assert.match(styles, /\.app-shell\.is-gallery-page \.picker-panel/);
   assert.match(styles, /\.app-shell\.is-gallery-page \.upload-panel/);
   assert.match(styles, /\.app-shell\.is-gallery-page \.album-section/);
@@ -970,15 +1007,24 @@ test("uploaded package albums show inventory status and mobile download controls
   assert.match(styles, /\.gallery-folder-card/);
   assert.match(styles, /\.gallery-folder-card\.has-unread/);
   assert.match(styles, /\.gallery-unread-badge/);
+  assert.match(styles, /\.gallery-page-link/);
+  assert.match(styles, /\.gallery-nav-unread/);
   assert.match(styles, /\.gallery-folder-cover/);
   assert.match(styles, /\.gallery-folder-cover\.has-logo/);
   assert.match(styles, /\.gallery-folder-cover\.has-logo img\.gallery-folder-logo/);
   assert.match(styles, /\.gallery-folder-bar/);
   assert.match(styles, /\.gallery-folder-crumb/);
+  assert.match(styles, /\.gallery-status-filters/);
+  assert.match(styles, /\.gallery-status-filter-button\.is-available/);
+  assert.match(styles, /\.gallery-status-filter-button\.is-sold/);
   assert.match(source, /logoUrl: dealership\.logoUrl/);
   assert.match(source, /gallery-folder-logo/);
   assert.match(source, /if \(folder\.logoUrl\)/);
   assert.match(source, /\$\{folder\.name\} logo/);
+  assert.match(source, /galleryStatusFilter: "active"/);
+  assert.match(source, /set-gallery-status-filter/);
+  assert.match(source, /galleryFilteredAlbums/);
+  assert.match(source, /button\.textContent = `\$\{option\.label\} \$\{option\.count\}`/);
   assert.match(styles, /\.app-shell\.is-gallery-page \.album-card\.is-collapsed/);
   assert.match(styles, /\.app-shell\.is-gallery-page \.album-card\.is-unread/);
   assert.match(styles, /\.album-unread-badge/);
@@ -995,9 +1041,13 @@ test("uploaded package albums show inventory status and mobile download controls
   assert.match(styles, /\.album-card\.is-source-removed/);
   assert.match(styles, /\.album-detail-actions \.icon-text-button\.danger/);
   assert.match(styles, /\.inventory-status-badge\.is-active/);
+  assert.match(styles, /\.inventory-status-badge\.is-available/);
   assert.match(styles, /\.inventory-status-badge\.is-missing/);
   assert.match(styles, /\.inventory-status-badge\.is-source-removed/);
+  assert.match(styles, /\.inventory-status-badge\.is-sold/);
   assert.match(source, /source_removed/);
+  assert.match(source, /Available/);
+  assert.match(source, /Sold/);
   assert.match(source, /facebookAction === "mark_sold"/);
   assert.match(source, /mark any matching Konner John Marketplace listing sold; do not delete it/i);
   assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.album-detail-actions\s*\{[\s\S]*grid-template-columns: 1fr 1fr/);
@@ -1038,6 +1088,13 @@ test("disabled auth controls are visibly unavailable", async () => {
   assert.match(styles, /cursor: not-allowed/);
 });
 
+test("security headers allow the app's dynamic inline style updates", async () => {
+  const source = await fs.readFile(serverPath, "utf8");
+
+  assert.match(source, /"script-src 'self' 'unsafe-inline'"/);
+  assert.match(source, /"style-src 'self' 'unsafe-inline'"/);
+});
+
 test("auth pages expose PWA metadata and brand assets", async () => {
   const source = await fs.readFile(serverPath, "utf8");
   const styles = await fs.readFile(fileURLToPath(new URL("../public/styles.css", import.meta.url)), "utf8");
@@ -1050,7 +1107,7 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260610-gallery-notification-v61/);
+  assert.match(source, /\/styles\.css\?v=20260611-availability-filter-v66/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });

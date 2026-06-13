@@ -25,7 +25,12 @@
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260610-gallery-notification-v61">
+  <script>
+    document.documentElement.classList.add(
+      window.location.pathname.replace(/\/+$/, "") === "/gallery" ? "is-gallery-route" : "is-upload-route"
+    );
+  </script>
+  <link rel="stylesheet" href="/styles.css?v=20260611-availability-filter-v66">
 </head>
 <body>
   <main class="app-shell">
@@ -62,13 +67,14 @@
           </svg>
           <span id="notificationUnread" class="notification-unread" hidden>0</span>
         </button>
-        <a id="galleryPageLink" class="icon-button subtle page-nav-link" href="/gallery" aria-label="Open media gallery" title="Media gallery">
+        <a id="galleryPageLink" class="icon-button subtle page-nav-link gallery-page-link" href="/gallery" aria-label="Open media gallery" title="Media gallery">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M3 16V4h14"/>
             <rect x="6" y="7" width="15" height="13" rx="1"/>
             <circle cx="10" cy="11" r="1"/>
             <path d="m8 17 3-3 3 3 2-2.5 3 3.5"/>
           </svg>
+          <span id="galleryUnread" class="gallery-nav-unread" hidden>0</span>
         </a>
         <a class="icon-button subtle" href="/account/password" aria-label="Change password" title="Change password">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -400,36 +406,6 @@
         </button>
         <span id="albumCount" class="count-pill">0</span>
       </div>
-      <div id="galleryFilterBar" class="gallery-filter-bar" hidden>
-        <label class="field" for="gallerySearchInput">
-          <span>Search vehicles</span>
-          <input id="gallerySearchInput" type="search" autocomplete="off" placeholder="Search stock, VIN, make, model, year, uploader">
-        </label>
-        <label class="field" for="galleryStatusFilter">
-          <span>Status</span>
-          <select id="galleryStatusFilter">
-            <option value="active">Active only</option>
-            <option value="inactive">Inactive only</option>
-            <option value="all">All statuses</option>
-          </select>
-        </label>
-        <label class="field" for="galleryMakeFilter">
-          <span>Make</span>
-          <select id="galleryMakeFilter"></select>
-        </label>
-        <label class="field" for="galleryModelFilter">
-          <span>Model</span>
-          <select id="galleryModelFilter"></select>
-        </label>
-        <label class="field" for="galleryYearFilter">
-          <span>Year</span>
-          <select id="galleryYearFilter"></select>
-        </label>
-        <label class="field" for="galleryUploaderFilter">
-          <span>Uploader</span>
-          <select id="galleryUploaderFilter"></select>
-        </label>
-      </div>
       <div id="albumList" class="album-list"></div>
       <div id="albumEmpty" class="empty-state" hidden>No album tiles yet</div>
     </section>
@@ -487,6 +463,6 @@
     </form>
   </section>
 
-  <script src="/app.js?v=20260610-gallery-notification-v61" type="module"></script>
+  <script src="/app.js?v=20260611-availability-filter-v66" type="module"></script>
 </body>
 </html>

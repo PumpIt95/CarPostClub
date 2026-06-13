@@ -21,3 +21,11 @@ automation-runs
 chrome-tab-registry.sqlite
 facebook-marketplace-messages*.sqlite
 .automation-locks
+tmp
+scripts/__pycache__
+
+# Generated Facebook/ops working artifacts
+facebook-*.json
+facebook-*.md
+facebook-post-packages-current
+pre-close-appointment-digest-*.md

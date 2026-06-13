@@ -19,6 +19,7 @@ const NEW_DISPLAY_NAME = "Photo Tech";
 const NEW_PASSWORD = "new-password-123";
 const CHANGED_PASSWORD = "changed-password-456";
 const RESET_PASSWORD = "reset-password-789";
+const MARKETPLACE_PROMPT_VERSION = "facebook_marketplace_description_v3_simple";
 const TINY_HEIC_BASE64 = [
   "AAAAJGZ0eXBoZWljAAAAAG1pZjFNaVBybWlhZk1pSEJoZWljAAABw21ldGEAAAAAAAAAIWhkbHIA",
   "AAAAAAAAAHBpY3QAAAAAAAAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAAADnBpdG0AAAAAAAEAAAA4aWluZgAAAAAAAgAAABVpbmZlAgAAAAABAABodmMxAAAAABVpbmZlAgAAAQACAABFeGlmAAAAABppcmVmAAAAAAAAAA5jZHNjAAIAAQABAAAA5mlwcnAAAADFaXBjbwAAABNjb2xybmNseAACAAIABoAAAAAMY2xsaQDLAEAAAAAUaXNwZQAAAAAAAAAIAAAACAAAAAlpcm90AAAAABBwaXhpAAAAAAMICAgAAABxaHZjQwEDcAAAALAAAAAAAB7wAPz9+PgAAAsDoAABABdAAQwB//8DcAAAAwCwAAADAAADAB5wJKEAAQAjQgEBA3AAAAMAsAAAAwAAAwAeoBQgQcCbDuIe5FlU3AgIGAKiAAEACUQBwGFyyEBTJAAAABlpcG1hAAAAAAAAAAEAAQaBAgMFhoQAAAAsaWxvYwAAAABEAAACAAEAAAABAAACQwAAADsAAgAAAAEAAAH3AAAATAAAAAFtZGF0AAAAAAAAAJcAAAAGRXhpZgAATU0AKgAAAAgAAwEaAAUAAAABAAAAMgEbAAUAAAABAAAAOgEoAAMAAAABAAIAAAAAAAAAAAAZAAAAAQAAABkAAAABAAAANygBr6LyRoF8/8X//+Rr7L7dzfVf3nyPtAIv94VPdMsmf6Ag+cI1PkOyhr/JHgi9hX4RbWMmyK4=",
@@ -78,6 +79,25 @@ const SOLD_CAR = {
   fuelType: "Gas",
   transmission: "Automatic",
   detailUrl: "https://www.oregans.com/inventory/Used-2022-Kia-Forte-SOLD123/",
+};
+const SANTA_CRUZ_WITHOUT_BODY_STYLE = {
+  dealershipId: "15",
+  inventoryTypeId: "2",
+  vin: "5NTJCDDF1SH142527",
+  stockNumber: "U6545",
+  title: "Used 2025 Hyundai Santa Cruz Just Arrived & Fully Certified Preferred, AWD, Alloys, Heated Seats, Apple Carplay",
+  year: "2025",
+  make: "Hyundai",
+  model: "Santa Cruz",
+  trim: "Preferred AWD",
+  price: "$41,490",
+  odometer: "38,474 km",
+  exteriorColor: "Gray",
+  interiorColor: "",
+  bodyStyle: "",
+  fuelType: "Gas",
+  transmission: "Automatic",
+  detailUrl: "https://www.oregans.com/inventory/Used-2025-Hyundai-Santa-Cruz-U6545/",
 };
 const SNAPSHOT_NEW_CAR = {
   dealershipId: "18",
@@ -172,24 +192,37 @@ const MANUAL_CAR = {
   transmission: "Automatic transmission",
   descriptionPreview: "Heated seats, backup camera, lane keep assist",
 };
-const LEAD_CONTROL_CLOSING_PHRASE = "(please message for more details)";
-
 function assertCleanMarketplaceDescription(description) {
   assert.doesNotMatch(description, /\b(?:I(?:'|’)m listing|I am listing|Listing this|Posting this|Sharing the details)\b/i);
   assert.doesNotMatch(description, /\b(?:body style not specified|interior colou?r is Other|Other interior)\b/i);
+  assert.doesNotMatch(description, /#|[\u{1F300}-\u{1FAFF}]|(?:\b(?:look no further|turn heads|dream ride|beast|loaded to the max|priced to sell|priced to move|won't last long|don't miss out)\b)/iu);
   assert.doesNotMatch(description, /\b(?:Message me|Send me a message)\b/i);
   assert.ok((description.match(/automatic transmission/gi) || []).length <= 1);
   assert.ok((description.match(/gasoline/gi) || []).length <= 1);
 }
 
-function assertLeadControlSafeMarketplaceDescription(description) {
-  assert.ok(
-    String(description || "").trim().endsWith(LEAD_CONTROL_CLOSING_PHRASE),
-    `Description must end with ${LEAD_CONTROL_CLOSING_PHRASE}: ${description}`,
-  );
+function assertLocationFreeMarketplaceDescription(description) {
+  assert.doesNotMatch(description, /O'?Regan'?s/i);
   assert.doesNotMatch(description, /O'Regan's Kia Halifax/i);
-  assert.doesNotMatch(description, /\b(?:located at|available at|available through|come in|come see|visit us|stop by|walk in)\b/i);
-  assert.doesNotMatch(description, /\b(?:source listing|source location|inventory source|lot location|store|branch)\b/i);
+  assert.doesNotMatch(description, /\b(?:Halifax|Nova Scotia)\b/i);
+  assert.doesNotMatch(description, /\b(?:located at|located in|available at|available through|come in|come see|visit us|stop by|walk in)\b/i);
+  assert.doesNotMatch(description, /\b(?:source listing|source location|inventory source|lot location|store|branch|dealership)\b/i);
+}
+
+function assertSingleMarketplaceDescriptionPrice(description, price = "$30,990") {
+  const escapedPrice = escapeRegExp(price);
+  assert.equal((String(description).match(new RegExp(escapedPrice, "g")) || []).length, 1);
+  assert.equal((String(description).match(/\bPrice:/gi) || []).length, 1);
+  assert.match(description, new RegExp(`Price:\\s*${escapedPrice}\\s+plus`, "i"));
+}
+
+function assertMarketplaceMessageLine(description) {
+  assert.equal((String(description).match(/^Message for more details!$/gmi) || []).length, 1);
+  assert.doesNotMatch(description, /\bask for\s+[A-Z0-9][A-Z0-9 .'-]{0,60}\b/i);
+}
+
+function assertLeadControlSafeMarketplaceDescription(description) {
+  assertLocationFreeMarketplaceDescription(description);
   assert.doesNotMatch(description, new RegExp(TEST_CAR.stockNumber, "i"));
 }
 
@@ -431,7 +464,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260610-gallery-notification-v61/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260611-availability-filter-v66/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -779,17 +812,20 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(uploaded.body.marketplaceGeneration.assignedCount, 2);
     const persistedMarketplaceCopy = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
     assert.equal(persistedMarketplaceCopy.mode, "upload_pool");
+    assert.equal(persistedMarketplaceCopy.promptVersion, MARKETPLACE_PROMPT_VERSION);
     assert.equal(persistedMarketplaceCopy.variants.length, 6);
     await assert.rejects(fs.readFile(marketplaceCopyConflictPath, "utf8"), { code: "EISDIR" });
     await fs.rm(marketplaceCopyConflictPath, { recursive: true, force: true });
     assert.equal(uploaded.body.marketplaceDraft.descriptionSource, "template-upload");
-    assert.match(uploaded.body.marketplaceDraft.description, /O'Regan's Kia Halifax/);
-    assert.match(uploaded.body.marketplaceDraft.description, /ask for Konner/i);
+    assertLocationFreeMarketplaceDescription(uploaded.body.marketplaceDraft.description);
+    assertMarketplaceMessageLine(uploaded.body.marketplaceDraft.description);
     assert.match(uploaded.body.marketplaceDraft.description, /2026 Kia Seltos/);
     assert.match(uploaded.body.marketplaceDraft.description, /X-Line AWD/);
-    assert.match(uploaded.body.marketplaceDraft.description, /finished in White/i);
-    assert.match(uploaded.body.marketplaceDraft.description, /Black interior/);
-    assert.match(uploaded.body.marketplaceDraft.description, /Price:\s*\$30,990/);
+    assert.match(uploaded.body.marketplaceDraft.description, /Exterior:\s*White/i);
+    assert.match(uploaded.body.marketplaceDraft.description, /Interior:\s*Black/i);
+    assert.match(uploaded.body.marketplaceDraft.description, /Transmission:\s*Automatic transmission/i);
+    assert.match(uploaded.body.marketplaceDraft.description, /Fuel Type:\s*Gasoline/i);
+    assertSingleMarketplaceDescriptionPrice(uploaded.body.marketplaceDraft.description);
     assert.match(uploaded.body.marketplaceDraft.description, /VIN:\s*KNDETCA76T7828611/);
     assert.match(uploaded.body.marketplaceDraft.description, /Mileage:\s*1,234 km/);
     assert.match(uploaded.body.marketplaceDraft.description, /Tire Road Hazard/);
@@ -815,12 +851,26 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     });
     const staleAlbumMarketplaceDraft = await getJson(harness, `/api/albums/${uploaded.body.album.id}/marketplace-draft`);
     assert.equal(staleAlbumMarketplaceDraft.draft.descriptionSource, "template-upload");
-    assert.match(staleAlbumMarketplaceDraft.draft.description, /O'Regan's Kia Halifax/);
-    assert.match(staleAlbumMarketplaceDraft.draft.description, /ask for Konner/i);
+    assertLocationFreeMarketplaceDescription(staleAlbumMarketplaceDraft.draft.description);
+    assertMarketplaceMessageLine(staleAlbumMarketplaceDraft.draft.description);
+    assertSingleMarketplaceDescriptionPrice(staleAlbumMarketplaceDraft.draft.description);
     assertCleanMarketplaceDescription(staleAlbumMarketplaceDraft.draft.description);
     const refreshedMarketplaceCopy = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
     assert.notEqual(refreshedMarketplaceCopy.promptVersion, "facebook-marketplace-user-description-v1");
+    assert.equal(refreshedMarketplaceCopy.promptVersion, MARKETPLACE_PROMPT_VERSION);
+    assert.ok(refreshedMarketplaceCopy.history.some((snapshot) => snapshot.promptVersion === "facebook-marketplace-user-description-v1"));
     assert.equal(refreshedMarketplaceCopy.mode, "upload_pool");
+
+    const backfillDryRun = await postJson(harness, "/api/admin/marketplace-descriptions/backfill", {
+      dryRun: true,
+      force: true,
+      limit: 1,
+    });
+    assert.equal(backfillDryRun.status, 200);
+    assert.equal(backfillDryRun.body.promptVersion, MARKETPLACE_PROMPT_VERSION);
+    assert.equal(backfillDryRun.body.summary.total, 1);
+    assert.equal(backfillDryRun.body.summary.wouldUpdate, 1);
+    assert.equal(backfillDryRun.body.records[0].action, "would_update");
 
     const uploadedMarketplaceDraft = await getJson(
       harness,
@@ -832,8 +882,9 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     );
     assert.equal(uploadedMarketplaceDraft.draft.descriptionSource, "template-upload");
     assert.equal(photoTechMarketplaceDraft.body.draft.descriptionSource, "template-upload");
-    assert.notEqual(uploadedMarketplaceDraft.draft.description, photoTechMarketplaceDraft.body.draft.description);
     assert.match(photoTechMarketplaceDraft.body.draft.description, /2026 Kia Seltos/);
+    assertMarketplaceMessageLine(photoTechMarketplaceDraft.body.draft.description);
+    assertSingleMarketplaceDescriptionPrice(photoTechMarketplaceDraft.body.draft.description);
     assertLeadControlSafeMarketplaceDescription(photoTechMarketplaceDraft.body.draft.description);
     assert.doesNotMatch(photoTechMarketplaceDraft.body.draft.copyText, /Dealership: O'Regan's Kia Halifax/i);
     assert.doesNotMatch(photoTechMarketplaceDraft.body.draft.copyText, /Ask for: Photo Tech/i);
@@ -855,6 +906,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       { headers: { Cookie: approvedCookie } },
     );
     assert.match(poisonedPhotoTechMarketplaceDraft.body.draft.description, /2026 Kia Seltos/);
+    assertMarketplaceMessageLine(poisonedPhotoTechMarketplaceDraft.body.draft.description);
+    assertSingleMarketplaceDescriptionPrice(poisonedPhotoTechMarketplaceDraft.body.draft.description);
     assertLeadControlSafeMarketplaceDescription(poisonedPhotoTechMarketplaceDraft.body.draft.description);
     assertCleanMarketplaceDescription(poisonedPhotoTechMarketplaceDraft.body.draft.description);
 
@@ -1043,6 +1096,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.doesNotMatch(photoTechDescriptionText, /Ask for: Photo Tech/i);
     const photoTechDescriptionBody = marketplaceDocumentDescriptionBody(photoTechDescriptionText);
     assert.match(photoTechDescriptionBody, /2026 Kia Seltos/);
+    assertMarketplaceMessageLine(photoTechDescriptionBody);
+    assertSingleMarketplaceDescriptionPrice(photoTechDescriptionBody);
     assertLeadControlSafeMarketplaceDescription(photoTechDescriptionBody);
     assert.doesNotMatch(photoTechDescriptionText, /Ask for: Konner/);
     assertCleanMarketplaceDescription(photoTechDescriptionBody);
@@ -1068,6 +1123,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       assert.doesNotMatch(lateDescriptionText, new RegExp(`Ask for: ${lateUser.displayName}`));
       const lateDescriptionBody = marketplaceDocumentDescriptionBody(lateDescriptionText);
       assert.match(lateDescriptionBody, /2026 Kia Seltos/);
+      assertMarketplaceMessageLine(lateDescriptionBody);
+      assertSingleMarketplaceDescriptionPrice(lateDescriptionBody);
       assertLeadControlSafeMarketplaceDescription(lateDescriptionBody);
       assert.doesNotMatch(lateDescriptionText, /Ask for: Konner/);
       assert.doesNotMatch(lateDescriptionText, /Ask for: Photo Tech/);
@@ -1105,7 +1162,55 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     const regularPackageDescriptionText = zipEntryText(regularPackageDownloadBytes, "facebook-marketplace-description.txt");
     assert.doesNotMatch(regularPackageDescriptionText, /Dealership: O'Regan's Kia Halifax/i);
     assert.doesNotMatch(regularPackageDescriptionText, /Ask for: Photo Tech/i);
-    assertLeadControlSafeMarketplaceDescription(marketplaceDocumentDescriptionBody(regularPackageDescriptionText));
+    const regularPackageDescriptionBody = marketplaceDocumentDescriptionBody(regularPackageDescriptionText);
+    assertMarketplaceMessageLine(regularPackageDescriptionBody);
+    assertSingleMarketplaceDescriptionPrice(regularPackageDescriptionBody);
+    assertLeadControlSafeMarketplaceDescription(regularPackageDescriptionBody);
+
+    const nonAdminFacebookStatus = await postJsonWithCookie(
+      harness,
+      approvedCookie,
+      `/api/albums/${afterUpload.album.id}/facebook-listing-status`,
+      { state: "live", title: "2026 Kia Seltos", price: "CA$30,990" },
+    );
+    assert.equal(nonAdminFacebookStatus.status, 403);
+    assert.match(nonAdminFacebookStatus.body.error, /Admin access required/i);
+
+    const facebookStatus = await postJson(harness, `/api/albums/${afterUpload.album.id}/facebook-listing-status`, {
+      state: "live",
+      listingId: "27358000090461601",
+      listingUrl: "https://www.facebook.com/marketplace/item/27358000090461601/",
+      title: "2026 Kia Seltos",
+      price: "CA$30,990",
+      listingStatus: "Active",
+      sellerName: "Konner John",
+      matchedBy: ["vin", "stock"],
+      matchConfidence: "exact",
+      source: "test-facebook-sweep",
+      proofPath: "/tmp/facebook-proof.png",
+    });
+    assert.equal(facebookStatus.status, 201);
+    assert.equal(facebookStatus.body.facebookListing.state, "live");
+    assert.equal(facebookStatus.body.facebookListing.listingId, "27358000090461601");
+    assert.equal(facebookStatus.body.facebookListing.matchedBy, "vin,stock");
+    assert.equal(facebookStatus.body.facebookListing.stale, false);
+    assert.equal(facebookStatus.body.inventoryStatus.facebookListing.state, "live");
+    assert.equal(facebookStatus.body.inventoryStatus.lifecycle.facebookState, "live_on_facebook");
+    assert.equal(facebookStatus.body.inventoryStatus.lifecycle.facebookAction, "skip_already_live");
+    assert.equal(facebookStatus.body.inventoryStatus.lifecycle.canPostToFacebook, false);
+
+    const albumsAfterFacebookStatus = await getJson(harness, "/api/albums");
+    const facebookTrackedAlbum = albumsAfterFacebookStatus.albums.find((album) => album.id === afterUpload.album.id);
+    assert.equal(facebookTrackedAlbum.inventoryStatus.facebookListing.state, "live");
+    assert.equal(facebookTrackedAlbum.inventoryStatus.lifecycle.facebookAction, "skip_already_live");
+
+    const descriptionAfterFacebookStatus = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/description.txt`, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(descriptionAfterFacebookStatus.status, 200);
+    const facebookTrackedDescriptionText = await descriptionAfterFacebookStatus.text();
+    assert.match(facebookTrackedDescriptionText, /Facebook sync: Already represented on Konner John Marketplace; do not publish a duplicate\./);
+    assert.match(facebookTrackedDescriptionText, /Ready to post: No/);
 
     const regularDelete = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/photos/${encodeURIComponent(firstPhoto.filename)}`, {
       method: "DELETE",
@@ -1183,7 +1288,9 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(reuploaded.body.marketplaceGeneration.source, "existing-upload-pool");
     assert.equal(reuploaded.body.marketplaceGeneration.variantCount, 6);
     assert.equal(reuploaded.body.marketplaceDraft.descriptionSource, "template-upload");
-    assert.match(reuploaded.body.marketplaceDraft.description, /O'Regan's Kia Halifax/);
+    assertLocationFreeMarketplaceDescription(reuploaded.body.marketplaceDraft.description);
+    assertMarketplaceMessageLine(reuploaded.body.marketplaceDraft.description);
+    assertSingleMarketplaceDescriptionPrice(reuploaded.body.marketplaceDraft.description);
   } finally {
     await stopTestServer(harness);
   }
@@ -1292,6 +1399,154 @@ test("login failures are rate limited and recover after the window", async () =>
     const recovered = await loginAttempt(harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
     assert.equal(recovered.status, 303);
     assert.match(recovered.cookie || "", /^carpostclub_session=/);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("Marketplace draft infers Hyundai Santa Cruz body style as Truck", async () => {
+  const harness = await startTestServer({ inventoryCars: [SANTA_CRUZ_WITHOUT_BODY_STYLE] });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+
+    const marketplaceDraft = await getJson(
+      harness,
+      `/api/marketplace-draft?dealershipId=15&inventoryTypeId=2&vin=${SANTA_CRUZ_WITHOUT_BODY_STYLE.vin}`,
+    );
+
+    assert.equal(marketplaceDraft.draft.title, "2025 Hyundai Santa Cruz");
+    assert.equal(marketplaceDraft.draft.fields.bodyStyle, "Truck");
+    assert.notEqual(marketplaceDraft.draft.fields.bodyStyle, "Sedan");
+    assert.ok(marketplaceDraft.draft.reviewFields.includes("Body style"));
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("Marketplace draft infers common uploaded body styles when source feed is blank", async () => {
+  const bodyStyleCases = [
+    {
+      expectedBodyStyle: "Sedan",
+      car: {
+        dealershipId: "15",
+        inventoryTypeId: "2",
+        vin: "3KPFU4DE4SE148464",
+        stockNumber: "U6552",
+        title: "Used 2025 Kia K4 Just Arrived & Fully Certified EX",
+        year: "2025",
+        make: "Kia",
+        model: "K4",
+        trim: "EX",
+        price: "$25,990",
+        odometer: "28,660 km",
+        exteriorColor: "Black",
+        interiorColor: "",
+        bodyStyle: "",
+        fuelType: "Gas",
+        transmission: "Automatic",
+        detailUrl: "https://www.oregans.com/inventory/Used-2025-Kia-K4-U6552/",
+      },
+    },
+    {
+      expectedBodyStyle: "Minivan",
+      car: {
+        dealershipId: "15",
+        inventoryTypeId: "2",
+        vin: "KNDMB5C1XL6598841",
+        stockNumber: "A10412A",
+        title: "Used 2020 Kia Sedona One Owner & Fully Certified LX+, 8 Passenger",
+        year: "2020",
+        make: "Kia",
+        model: "Sedona",
+        trim: "LX+",
+        price: "$21,990",
+        odometer: "101,922 km",
+        exteriorColor: "Silver",
+        interiorColor: "",
+        bodyStyle: "",
+        fuelType: "Gas",
+        transmission: "Automatic",
+        detailUrl: "https://www.oregans.com/inventory/Used-2020-Kia-Sedona-A10412A/",
+      },
+    },
+    {
+      expectedBodyStyle: "SUV",
+      car: {
+        dealershipId: "15",
+        inventoryTypeId: "2",
+        vin: "2T3R1RFV6KW025107",
+        stockNumber: "A10400A",
+        title: "Used 2019 Toyota RAV4 One Owner & Fully Certified XLE Premium, AWD",
+        year: "2019",
+        make: "Toyota",
+        model: "RAV4",
+        trim: "XLE Premium AWD",
+        price: "$28,990",
+        odometer: "98,317 km",
+        exteriorColor: "White",
+        interiorColor: "",
+        bodyStyle: "",
+        fuelType: "Gas",
+        transmission: "Automatic",
+        detailUrl: "https://www.oregans.com/inventory/Used-2019-Toyota-RAV4-A10400A/",
+      },
+    },
+  ];
+
+  const harness = await startTestServer({ inventoryCars: bodyStyleCases.map(({ car }) => car) });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+
+    for (const { car, expectedBodyStyle } of bodyStyleCases) {
+      const marketplaceDraft = await getJson(
+        harness,
+        `/api/marketplace-draft?dealershipId=15&inventoryTypeId=2&vin=${car.vin}`,
+      );
+
+      assert.equal(marketplaceDraft.draft.fields.bodyStyle, expectedBodyStyle);
+      assert.ok(marketplaceDraft.draft.reviewFields.includes("Body style"));
+      assert.ok(!marketplaceDraft.draft.missingFields.includes("Body style"));
+    }
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("Marketplace draft normalizes O'Regan's cross-over body style group as SUV", async () => {
+  const car = {
+    dealershipId: "15",
+    inventoryTypeId: "2",
+    vin: "3N1CP5CV2RL542717",
+    stockNumber: "U6526",
+    title: "Used 2024 Nissan Kicks Just Arrived & Fully Certified SV",
+    year: "2024",
+    make: "Nissan",
+    model: "Kicks",
+    trim: "SV",
+    price: "$25,990",
+    odometer: "29,100 km",
+    exteriorColor: "Blue",
+    interiorColor: "",
+    bodyStyle: "Wagon / Cross-Over",
+    fuelType: "Gas",
+    transmission: "Automatic",
+    detailUrl: "https://www.oregans.com/inventory/Used-2024-Nissan-Kicks-U6526/",
+  };
+  const harness = await startTestServer({ inventoryCars: [car] });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+
+    const marketplaceDraft = await getJson(
+      harness,
+      `/api/marketplace-draft?dealershipId=15&inventoryTypeId=2&vin=${car.vin}`,
+    );
+
+    assert.equal(marketplaceDraft.draft.fields.bodyStyle, "SUV");
+    assert.ok(!marketplaceDraft.draft.reviewFields.includes("Body style"));
+    assert.ok(!marketplaceDraft.draft.missingFields.includes("Body style"));
   } finally {
     await stopTestServer(harness);
   }
@@ -1602,6 +1857,86 @@ test("inventory-added batch sends one separate notification per vehicle", async 
   }
 });
 
+test("O'Regan's inventory price changes send all-user push alerts", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+
+    const firstRun = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(firstRun.status, 201);
+    assert.equal(firstRun.body.snapshot.newInventory.count, 0);
+    assert.equal(firstRun.body.snapshot.priceChanges.count, 0);
+    assert.equal(firstRun.body.snapshot.priceChangePushDelivery, undefined);
+
+    const michael = await createApprovedAccount(harness, {
+      username: "michael.price",
+      displayName: "Michael",
+      dealershipId: "18",
+      password: "michael-price-password-123",
+    });
+
+    await postJson(harness, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("admin-price-change"),
+    });
+    await postJsonWithCookie(harness, michael.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("michael-price-change"),
+    });
+
+    const priceChangedCar = {
+      ...TEST_CAR,
+      price: "$29,990",
+    };
+    await sleep(20);
+    await writeInventoryMock(harness, [priceChangedCar]);
+
+    const secondRun = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(secondRun.status, 201);
+    assert.equal(secondRun.body.snapshot.status, "completed");
+    assert.equal(secondRun.body.snapshot.newInventory.count, 0);
+    assert.equal(secondRun.body.snapshot.priceChanges.count, 1);
+    assert.equal(secondRun.body.snapshot.priceChanges.vehicles[0].stockNumber, TEST_CAR.stockNumber);
+    assert.equal(secondRun.body.snapshot.priceChanges.vehicles[0].previousPrice, "$30,990");
+    assert.equal(secondRun.body.snapshot.priceChanges.vehicles[0].currentPrice, "$29,990");
+    assert.equal(secondRun.body.snapshot.priceChangePushDelivery.requested, 2);
+    assert.equal(secondRun.body.snapshot.priceChangePushDelivery.skipped, 2);
+    assert.equal(secondRun.body.snapshot.priceChangePushDelivery.logged, 2);
+    assert.equal(secondRun.body.snapshot.priceChangePushDelivery.vehicles[0].stockNumber, TEST_CAR.stockNumber);
+    assert.equal(secondRun.body.snapshot.priceChangePushDelivery.vehicles[0].logged, 2);
+
+    const notifications = await getJson(harness, "/api/notifications");
+    assert.equal(notifications.unreadCount, 1);
+    assert.equal(notifications.notifications[0].title, "(PRICE CHANGE!!!) U6247A 2026 Kia");
+    assert.equal(notifications.notifications[0].body, "$30,990 -> $29,990");
+    assert.equal(notifications.notifications[0].kind, "price_change");
+    assert.equal(notifications.notifications[0].notificationType, "price_change");
+    assert.equal(notifications.notifications[0].stockNumber, TEST_CAR.stockNumber);
+    assert.equal(notifications.notifications[0].dealershipId, "15");
+    assert.match(notifications.notifications[0].messageId, /^price-change-/);
+    assert.match(notifications.notifications[0].url, /openNotifications=1/);
+
+    const michaelNotifications = await getJsonWithCookie(harness, michael.cookie, "/api/notifications");
+    assert.equal(michaelNotifications.unreadCount, 1);
+    assert.equal(michaelNotifications.notifications[0].title, "(PRICE CHANGE!!!) U6247A 2026 Kia");
+    assert.equal(michaelNotifications.notifications[0].body, "$30,990 -> $29,990");
+    assert.equal(michaelNotifications.notifications[0].kind, "price_change");
+    assert.equal(michaelNotifications.notifications[0].dealershipId, "15");
+
+    await sleep(20);
+    await writeInventoryMock(harness, [priceChangedCar]);
+    const thirdRun = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(thirdRun.status, 201);
+    assert.equal(thirdRun.body.snapshot.priceChanges.count, 0);
+    assert.equal(thirdRun.body.snapshot.priceChangePushDelivery, undefined);
+
+    const afterDuplicateRun = await getJson(harness, "/api/notifications");
+    assert.equal(afterDuplicateRun.unreadCount, 1);
+    assert.equal(afterDuplicateRun.notifications.length, 1);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("admin push dry-run reports dealership targets", async () => {
   const harness = await startTestServer();
 
@@ -1801,6 +2136,10 @@ test("album inventory status marks O'Regan's vehicles that disappear from the fe
 
   try {
     harness.cookie = await login(harness.baseUrl);
+    await postJson(harness, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("admin-source-removed-suppressed"),
+    });
+
     const albumPath = path.join(harness.uploadRoot, TEST_ALBUM_ID);
     const missingInventoryFilename = "2026-06-01T10-00-00-000Z-missing-front.jpg";
     await fs.mkdir(albumPath, { recursive: true });
@@ -1873,6 +2212,11 @@ test("album inventory status marks O'Regan's vehicles that disappear from the fe
     const packageManifest = JSON.parse(zipEntryText(Buffer.from(await packageDownload.arrayBuffer()), "package-manifest.json"));
     assert.equal(packageManifest.readyToPost, false);
     assert.equal(packageManifest.inventoryStatus.lifecycle.facebookAction, "mark_sold");
+
+    const notifications = await getJson(harness, "/api/notifications");
+    assert.equal(notifications.unreadCount, 0);
+    assert.deepEqual(notifications.notifications, []);
+    assert.deepEqual(await notificationLogForUsername(harness, TEST_USERNAME), []);
   } finally {
     await stopTestServer(harness);
   }
@@ -2170,8 +2514,8 @@ test("vehicle gallery unread state is tracked per user", async () => {
       assert.equal(event.albumId, TEST_ALBUM_ID);
       assert.equal(event.mediaCount, 1);
       assert.equal(event.uploadedBy.username, TEST_USERNAME);
-      assert.equal(event.title, "admin uploaded a car");
-      assert.match(event.body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
+      assert.equal(event.title, "admin uploaded U6247A - 2026 Kia Seltos X-Line AWD");
+      assert.equal(event.body, "");
       assert.equal(event.type, "media_upload");
       assert.equal(event.notificationType, "media_upload");
       assert.equal(event.route, "media_gallery");
@@ -2337,8 +2681,8 @@ test("vehicle upload push notifications go to all approved push-enabled users ex
     assert.equal(uploaded.status, 201);
 
     const kiaNotifications = await waitForNotificationCount(harness, kiaViewer.cookie, 1);
-    assert.equal(kiaNotifications.notifications[0].title, "admin uploaded a car");
-    assert.match(kiaNotifications.notifications[0].body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
+    assert.equal(kiaNotifications.notifications[0].title, "admin uploaded U6247A - 2026 Kia Seltos X-Line AWD");
+    assert.equal(kiaNotifications.notifications[0].body, "");
     assert.equal(kiaNotifications.notifications[0].kind, "upload");
     assert.equal(kiaNotifications.notifications[0].type, "media_upload");
     assert.equal(kiaNotifications.notifications[0].notificationType, "media_upload");
@@ -2350,15 +2694,15 @@ test("vehicle upload push notifications go to all approved push-enabled users ex
     assert.equal(kiaNotifications.notifications[0].url, `/gallery?dealershipId=15&inventoryTypeId=2&inventoryKey=${TEST_CAR.vin}&albumId=${TEST_ALBUM_ID}`);
 
     const gmNotifications = await waitForNotificationCount(harness, gmViewer.cookie, 1);
-    assert.equal(gmNotifications.notifications[0].title, "admin uploaded a car");
-    assert.match(gmNotifications.notifications[0].body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
+    assert.equal(gmNotifications.notifications[0].title, "admin uploaded U6247A - 2026 Kia Seltos X-Line AWD");
+    assert.equal(gmNotifications.notifications[0].body, "");
     assert.equal(gmNotifications.notifications[0].kind, "upload");
     assert.equal(gmNotifications.notifications[0].route, "media_gallery");
     assert.equal(gmNotifications.notifications[0].dealershipId, "15");
 
     const nissanNotifications = await waitForNotificationCount(harness, nissanViewer.cookie, 1);
-    assert.equal(nissanNotifications.notifications[0].title, "admin uploaded a car");
-    assert.match(nissanNotifications.notifications[0].body, /Photos added for U6247A - 2026 Kia Seltos X-Line AWD\./);
+    assert.equal(nissanNotifications.notifications[0].title, "admin uploaded U6247A - 2026 Kia Seltos X-Line AWD");
+    assert.equal(nissanNotifications.notifications[0].body, "");
     assert.equal(nissanNotifications.notifications[0].kind, "upload");
     assert.equal(nissanNotifications.notifications[0].route, "media_gallery");
     assert.equal(nissanNotifications.notifications[0].dealershipId, "15");
@@ -2407,8 +2751,8 @@ test("gm uploader is excluded while kia users receive the upload push", async ()
     assert.equal(uploaded.status, 201);
 
     const adminNotifications = await waitForNotificationCount(harness, harness.cookie, 1);
-    assert.equal(adminNotifications.notifications[0].title, "Michael uploaded a car");
-    assert.match(adminNotifications.notifications[0].body, /Photos added for UG9999 - 2024 Chevrolet Silverado Custom\./);
+    assert.equal(adminNotifications.notifications[0].title, "Michael uploaded UG9999 - 2024 Chevrolet Silverado Custom");
+    assert.equal(adminNotifications.notifications[0].body, "");
     assert.equal(adminNotifications.notifications[0].kind, "upload");
     assert.equal(adminNotifications.notifications[0].route, "media_gallery");
     assert.equal(adminNotifications.notifications[0].dealershipId, "18");

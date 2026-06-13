@@ -11,7 +11,7 @@ Any time a package, dependency, language, library, repository, web search, tool,
 - Connor/Konner dealership photos uploaded to CarPostClub are the package photos. Once matched to an active O'Regan's inventory row and uploaded, the package can become Facebook-ready.
 - A CarPostClub album with uploaded photos for a source-active vehicle is the website's active package for that inventory item.
 - A CarPostClub album whose source vehicle is removed must stay visible but greyed/inactive in the UI.
-- Users with push notifications should be notified when a package changes to source-removed.
+- Source-removed/sold package changes should not send push notifications; keep them visible through greyed/inactive UI state and Facebook sync actions.
 
 ## Facebook Sync
 
@@ -24,5 +24,5 @@ Any time a package, dependency, language, library, repository, web search, tool,
 ## Code Expectations
 
 - Preserve lifecycle labels such as `source_active`, `source_removed`, `facebook_ready`, `ready_to_post`, `stale_on_facebook`, and `mark_sold`; downstream Facebook automation depends on these semantics.
-- Keep package exports, UI labels, and push notifications aligned with the same lifecycle state.
+- Keep package exports and UI labels aligned with the same lifecycle state. Push notifications should remain focused on new inventory, uploads, and chat, not source-removed/sold transitions.
 - Do not treat manual inventory or source-removed packages as safe to post without explicit review.

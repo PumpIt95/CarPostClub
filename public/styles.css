@@ -231,7 +231,10 @@ h2 {
   padding: var(--spacing-16);
 }
 
+html.is-upload-route .album-section,
 .app-shell.is-upload-page .album-section,
+html.is-gallery-route .picker-panel,
+html.is-gallery-route .upload-panel,
 .app-shell.is-gallery-page .picker-panel,
 .app-shell.is-gallery-page .upload-panel {
   display: none;
@@ -787,27 +790,57 @@ textarea:focus {
   margin-left: auto;
 }
 
-.gallery-filter-bar {
-  display: grid;
-  grid-template-columns: minmax(220px, 1.5fr) repeat(5, minmax(120px, 1fr));
-  gap: var(--spacing-8);
-  margin-bottom: var(--spacing-12);
+.gallery-status-filters {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: min(100%, 300px);
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.gallery-status-filter-button {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--color-stone-gray);
-  padding: var(--spacing-8);
+  padding: 0 10px;
+  color: var(--color-midnight-graphite);
   background: #ffffff;
+  font-size: 12px;
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
+  white-space: nowrap;
 }
 
-.gallery-filter-bar[hidden] {
-  display: none;
+.gallery-status-filter-button.is-available {
+  border-color: var(--color-verdant-green);
 }
 
-.gallery-filter-bar .field {
-  min-width: 0;
+.gallery-status-filter-button.is-sold {
+  border-color: #c1121f;
+  color: #9d1720;
 }
 
-.gallery-filter-bar input,
-.gallery-filter-bar select {
-  min-width: 0;
+.gallery-status-filter-button.is-all {
+  border-color: var(--color-midnight-graphite);
+}
+
+.gallery-status-filter-button.is-active {
+  color: #ffffff;
+  background: var(--color-midnight-graphite);
+}
+
+.gallery-status-filter-button.is-active.is-available {
+  border-color: var(--color-verdant-green);
+  background: var(--color-verdant-green);
+}
+
+.gallery-status-filter-button.is-active.is-sold {
+  border-color: #c1121f;
+  background: #c1121f;
 }
 
 .album-card {
@@ -1004,15 +1037,28 @@ textarea:focus {
   background: #eefaf2;
 }
 
+.inventory-status-badge.is-available {
+  border-color: var(--color-verdant-green);
+  color: #0f6f35;
+  background: #eefaf2;
+}
+
 .inventory-status-badge.is-missing {
-  border-color: var(--color-flame-orange);
+  border-color: #c1121f;
+  color: #9d1720;
   background: #fff4ef;
 }
 
 .inventory-status-badge.is-source-removed {
-  border-color: #6f7782;
-  color: var(--color-midnight-graphite);
-  background: #e4e7ea;
+  border-color: #c1121f;
+  color: #9d1720;
+  background: #fff4ef;
+}
+
+.inventory-status-badge.is-sold {
+  border-color: #c1121f;
+  color: #9d1720;
+  background: #fff4ef;
 }
 
 .inventory-status-badge.is-manual {
@@ -1021,7 +1067,11 @@ textarea:focus {
 }
 
 .app-shell.is-gallery-page .album-card.is-collapsed .inventory-status-badge {
-  display: none;
+  grid-column: 2;
+  justify-self: start;
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
 }
 
 .album-detail {
@@ -1761,6 +1811,10 @@ textarea:focus {
   position: relative;
 }
 
+.gallery-page-link {
+  position: relative;
+}
+
 .notification-toggle {
   position: relative;
 }
@@ -1779,31 +1833,14 @@ textarea:focus {
   pointer-events: none;
 }
 
-/* Unread notifications badge. This stays on the expected right edge. */
-.notification-unread {
+/* Header unread badges. These stay on the expected right edge. */
+.notification-unread,
+.chat-unread,
+.gallery-nav-unread {
   position: absolute;
   top: 2px;
   right: 2px;
   z-index: 2;
-  display: grid;
-  place-items: center;
-  min-width: 18px;
-  max-width: 28px;
-  height: 18px;
-  border: 1px solid var(--color-midnight-graphite);
-  padding: 0 4px;
-  color: var(--color-cloud-white);
-  background: var(--color-flame-orange);
-  font-size: 10px;
-  line-height: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.chat-unread {
-  position: absolute;
-  top: 2px;
-  right: 2px;
   display: grid;
   place-items: center;
   min-width: 18px;
@@ -2470,19 +2507,6 @@ textarea:focus {
     grid-column: 1 / -1;
   }
 
-  .gallery-filter-bar .field:first-child {
-    grid-column: span 2;
-  }
-}
-
-@media (max-width: 919px) {
-  .gallery-filter-bar {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .gallery-filter-bar .field:first-child {
-    grid-column: 1 / -1;
-  }
 }
 
 @media (max-width: 680px) {
@@ -2617,6 +2641,20 @@ textarea:focus {
     font-size: 10px;
   }
 
+  .app-shell.is-gallery-page .gallery-status-filters {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+    justify-content: stretch;
+  }
+
+  .app-shell.is-gallery-page .gallery-status-filter-button {
+    flex: 1 1 0;
+    min-height: 34px;
+    padding: 0 6px;
+    font-size: 10px;
+  }
+
   .app-shell.is-gallery-page .album-card.is-unread .album-summary-button {
     padding-right: 78px;
   }
@@ -2684,11 +2722,6 @@ textarea:focus {
     width: 100%;
   }
 
-  .gallery-filter-bar {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .gallery-filter-bar .field:first-child,
   .album-posting-kit-heading,
   .album-posting-kit-actions {
     grid-column: 1 / -1;
@@ -2827,16 +2860,6 @@ textarea:focus {
 
   .chat-form {
     padding: var(--spacing-8) var(--spacing-8) max(var(--spacing-8), env(safe-area-inset-bottom));
-  }
-}
-
-@media (max-width: 420px) {
-  .gallery-filter-bar {
-    grid-template-columns: 1fr;
-  }
-
-  .gallery-filter-bar .field:first-child {
-    grid-column: auto;
   }
 }
 

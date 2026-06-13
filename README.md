@@ -6,7 +6,7 @@ Password-gated vehicle media intake, team chat, upload history, and listing copy
 
 - Pulls current O'Regan's inventory by dealership and inventory type.
 - Saves uploaded car media into a per-car album named from the vehicle and inventory number.
-- Treats O'Regan's removal as the source-of-truth signal that a package is no longer available; the app greys that album, notifies subscribed users, and marks the Facebook sync action as `mark_sold`.
+- Treats O'Regan's removal as the source-of-truth signal that a package is no longer available; the app greys that album and marks the Facebook sync action as `mark_sold` without sending a push alert.
 - Provides per-asset and album-wide download/delete actions.
 - Generates Facebook Marketplace description variants only after media is uploaded.
 - Privately assigns one Marketplace description to each active user.
@@ -46,8 +46,8 @@ Push notifications work on HTTPS deployments and localhost. If `CARPOSTCLUB_PUSH
 The app periodically snapshots O'Regan's inventory for the four Halifax stores into
 `oregans-inventory-snapshots.sqlite` in the app data directory. It tracks every snapshot run plus each vehicle's
 first seen, current seen, last seen, and removed timestamps, so "added today" checks can come from local history.
-After the first quiet baseline snapshot, newly seen or reappearing vehicles send a push notification to subscribed
-users.
+After the first quiet baseline snapshot, newly seen or reappearing vehicles send dealership-targeted push notifications,
+and O'Regan's price changes send all-user price-change push notifications.
 Tune this with `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INTERVAL_MS`; set
 `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_ENABLED=false` to disable the scheduler.
 
@@ -74,6 +74,7 @@ npm run smoke
 npm run backup:state
 npm run restore:check -- --archive <backup.tar.gz>
 npm run monitor:production
+npm run backfill:marketplace-descriptions -- --dry-run
 docker compose up --build
 ```
 
@@ -89,6 +90,10 @@ across desktop, laptop, tablet, and mobile sizes, checks for horizontal overflow
 
 `npm run smoke` also verifies the inventory snapshot endpoints, so production releases that predate the snapshot
 API will fail the smoke check instead of appearing healthy.
+
+`npm run backfill:marketplace-descriptions` calls the admin backfill endpoint to regenerate stale media-backed
+Marketplace description stores with the current prompt version. Use `--dry-run` first; production can pass
+`--env-file /etc/konner-upload.docker.env` so the script can mint the bootstrap admin cookie without printing secrets.
 
 See `docs/operations.md` for production backup/restore checks, restart-loop monitoring, Shortcut bearer-token setup,
 and token/session secret rotation.

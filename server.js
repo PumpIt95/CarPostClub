@@ -98,13 +98,14 @@ const chatMessageMaxLength = positiveInteger(process.env.CHAT_MESSAGE_MAX_LENGTH
 const marketplaceDescriptionModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_MODEL || "gpt-5-nano";
 const marketplaceDescriptionFallbackModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_FALLBACK_MODEL || "gpt-4.1-nano";
 const marketplaceDescriptionVariantCount = positiveInteger(process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_VARIANT_COUNT, 6);
-const marketplaceDescriptionPromptVersion = "facebook-marketplace-user-description-v4";
+const marketplaceDescriptionPromptVersion = "facebook_marketplace_description_v3_simple";
 const marketplaceLocation = process.env.FACEBOOK_MARKETPLACE_LOCATION || "Halifax, Nova Scotia";
 const marketplaceCleanTitleDefault = parseBooleanEnv("FACEBOOK_MARKETPLACE_CLEAN_TITLE_DEFAULT", true);
 const marketplacePriceDisclosureFee = 499.95;
 const marketplacePriceDisclosureHst = 14;
 const marketplaceContactPerson = normalizeSpace(process.env.FACEBOOK_MARKETPLACE_CONTACT_NAME || "Konner") || "Konner";
 const marketplaceLeadControlClosingPhrase = "(please message for more details)";
+const facebookListingVerificationTtlMs = positiveInteger(process.env.CARPOSTCLUB_FACEBOOK_LISTING_VERIFICATION_TTL_MS, 4 * 60 * 60 * 1000);
 const pushSubject = process.env.CARPOSTCLUB_PUSH_SUBJECT || process.env.KONNER_PUSH_SUBJECT || process.env.WEB_PUSH_SUBJECT || "mailto:hello@carpostclub.local";
 const pushTtlSeconds = positiveInteger(process.env.CARPOSTCLUB_PUSH_TTL_SECONDS || process.env.KONNER_PUSH_TTL_SECONDS, 60 * 60);
 const pushDeliveryDisabled = parseBooleanEnv("CARPOSTCLUB_PUSH_DELIVERY_DISABLED", parseBooleanEnv("KONNER_PUSH_DELIVERY_DISABLED", false));
@@ -192,6 +193,20 @@ const oregansInventorySnapshotTimeZone = process.env.CARPOSTCLUB_OREGANS_INVENTO
 const inventoryTypes = Object.freeze([
   { id: "2", name: "Used vehicles" },
   { id: "1", name: "New vehicles" },
+]);
+const oregansBodyStyleGroups = Object.freeze([
+  { id: "1", name: "Sedan" },
+  { id: "2", name: "Coupe" },
+  { id: "3", name: "Wagon / Cross-Over" },
+  { id: "4", name: "Hatchback" },
+  { id: "5", name: "Convertible" },
+  { id: "6", name: "SUV" },
+  { id: "7", name: "Minivan" },
+  { id: "8", name: "Truck" },
+  { id: "10", name: "Commercial" },
+  { id: "11", name: "Motorbike" },
+  { id: "12", name: "ATV" },
+  { id: "13", name: "RV" },
 ]);
 const oregansDealerships = Object.freeze([
   { id: "1", name: "O'Regan's Mercedes-Benz" },
@@ -985,6 +1000,7 @@ app.post("/api/inventory/snapshots/run", requireAdmin, async (req, res, next) =>
       startedAt: snapshot.startedAt,
       finishedAt: snapshot.finishedAt,
       newInventoryCount: snapshot.newInventory?.count || 0,
+      priceChangeCount: snapshot.priceChanges?.count || 0,
       removedInventoryCount: snapshot.removedInventory?.count || 0,
     });
     res.setHeader("Cache-Control", "private, no-store");
@@ -1070,6 +1086,24 @@ app.post("/api/marketplace-draft/regenerate", requireAuth, async (req, res, next
   }
 });
 
+app.post("/api/admin/marketplace-descriptions/backfill", requireAdmin, async (req, res, next) => {
+  try {
+    const options = marketplaceDescriptionBackfillOptions(req.body || {});
+    const result = await backfillMarketplaceDescriptions(req.authUser, options);
+    await appendAuditEvent("marketplace.descriptions.backfill", req.authUser, {
+      promptVersion: result.promptVersion,
+      dryRun: result.dryRun,
+      summary: result.summary,
+    });
+    res.status(result.dryRun ? 200 : 201).json({
+      ok: true,
+      ...result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/albums/:albumId/marketplace-draft", requireAuth, async (req, res, next) => {
   try {
     const albumId = cleanAlbumId(req.params.albumId);
@@ -1088,6 +1122,37 @@ app.get("/api/albums/:albumId/marketplace-draft", requireAuth, async (req, res, 
   }
 });
 
+app.post("/api/albums/:albumId/facebook-listing-status", requireAdmin, async (req, res, next) => {
+  try {
+    const albumId = cleanAlbumId(req.params.albumId);
+    const album = await readAlbum(albumId);
+    if (!album) throw httpError(404, "Album not found.");
+    const facebookListing = await recordAlbumFacebookListingStatus(album, req.body || {}, req.authUser);
+    const albumWithStatus = await albumWithInventoryStatus(album);
+    await appendAuditEvent("facebook.listing_status.recorded", req.authUser, {
+      albumId,
+      vehicle: normalizeInventoryLifecycleVehicle(album.vehicle),
+      facebookListing: {
+        state: facebookListing.state,
+        listingId: facebookListing.listingId,
+        listingUrl: facebookListing.listingUrl,
+        matchedBy: facebookListing.matchedBy,
+        matchConfidence: facebookListing.matchConfidence,
+        ambiguous: facebookListing.ambiguous,
+        verifiedAt: facebookListing.verifiedAt,
+      },
+    });
+    res.status(201).json({
+      ok: true,
+      album: publicAlbum(albumWithStatus),
+      inventoryStatus: albumWithStatus.inventoryStatus,
+      facebookListing,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/vehicle-album", requireAuth, async (req, res, next) => {
   try {
     const { car } = await resolveInventoryCar(req.query);
@@ -1095,6 +1160,7 @@ app.get("/api/vehicle-album", requireAuth, async (req, res, next) => {
     const photos = album ? await listAlbumPhotos(album.id) : [];
     if (album && photos.length && shouldMarkVehicleAlbumSeen(req.query)) {
       await markAlbumObjectsSeen(req.authUser, [album]);
+      await markMediaGalleryNotificationsReadForAlbums(req.authUser, [album]);
     }
     res.json({
       ok: true,
@@ -1112,11 +1178,13 @@ app.post("/api/albums/:albumId/seen", requireAuth, async (req, res, next) => {
     const album = await readAlbum(albumId);
     if (!album) throw httpError(404, "Album not found.");
     const marked = await markAlbumObjectsSeen(req.authUser, [album]);
+    const notificationsMarked = await markMediaGalleryNotificationsReadForAlbums(req.authUser, [album]);
     const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
     res.json({
       ok: true,
       album: publicAlbum(withAlbumReadState(await albumWithInventoryStatus(album), req.authUser, await readAlbumSeenStore())),
       marked,
+      notificationsMarked,
       albums: publicAlbums(gallery.albums),
       unreadTotal: gallery.unreadTotal,
     });
@@ -1131,7 +1199,10 @@ app.get("/api/albums/:albumId/photos", requireAuth, async (req, res, next) => {
     const album = await readAlbum(albumId);
     if (!album) throw httpError(404, "Album not found.");
     const photos = await listAlbumPhotos(albumId);
-    if (photos.length) await markAlbumObjectsSeen(req.authUser, [album]);
+    if (photos.length) {
+      await markAlbumObjectsSeen(req.authUser, [album]);
+      await markMediaGalleryNotificationsReadForAlbums(req.authUser, [album]);
+    }
     res.json({
       ok: true,
       album: publicAlbum(await albumWithInventoryStatus(album)),
@@ -1417,6 +1488,11 @@ function marketplaceReadyToPost(draft, inventoryStatus) {
 function inventoryLifecycleDocumentAction(inventoryStatus) {
   const action = inventoryStatus?.lifecycle?.facebookAction || "";
   if (action === "mark_sold") return "Mark any matching Konner John Marketplace listing sold; do not delete it.";
+  if (action === "already_sold") return "Matching Konner John Marketplace listing is already sold.";
+  if (action === "skip_no_live_listing") return "No matching live Konner John Marketplace listing was found during the last sweep.";
+  if (action === "skip_already_live") return "Already represented on Konner John Marketplace; do not publish a duplicate.";
+  if (action === "review_duplicate_live_evidence") return "Review ambiguous live Facebook evidence before publishing.";
+  if (action === "review_sold_match") return "Review the sold matching Facebook listing before publishing a duplicate.";
   if (action === "post_if_not_live") return "Post to Konner John Marketplace if it is not already live.";
   if (action === "capture_photos") return "Capture and upload Connor photos before posting.";
   if (action === "manual_review") return "Review manually before any Facebook action.";
@@ -1653,7 +1729,7 @@ function applySecurityHeaders(_req, res, next) {
     "frame-ancestors 'none'",
     "form-action 'self'",
     "script-src 'self' 'unsafe-inline'",
-    "style-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "media-src 'self' blob:",
     "connect-src 'self'",
@@ -2119,6 +2195,7 @@ async function albumWithInventoryStatus(album) {
 async function inventoryStatusForAlbum(album) {
   const vehicle = album?.vehicle || {};
   const source = normalizeSpace(vehicle.source || "oregans").toLowerCase();
+  const facebookListing = await facebookListingStatusForAlbum(album);
   if (source === "manual") {
     return {
       source: "manual",
@@ -2126,7 +2203,8 @@ async function inventoryStatusForAlbum(album) {
       active: null,
       checkedAt: null,
       label: "Manual entry, not checked against O'Regan's inventory.",
-      lifecycle: inventoryLifecycleState({ sourceStatus: "manual", album }),
+      facebookListing,
+      lifecycle: inventoryLifecycleState({ sourceStatus: "manual", album, facebookListing }),
     };
   }
 
@@ -2139,7 +2217,8 @@ async function inventoryStatusForAlbum(album) {
       active: null,
       checkedAt: null,
       label: "O'Regan's inventory status is unavailable.",
-      lifecycle: inventoryLifecycleState({ sourceStatus: "unknown", album }),
+      facebookListing,
+      lifecycle: inventoryLifecycleState({ sourceStatus: "unknown", album, facebookListing }),
     };
   }
 
@@ -2157,10 +2236,12 @@ async function inventoryStatusForAlbum(album) {
         : `No longer active in O'Regan's inventory as of ${checkedAt}.`,
       matchedInventoryKey: matchedCar?.inventoryKey || matchedCar?.vin || "",
       matchedStockNumber: matchedCar?.stockNumber || "",
+      facebookListing,
       lifecycle: inventoryLifecycleState({
         sourceStatus: matchedCar ? "source_active" : "source_removed",
         album,
         checkedAt,
+        facebookListing,
       }),
     };
   } catch (error) {
@@ -2170,14 +2251,16 @@ async function inventoryStatusForAlbum(album) {
       active: null,
       checkedAt: null,
       label: "O'Regan's inventory check is temporarily unavailable.",
-      lifecycle: inventoryLifecycleState({ sourceStatus: "unknown", album }),
+      facebookListing,
+      lifecycle: inventoryLifecycleState({ sourceStatus: "unknown", album, facebookListing }),
       error: error instanceof Error ? error.message : String(error),
     };
   }
 }
 
-function inventoryLifecycleState({ sourceStatus, album, checkedAt = null }) {
+function inventoryLifecycleState({ sourceStatus, album, checkedAt = null, facebookListing = null }) {
   const hasPackagePhotos = Number(album?.mediaCount || 0) > 0;
+  const trustedFacebookListing = trustedFacebookListingStatus(facebookListing);
   if (sourceStatus === "manual") {
     return {
       sourceStatus: "manual",
@@ -2191,6 +2274,17 @@ function inventoryLifecycleState({ sourceStatus, album, checkedAt = null }) {
   }
 
   if (sourceStatus === "source_removed") {
+    if (trustedFacebookListing?.state === "sold" || trustedFacebookListing?.state === "removed" || trustedFacebookListing?.state === "not_live") {
+      return {
+        sourceStatus: "source_removed",
+        packageStatus: hasPackagePhotos ? "source_removed_package" : "needs_photos",
+        facebookState: trustedFacebookListing.state === "not_live" ? "not_live" : "sold_on_facebook",
+        facebookAction: trustedFacebookListing.state === "not_live" ? "skip_no_live_listing" : "already_sold",
+        shouldMarkFacebookSold: false,
+        canPostToFacebook: false,
+        checkedAt,
+      };
+    }
     return {
       sourceStatus: "source_removed",
       packageStatus: hasPackagePhotos ? "source_removed_package" : "needs_photos",
@@ -2203,6 +2297,8 @@ function inventoryLifecycleState({ sourceStatus, album, checkedAt = null }) {
   }
 
   if (sourceStatus === "source_active") {
+    const facebookOverride = sourceActiveFacebookLifecycleOverride(trustedFacebookListing, { hasPackagePhotos, checkedAt });
+    if (facebookOverride) return facebookOverride;
     return {
       sourceStatus: "source_active",
       packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
@@ -2225,18 +2321,70 @@ function inventoryLifecycleState({ sourceStatus, album, checkedAt = null }) {
   };
 }
 
+function sourceActiveFacebookLifecycleOverride(facebookListing, { hasPackagePhotos, checkedAt }) {
+  if (!facebookListing) return null;
+  if (facebookListing.state === "live") {
+    return {
+      sourceStatus: "source_active",
+      packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+      facebookState: "live_on_facebook",
+      facebookAction: "skip_already_live",
+      shouldMarkFacebookSold: false,
+      canPostToFacebook: false,
+      checkedAt,
+    };
+  }
+  if (facebookListing.state === "duplicate_blocked") {
+    return {
+      sourceStatus: "source_active",
+      packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+      facebookState: "duplicate_blocked",
+      facebookAction: "review_duplicate_live_evidence",
+      shouldMarkFacebookSold: false,
+      canPostToFacebook: false,
+      checkedAt,
+    };
+  }
+  if (facebookListing.state === "sold") {
+    return {
+      sourceStatus: "source_active",
+      packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+      facebookState: "sold_match_needs_review",
+      facebookAction: "review_sold_match",
+      shouldMarkFacebookSold: false,
+      canPostToFacebook: false,
+      checkedAt,
+    };
+  }
+  if (facebookListing.state === "publish_blocked") {
+    return {
+      sourceStatus: "source_active",
+      packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+      facebookState: "publish_blocked",
+      facebookAction: "review",
+      shouldMarkFacebookSold: false,
+      canPostToFacebook: false,
+      checkedAt,
+    };
+  }
+  return null;
+}
+
+function trustedFacebookListingStatus(facebookListing) {
+  if (!facebookListing || facebookListing.stale) return null;
+  return facebookListing;
+}
+
 async function recordAlbumInventoryLifecycle(album, inventoryStatus) {
   const lifecycle = inventoryStatus?.lifecycle || {};
   if (!album?.id || inventoryStatus?.source !== "oregans") return;
   if (!["source_active", "source_removed"].includes(lifecycle.sourceStatus)) return;
 
-  let notificationPayload = null;
   await updateInventoryLifecycleStore((store) => {
     const now = new Date().toISOString();
     const previous = store.albums[album.id] || {};
+    const facebookListing = normalizeStoredFacebookListingStatus(inventoryStatus.facebookListing || previous.facebookListing);
     const isRemoved = lifecycle.sourceStatus === "source_removed";
-    const wasRemoved = previous.lifecycle?.sourceStatus === "source_removed" || previous.status === "missing";
-    const shouldNotifyRemoved = isRemoved && !previous.removedNotifiedAt && !wasRemoved;
     const vehicle = album.vehicle || {};
     const record = {
       ...previous,
@@ -2246,6 +2394,7 @@ async function recordAlbumInventoryLifecycle(album, inventoryStatus) {
       active: inventoryStatus.active,
       checkedAt: inventoryStatus.checkedAt || now,
       lastObservedAt: now,
+      facebookListing,
       lifecycle,
       vehicle: {
         inventoryKey: normalizeSpace(vehicle.inventoryKey || vehicle.vin || vehicle.manualInventoryId),
@@ -2259,10 +2408,6 @@ async function recordAlbumInventoryLifecycle(album, inventoryStatus) {
 
     if (isRemoved) {
       record.firstRemovedAt = previous.firstRemovedAt || now;
-      if (shouldNotifyRemoved) {
-        record.removedNotifiedAt = now;
-        notificationPayload = inventoryRemovedPushPayload(album, inventoryStatus, now);
-      }
     } else {
       record.firstRemovedAt = "";
       record.removedNotifiedAt = "";
@@ -2270,38 +2415,165 @@ async function recordAlbumInventoryLifecycle(album, inventoryStatus) {
 
     store.albums[album.id] = record;
   });
-
-  if (notificationPayload) {
-    queuePushNotifications({
-      dealershipId: notificationPayload.dealershipId,
-      payload: notificationPayload,
-    });
-  }
 }
 
-function inventoryRemovedPushPayload(album, inventoryStatus, timestamp) {
-  const vehicle = album?.vehicle || {};
-  const label = normalizeSpace([
-    vehicle.stockNumber,
-    vehicle.title || album?.name,
-  ].filter(Boolean).join(" - ")) || "A vehicle package";
-  const car = carFromAlbum(album);
+async function facebookListingStatusForAlbum(album) {
+  if (!album?.id) return null;
+  const albumId = cleanAlbumId(album.id);
+  const store = await readInventoryLifecycleStore();
+  const record = store.albums[albumId];
+  return facebookListingStatusForRecord(record, album);
+}
+
+function facebookListingStatusForRecord(record, album = null) {
+  const facebookListing = normalizeStoredFacebookListingStatus(record?.facebookListing);
+  if (!facebookListing) return null;
+  const albumId = normalizeOptionalAlbumId(album?.id || record?.albumId);
+  if (albumId && facebookListing.albumId && facebookListing.albumId !== albumId) return null;
   return {
-    kind: "inventory_removed",
-    type: "inventory_removed",
-    notificationType: "inventory_removed",
-    route: "media_gallery",
-    messageId: `inventory-removed-${album.id}-${Date.parse(timestamp) || Date.now()}`,
-    albumId: album.id,
-    title: "Inventory removed",
-    body: `${label} is no longer in O'Regan's inventory. Mark any matching Facebook Marketplace listing sold.`,
-    tag: `carpostclub-inventory-removed-${album.id}`.slice(0, 80),
-    url: mediaGalleryDeepLink(car, { albumId: album.id }),
-    timestamp,
-    mediaCount: album.mediaCount || 0,
-    dealershipId: car.dealership?.id || car.dealershipId,
-    inventoryStatus,
+    ...facebookListing,
+    stale: facebookListingStatusIsStale(facebookListing),
   };
+}
+
+async function recordAlbumFacebookListingStatus(album, payload, actor = null) {
+  if (!album?.id) throw httpError(404, "Album not found.");
+  const albumId = cleanAlbumId(album.id);
+  const facebookListing = normalizeFacebookListingStatusPayload(payload, { album, actor });
+  return updateInventoryLifecycleStore((store) => {
+    const previous = store.albums[albumId] || {};
+    const vehicle = album.vehicle || {};
+    const now = new Date().toISOString();
+    const record = {
+      ...previous,
+      albumId,
+      albumName: album.name || previous.albumName || "",
+      lastObservedAt: now,
+      facebookListing,
+      vehicle: {
+        ...normalizeInventoryLifecycleVehicle(previous.vehicle),
+        inventoryKey: normalizeSpace(vehicle.inventoryKey || vehicle.vin || vehicle.manualInventoryId || previous.vehicle?.inventoryKey),
+        vin: normalizeSpace(vehicle.vin || previous.vehicle?.vin),
+        stockNumber: normalizeSpace(vehicle.stockNumber || previous.vehicle?.stockNumber),
+        title: normalizeSpace(vehicle.title || album.name || previous.vehicle?.title),
+        dealershipId: normalizeSpace(vehicle.dealershipId || album.dealership?.id || previous.vehicle?.dealershipId),
+        dealershipName: normalizeSpace(vehicle.dealershipName || album.dealership?.name || previous.vehicle?.dealershipName),
+      },
+    };
+    store.albums[albumId] = record;
+    return facebookListing;
+  });
+}
+
+function normalizeFacebookListingStatusPayload(value = {}, { album = null, actor = null } = {}) {
+  const state = normalizeFacebookListingState(value.state || value.facebookState);
+  if (!state) throw httpError(400, "Facebook listing state is required.");
+  const now = new Date().toISOString();
+  const verifiedAt = normalizeIsoDate(value.verifiedAt || value.checkedAt) || now;
+  const staleAfter = normalizeIsoDate(value.staleAfter) || new Date(Date.parse(verifiedAt) + facebookListingVerificationTtlMs).toISOString();
+  const record = normalizeStoredFacebookListingStatus({
+    albumId: album?.id || value.albumId,
+    state,
+    listingId: value.listingId || value.marketplaceId,
+    listingUrl: value.listingUrl || value.url,
+    title: value.title,
+    price: value.price,
+    listingStatus: value.listingStatus || value.status,
+    sellerName: value.sellerName || value.seller,
+    matchedBy: value.matchedBy || value.match?.matchedBy,
+    matchConfidence: value.matchConfidence || value.confidence || value.match?.confidence,
+    ambiguous: value.ambiguous || value.match?.ambiguous || state === "duplicate_blocked",
+    source: value.source,
+    thumbnailLabel: value.thumbnailLabel || value.thumbnail || value.firstPhoto,
+    proofPath: value.proofPath || value.proof || value.screenshotPath,
+    notes: value.notes || value.reason,
+    verifiedAt,
+    staleAfter,
+    updatedAt: now,
+    updatedBy: publicUploader(actor),
+  });
+  if (!record) throw httpError(400, "Facebook listing state is invalid.");
+  if (["live", "sold", "removed"].includes(record.state) && !record.listingId && !record.listingUrl && !record.title) {
+    throw httpError(400, "Facebook listing evidence is required for that state.");
+  }
+  if (record.state === "duplicate_blocked" && !record.title && !record.notes) {
+    throw httpError(400, "Duplicate-blocked state requires visible listing evidence or notes.");
+  }
+  return record;
+}
+
+function normalizeStoredFacebookListingStatus(value = {}) {
+  if (!value || typeof value !== "object") return null;
+  const state = normalizeFacebookListingState(value.state || value.facebookState);
+  if (!state) return null;
+  const verifiedAt = normalizeIsoDate(value.verifiedAt || value.checkedAt || value.updatedAt);
+  const updatedAt = normalizeIsoDate(value.updatedAt) || verifiedAt || "";
+  const staleAfter = normalizeIsoDate(value.staleAfter)
+    || (verifiedAt ? new Date(Date.parse(verifiedAt) + facebookListingVerificationTtlMs).toISOString() : "");
+  const listingUrl = cleanExternalHttpUrl(value.listingUrl || value.url);
+  return {
+    albumId: normalizeOptionalAlbumId(value.albumId),
+    state,
+    verifiedAt: verifiedAt || "",
+    staleAfter,
+    stale: facebookListingStatusIsStale({ verifiedAt, staleAfter }),
+    listingId: normalizeSpace(value.listingId || value.marketplaceId).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 120),
+    listingUrl,
+    title: normalizeSpace(value.title).slice(0, 220),
+    price: normalizeSpace(value.price).slice(0, 80),
+    listingStatus: normalizeSpace(value.listingStatus || value.status).slice(0, 80),
+    sellerName: normalizeSpace(value.sellerName || value.seller).slice(0, 120),
+    matchedBy: normalizeFacebookMatchedBy(value.matchedBy || value.match?.matchedBy),
+    matchConfidence: normalizeFacebookMatchConfidence(value.matchConfidence || value.confidence || value.match?.confidence),
+    ambiguous: Boolean(value.ambiguous || value.match?.ambiguous || state === "duplicate_blocked"),
+    source: normalizeSpace(value.source).slice(0, 120),
+    thumbnailLabel: normalizeSpace(value.thumbnailLabel || value.thumbnail || value.firstPhoto).slice(0, 220),
+    proofPath: normalizeSpace(value.proofPath || value.proof || value.screenshotPath).slice(0, 500),
+    notes: normalizeSpace(value.notes || value.reason).slice(0, 500),
+    updatedAt,
+    updatedBy: publicUploader(value.updatedBy),
+  };
+}
+
+function normalizeOptionalAlbumId(value) {
+  const albumId = String(value || "").trim();
+  if (!albumId) return "";
+  return /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(albumId) && !albumId.includes("..") ? albumId.toLowerCase() : "";
+}
+
+function normalizeFacebookListingState(value) {
+  const state = normalizeSpace(value).toLowerCase().replace(/[\s-]+/g, "_");
+  if (!state) return "";
+  if (["live", "active", "listed", "list", "live_on_facebook", "already_live"].includes(state)) return "live";
+  if (["not_live", "no_live", "no_match", "none", "missing", "not_found"].includes(state)) return "not_live";
+  if (["sold", "sold_on_facebook", "already_sold"].includes(state)) return "sold";
+  if (["removed", "deleted", "taken_down"].includes(state)) return "removed";
+  if (["duplicate", "duplicate_blocked", "ambiguous", "ambiguous_live", "ambiguous_match"].includes(state)) return "duplicate_blocked";
+  if (["blocked", "publish_blocked", "review", "needs_review"].includes(state)) return "publish_blocked";
+  if (state === "unknown") return "unknown";
+  return "";
+}
+
+function normalizeFacebookMatchedBy(value) {
+  const items = Array.isArray(value) ? value : String(value || "").split(/[,|]/);
+  return items
+    .map((item) => normalizeSpace(item).toLowerCase().replace(/[\s-]+/g, "_").replace(/[^a-z0-9_]/g, ""))
+    .filter(Boolean)
+    .slice(0, 8)
+    .join(",");
+}
+
+function normalizeFacebookMatchConfidence(value) {
+  const confidence = normalizeSpace(value).toLowerCase().replace(/[\s-]+/g, "_");
+  if (["exact", "high", "medium", "low", "unknown"].includes(confidence)) return confidence;
+  return "";
+}
+
+function facebookListingStatusIsStale(value = {}) {
+  const staleAfterMs = Date.parse(value.staleAfter || "");
+  if (Number.isFinite(staleAfterMs)) return Date.now() > staleAfterMs;
+  const verifiedAtMs = Date.parse(value.verifiedAt || "");
+  return Number.isFinite(verifiedAtMs) ? Date.now() > verifiedAtMs + facebookListingVerificationTtlMs : true;
 }
 
 async function readInventoryLifecycleStore() {
@@ -2334,6 +2606,7 @@ function normalizeInventoryLifecycleStore(value) {
       lastObservedAt: normalizeIsoDate(rawRecord?.lastObservedAt) || "",
       firstRemovedAt: normalizeIsoDate(rawRecord?.firstRemovedAt) || "",
       removedNotifiedAt: normalizeIsoDate(rawRecord?.removedNotifiedAt) || "",
+      facebookListing: normalizeStoredFacebookListingStatus(rawRecord?.facebookListing),
       lifecycle: {
         sourceStatus: normalizeSpace(lifecycle.sourceStatus).slice(0, 60),
         packageStatus: normalizeSpace(lifecycle.packageStatus).slice(0, 60),
@@ -2791,31 +3064,14 @@ async function fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId, bypas
     };
   }
 
-  const limit = 100;
   const maxResults = 500;
-  const cars = [];
-  let totalResults = null;
-
-  for (let offset = 0; offset < maxResults; offset += limit) {
-    const searchUrl = new URL(oregansInventorySearchApiUrl);
-    searchUrl.search = new URLSearchParams({
-      "search.vehicle-inventory-type-ids.0": inventoryTypeId,
-      "search.region-ids.0": oregansInventoryRegionId,
-      "search.lot-location-ids.0": dealership.id,
-      "search.sort-order": "newest",
-      "do-search": "1",
-      "search.results-offset": String(offset),
-      "search.results-limit": String(limit),
-    }).toString();
-
-    const inventory = await fetchOregansJson(searchUrl);
-    const results = inventory?.search?.results || [];
-    totalResults = Number(inventory?.search?.stats?.totalResultsCount ?? results.length);
-    cars.push(...results.map(parseInventoryResult).filter((car) => car.vin));
-    if (!results.length || cars.length >= totalResults) break;
-  }
-
-  const normalized = cars.map((car) => normalizeInventoryCar(car, { dealership, inventoryTypeId }));
+  const cars = await fetchOregansInventorySearchCars({ dealership, inventoryTypeId, maxResults });
+  const enrichedCars = await enrichOregansInventoryCarsWithBodyStyles(cars, {
+    dealership,
+    inventoryTypeId,
+    maxResults,
+  });
+  const normalized = enrichedCars.map((car) => normalizeInventoryCar(car, { dealership, inventoryTypeId }));
   const fetchedAt = Date.now();
   inventoryCache.set(cacheKey, { fetchedAt, cars: normalized });
   return {
@@ -2826,6 +3082,110 @@ async function fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId, bypas
     source: "oregans",
     cars: normalized,
   };
+}
+
+async function fetchOregansInventorySearchCars({
+  dealership,
+  inventoryTypeId,
+  maxResults = 500,
+  bodyStyleGroupId = "",
+}) {
+  const limit = 100;
+  const cars = [];
+  let totalResults = null;
+
+  for (let offset = 0; offset < maxResults; offset += limit) {
+    const inventory = await fetchOregansInventorySearchPage({
+      dealership,
+      inventoryTypeId,
+      offset,
+      limit,
+      bodyStyleGroupId,
+    });
+    const results = inventory?.search?.results || [];
+    totalResults = Number(inventory?.search?.stats?.totalResultsCount ?? results.length);
+    cars.push(...results.map(parseInventoryResult).filter((car) => car.vin));
+    if (!results.length || cars.length >= totalResults) break;
+  }
+
+  return cars;
+}
+
+async function fetchOregansInventorySearchPage({
+  dealership,
+  inventoryTypeId,
+  offset,
+  limit,
+  bodyStyleGroupId = "",
+}) {
+  const params = {
+    "search.vehicle-inventory-type-ids.0": inventoryTypeId,
+    "search.region-ids.0": oregansInventoryRegionId,
+    "search.lot-location-ids.0": dealership.id,
+    "search.sort-order": "newest",
+    "do-search": "1",
+    "search.results-offset": String(offset),
+    "search.results-limit": String(limit),
+  };
+  if (bodyStyleGroupId) params["search.vehicle-body-style-group-ids.0"] = bodyStyleGroupId;
+
+  const searchUrl = new URL(oregansInventorySearchApiUrl);
+  searchUrl.search = new URLSearchParams(params).toString();
+  return fetchOregansJson(searchUrl);
+}
+
+async function enrichOregansInventoryCarsWithBodyStyles(cars, { dealership, inventoryTypeId, maxResults }) {
+  if (!cars.some((car) => !car.bodyStyle)) return cars;
+
+  let bodyStyleByKey;
+  try {
+    bodyStyleByKey = await fetchOregansBodyStyleLookup({ dealership, inventoryTypeId, maxResults });
+  } catch (error) {
+    console.warn(`O'Regan's body style enrichment failed: ${error?.message || error}`);
+    return cars;
+  }
+  if (!bodyStyleByKey.size) return cars;
+
+  return cars.map((car) => {
+    if (car.bodyStyle) return car;
+    const bodyStyle = oregansBodyStyleForCar(bodyStyleByKey, car);
+    return bodyStyle ? { ...car, bodyStyle } : car;
+  });
+}
+
+async function fetchOregansBodyStyleLookup({ dealership, inventoryTypeId, maxResults }) {
+  const bodyStyleByKey = new Map();
+  for (const group of oregansBodyStyleGroups) {
+    const cars = await fetchOregansInventorySearchCars({
+      dealership,
+      inventoryTypeId,
+      maxResults,
+      bodyStyleGroupId: group.id,
+    });
+    for (const car of cars) {
+      for (const key of oregansInventoryCarLookupKeys(car)) {
+        if (!bodyStyleByKey.has(key)) bodyStyleByKey.set(key, group.name);
+      }
+    }
+  }
+  return bodyStyleByKey;
+}
+
+function oregansBodyStyleForCar(bodyStyleByKey, car) {
+  for (const key of oregansInventoryCarLookupKeys(car)) {
+    const bodyStyle = bodyStyleByKey.get(key);
+    if (bodyStyle) return bodyStyle;
+  }
+  return "";
+}
+
+function oregansInventoryCarLookupKeys(car) {
+  return [...new Set([
+    normalizeSpace(car?.vin).toUpperCase(),
+    normalizeSpace(car?.vehicleId),
+    normalizeSpace(car?.stockNumber).toUpperCase(),
+    sanitizedOregansDetailUrl(car?.detailUrl),
+  ].filter(Boolean))];
 }
 
 async function fetchMockInventoryCars({ dealership, inventoryTypeId }) {
@@ -3107,6 +3467,135 @@ async function buildMarketplaceDraftForUser(car, user, { album = null, force = f
   };
 }
 
+function marketplaceDescriptionBackfillOptions(value = {}) {
+  return {
+    dryRun: parseBooleanValue(value.dryRun, false),
+    force: parseBooleanValue(value.force, false),
+    includeManual: parseBooleanValue(value.includeManual, false),
+    includeSourceRemoved: parseBooleanValue(value.includeSourceRemoved, false),
+    limit: positiveInteger(value.limit, 0),
+  };
+}
+
+async function backfillMarketplaceDescriptions(user, options = {}) {
+  const startedAt = new Date().toISOString();
+  const albums = await listAlbums({ includeInventoryStatus: true });
+  const records = [];
+  const summary = {
+    total: 0,
+    updated: 0,
+    skipped: 0,
+    failed: 0,
+    wouldUpdate: 0,
+  };
+
+  for (const album of albums) {
+    if (options.limit && summary.total >= options.limit) break;
+    summary.total += 1;
+    try {
+      const record = await backfillMarketplaceDescriptionForAlbum(album, user, options);
+      records.push(record);
+      if (record.status === "updated") summary.updated += 1;
+      else summary.skipped += 1;
+      if (record.action === "would_update") summary.wouldUpdate += 1;
+    } catch (error) {
+      summary.failed += 1;
+      records.push({
+        status: "failed",
+        action: "failed",
+        albumId: album?.id || "",
+        albumName: album?.name || "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    promptVersion: marketplaceDescriptionPromptVersion,
+    dryRun: Boolean(options.dryRun),
+    options,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    summary,
+    records,
+  };
+}
+
+async function backfillMarketplaceDescriptionForAlbum(album, user, options = {}) {
+  const car = carFromAlbum(album);
+  const fields = buildMarketplaceFields(car);
+  const inputHash = marketplaceDescriptionInputHash(car, fields);
+  const existingStore = await readMarketplaceCopyStore(album.id);
+  const sourceStatus = album.inventoryStatus?.lifecycle?.sourceStatus || "";
+  const base = {
+    albumId: album.id,
+    albumName: album.name,
+    vehicle: {
+      vin: car.vin,
+      stockNumber: car.stockNumber,
+      title: buildMarketplaceTitle(car),
+      year: car.year,
+      make: car.make,
+      model: car.model,
+      trim: car.trim,
+    },
+    mediaCount: album.mediaCount || 0,
+    vehicleSource: car.source,
+    sourceStatus,
+    facebookAction: album.inventoryStatus?.lifecycle?.facebookAction || "",
+    previousPromptVersion: existingStore?.promptVersion || "",
+    inputHash,
+  };
+
+  if (!album.mediaCount) return marketplaceBackfillSkipped(base, "no_media");
+  if (car.source === "manual" && !options.includeManual) return marketplaceBackfillSkipped(base, "manual_inventory");
+  if (sourceStatus === "source_removed" && !options.includeSourceRemoved) return marketplaceBackfillSkipped(base, "source_removed");
+  if (!shouldGenerateMarketplaceDescription(fields)) return marketplaceBackfillSkipped(base, "missing_required_facts");
+  if (!options.force && isMarketplaceUploadPoolCurrent(existingStore, inputHash)) {
+    return marketplaceBackfillSkipped(base, "already_current");
+  }
+
+  if (options.dryRun) {
+    return {
+      ...base,
+      status: "skipped",
+      action: "would_update",
+      reason: existingStore?.promptVersion ? "outdated_or_forced" : "missing_description_store",
+    };
+  }
+
+  const generation = await prepareMarketplaceDescriptionsForUpload(car, user, {
+    album,
+    uploadedMediaCount: album.mediaCount || 0,
+    force: options.force || !isMarketplaceUploadPoolCurrent(existingStore, inputHash),
+    reason: "backfill",
+  });
+  const draft = await buildMarketplaceDraftForUser(car, user, { album });
+  const updatedStore = await readMarketplaceCopyStore(album.id);
+
+  return {
+    ...base,
+    status: "updated",
+    action: "updated",
+    reason: "regenerated",
+    generationSource: generation.source,
+    promptVersion: updatedStore?.promptVersion || draft.descriptionPromptVersion,
+    descriptionSource: draft.descriptionSource,
+    descriptionVariantId: draft.descriptionVariantId,
+    variantCount: generation.variantCount || updatedStore?.variants?.length || 0,
+    historyCount: Array.isArray(updatedStore?.history) ? updatedStore.history.length : 0,
+  };
+}
+
+function marketplaceBackfillSkipped(base, reason) {
+  return {
+    ...base,
+    status: "skipped",
+    action: "skipped",
+    reason,
+  };
+}
+
 function buildMarketplaceFields(car) {
   const dealershipContext = marketplaceDealershipContext(car);
   return {
@@ -3147,20 +3636,25 @@ function marketplaceContactNameForUser(user, fallbackName = marketplaceContactPe
   return displayName || fallback;
 }
 
-async function prepareMarketplaceDescriptionsForUpload(car, user, { album = null, uploadedMediaCount = 0 } = {}) {
+async function prepareMarketplaceDescriptionsForUpload(car, user, {
+  album = null,
+  uploadedMediaCount = 0,
+  force = false,
+  reason = "media_upload",
+} = {}) {
   album = album || await ensureCarAlbum(car);
   const fields = buildMarketplaceFields(car);
   const targetUsers = await marketplaceAssignmentUsers(user);
   const targetCount = Math.max(marketplaceDescriptionVariantCount, targetUsers.length);
   const input = buildMarketplaceDescriptionPoolInput({ car, fields, users: targetUsers, count: targetCount });
   const inputHash = marketplaceDescriptionInputHash(car, fields);
-  const promiseKey = `upload:${album.id}:${inputHash}:${targetCount}`;
+  const promiseKey = `upload:${album.id}:${inputHash}:${targetCount}:${force ? "force" : "current"}`;
 
   if (marketplaceCopyPromises.has(promiseKey)) return marketplaceCopyPromises.get(promiseKey);
 
   const promise = (async () => {
     const existingStore = await readMarketplaceCopyStore(album.id);
-    if (isMarketplaceUploadPoolCurrent(existingStore, inputHash) && existingStore.variants.length >= marketplaceDescriptionVariantCount) {
+    if (!force && isMarketplaceUploadPoolCurrent(existingStore, inputHash) && existingStore.variants.length >= marketplaceDescriptionVariantCount) {
       const assigned = await assignMarketplaceDescriptionsToUsers(album.id, targetUsers, inputHash);
       return {
         ok: true,
@@ -3197,6 +3691,11 @@ async function prepareMarketplaceDescriptionsForUpload(car, user, { album = null
       variants,
       assignments: {},
       users: {},
+      history: marketplaceCopyHistoryWithSnapshot(existingStore, {
+        reason,
+        replacedAt: generatedAt,
+        replacedBy: publicAuthUser(user),
+      }),
     });
 
     const assigned = await assignMarketplaceDescriptionsToUsers(album.id, targetUsers, inputHash);
@@ -3265,21 +3764,27 @@ async function generateMarketplaceDescriptionVariants(input, count) {
           content: [{
             type: "input_text",
             text: [
-              `Write exactly ${count} different Facebook Marketplace vehicle descriptions from the supplied JSON facts.`,
-              "Use only supplied facts. Do not invent warranty, financing, accident history, ownership history, inspection status, availability, accessories, or condition details.",
-              "Each one should sound like a real salesperson wrote a clean dealership Facebook Marketplace post: specific, plain-spoken, helpful, and not like AI, a database export, or a private sale.",
-              "Use the supplied postingProfiles in order. Let each profile subtly change rhythm and word choice, but do not mention app usernames or that the copy is assigned to a profile.",
+              `Write exactly ${count} different short Facebook Marketplace vehicle descriptions from the supplied JSON facts.`,
+              "Use only supplied facts. Do not invent warranty, financing, accident history, ownership history, service history, inspection status, availability, accessories, certification, ownership, or condition details.",
+              "Write original copy from the source facts. Do not copy the source description or tagline verbatim except for short factual feature names.",
+              "Each one should sound like a simple Marketplace vehicle listing: plain-spoken, helpful, restrained, and human, without sounding salesy or generic.",
+              "Use the supplied postingProfiles in order. Keep the descriptions very similar across profiles with only subtle rhythm changes. Do not mention app usernames, contact names, or that the copy is assigned to a profile.",
               "Never start with 'I'm listing', 'I am listing', 'Listing this', 'Posting this', or similar listing-process language.",
-              "Open naturally with the vehicle, for example '<year> <make> <model> - <trim/status>.'",
-              "Every description must mention the vehicle year, make, model, trim/status when available, price, and mileage. Include VIN when available.",
-              "Mention exterior color, transmission, fuel type, body style, interior color, and supplied highlights only when the supplied value is useful and specific.",
+              "Open naturally with a useful summary of the vehicle, for example '<year> <make> <model> <trim> with the main details kept simple.'",
+              "Every description must mention the vehicle year, make, model, trim/status when available, and mileage when available. Include VIN when available.",
+              "Do not mention price anywhere. The app appends 'Message for more details!' and one required legal price line separately.",
+              "Mention exterior colour, interior colour, transmission, fuel type, body style, and supplied highlights only when the supplied value is useful and specific. Keep this brief.",
+              "Keep buyer benefits vague and conservative. Do not make strong claims about comfort, reliability, condition, winter use, safety, towing, family use, or tech unless the exact supporting fact is supplied.",
+              "Do not say AWD, all-wheel drive, 4WD, four-wheel drive, winter confidence, towing, hybrid, electric, leather, sunroof, navigation, camera, heated seats, or similar feature claims unless those exact facts are supplied.",
+              "Do not describe the vehicle or interior as comfortable, clean, excellent, like new, reliable, easy to park, or in good condition unless that wording or a directly supporting comfort/condition feature is supplied.",
               "Do not mention missing, vague, or placeholder facts such as Other, Unknown, N/A, not specified, body style not specified, or interior color is Other.",
-              "Do not include exact dealership branch names, store names, street addresses, lot locations, source locations, source URLs, or inventory source wording.",
+              "Do not include dealership branch names, dealer names, store names, city, province, location, street addresses, lot locations, source URLs, or inventory source wording.",
               "Do not use wording that encourages a walk-in, including 'come in', 'located at', 'available at', 'come see it at', 'visit us at', 'stop by', or 'walk in'.",
-              "Do not repeat the same facts. Price, mileage, VIN, color, transmission, and fuel type should each appear at most once inside the generated body/details.",
-              "Avoid emojis, hashtags, exclamation marks, generic hype, and phrases like 'look no further', 'turn heads', 'perfect blend', 'must-see', 'priced to sell', 'won't last long', or 'don't miss out'.",
-              "For each description, write one short opening line, one concise useful paragraph, and a simple details block or details line. Keep each one between 80 and 145 words.",
-              "The details block or line should include VIN, price, and mileage when available.",
+              "Do not repeat the same facts. Mileage, VIN, color, transmission, and fuel type should each appear at most once inside the generated body/details.",
+              "Avoid emojis, hashtags, exclamation marks, fake urgency, generic hype, and phrases like 'look no further', 'turn heads', 'dream ride', 'beast', 'loaded to the max', 'perfect blend', 'must-see', 'priced to sell', 'priced to move', 'won't last long', or 'don't miss out'.",
+              "For each description, write one short opening sentence plus a compact details block. Do not include a feature bullet list.",
+              "Keep each generated body between 55 and 95 words before the appended contact and price disclosure lines.",
+              "The details block should include mileage, body style, exterior colour, interior colour, transmission, fuel type, up to three supplied highlights, and VIN when available, but not price.",
               "Do not include stock number, inventory number, internal inventory ID, dealership stock code, contact/footer line, or price-disclosure fee line.",
               "Return only JSON matching the schema.",
               "",
@@ -3304,7 +3809,7 @@ async function generateMarketplaceDescriptionVariants(input, count) {
       for (const value of Array.isArray(parsed.descriptions) ? parsed.descriptions : []) {
         const profile = input.postingProfiles?.[descriptions.length];
         const fallbackDescription = fallbackDescriptions[descriptions.length] || fallbackDescriptions[0] || "";
-        const description = normalizeMarketplaceGeneratedDescription(value, fallbackDescription);
+        const description = normalizeMarketplaceGeneratedDescription(value, fallbackDescription, input);
         const key = normalizeSearchToken(description);
         if (!description || seen.has(key)) continue;
         seen.add(key);
@@ -3381,18 +3886,12 @@ function buildMarketplaceDescriptionFactsInput({ car, fields, postingProfiles = 
   const transmission = marketplaceUsefulFact(fields.transmission);
   return {
     promptVersion: marketplaceDescriptionPromptVersion,
-    location: fields.location || dealership.location,
     dealership: {
       id: dealership.id,
-      name: dealership.name,
-      city: dealership.city,
-      location: dealership.location,
-      label: dealership.label,
-      contactName: dealership.contactName,
     },
     writingGuidance: {
-      targetAudience: "local Facebook Marketplace vehicle shoppers in Nova Scotia",
-      tone: "clear, useful, confident, human, not cheesy",
+      targetAudience: "Facebook Marketplace vehicle shoppers",
+      tone: "short, simple, useful, vague, human, not salesy",
       postingProfiles: postingProfiles.map((profile) => ({
         variantId: profile.variantId,
         displayName: profile.displayName,
@@ -3406,15 +3905,13 @@ function buildMarketplaceDescriptionFactsInput({ car, fields, postingProfiles = 
       make: fields.make,
       model: fields.model,
       trim: car.trim,
-      price: fields.price,
       odometerKm: fields.mileage,
       bodyStyle: bodyStyle || null,
       exteriorColor: exteriorColor || null,
       interiorColor: interiorColor || null,
-      condition: fields.vehicleCondition,
+      condition: hasExplicitCondition(car) ? fields.vehicleCondition : null,
       fuelType: fuelType || null,
       transmission: transmission || null,
-      detailUrl: sanitizedOregansDetailUrl(car.detailUrl, car.source),
     },
     inventoryCopy: {
       tagline: nullableString(car.tagline),
@@ -3640,8 +4137,14 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
   const pushDeliveryPromise = writeResult.newlyObserved.length
     ? queueInventoryAddedPushNotifications(writeResult.newlyObserved, finishedAt)
     : null;
+  const priceChangePushDeliveryPromise = writeResult.priceChanges.length
+    ? queueInventoryPriceChangePushNotifications(writeResult.priceChanges, finishedAt)
+    : null;
   const pushDelivery = pushDeliveryPromise && pushAwaitDelivery
     ? await pushDeliveryPromise
+    : null;
+  const priceChangePushDelivery = priceChangePushDeliveryPromise && pushAwaitDelivery
+    ? await priceChangePushDeliveryPromise
     : null;
 
   return {
@@ -3657,7 +4160,12 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
       count: writeResult.newlyObserved.length,
       vehicles: writeResult.newlyObserved.slice(0, 20),
     },
+    priceChanges: {
+      count: writeResult.priceChanges.length,
+      vehicles: writeResult.priceChanges.slice(0, 20),
+    },
     ...(pushDelivery ? { pushDelivery } : {}),
+    ...(priceChangePushDelivery ? { priceChangePushDelivery } : {}),
   };
 }
 
@@ -3770,7 +4278,7 @@ function writeOregansInventorySnapshotRun({
       AND last_snapshot_run_id <> ?
   `);
   const selectVehicle = oregansInventorySnapshotsDb.prepare(`
-    SELECT vehicle_key, present
+    SELECT vehicle_key, present, price, price_value
     FROM oregans_inventory_vehicles
     WHERE vehicle_key = ?
   `);
@@ -3808,6 +4316,7 @@ function writeOregansInventorySnapshotRun({
   }
 
   const newlyObserved = [];
+  const priceChanges = [];
   oregansInventorySnapshotsDb.exec("BEGIN IMMEDIATE");
   try {
     const scopeHasBaseline = new Map(successfulScopes.map((scope) => [
@@ -3831,6 +4340,13 @@ function writeOregansInventorySnapshotRun({
       const previous = selectVehicle.get(record.vehicleKey);
       if (scopeHasBaseline.get(inventorySnapshotScopeKey(scope)) && (!previous || !Number(previous.present))) {
         newlyObserved.push(publicOregansInventorySnapshotVehicleFromCar(car, scope, finishedAt, record.vehicleKey));
+      } else if (
+        scopeHasBaseline.get(inventorySnapshotScopeKey(scope))
+        && previous
+        && Number(previous.present)
+        && oregansInventorySnapshotPriceChanged(previous, car)
+      ) {
+        priceChanges.push(publicOregansInventorySnapshotPriceChangeFromCar(car, scope, finishedAt, record.vehicleKey, previous));
       }
       upsertVehicle.run(...record.values);
       insertItem.run(
@@ -3864,7 +4380,7 @@ function writeOregansInventorySnapshotRun({
     throw error;
   }
 
-  return { newlyObserved };
+  return { newlyObserved, priceChanges };
 }
 
 function oregansInventorySnapshotVehicleRecord(car, scope, observedAt, runId) {
@@ -3951,6 +4467,34 @@ function publicOregansInventorySnapshotVehicleFromCar(car, scope, observedAt, ve
   };
 }
 
+function publicOregansInventorySnapshotPriceChangeFromCar(car, scope, observedAt, vehicleKey, previous) {
+  return {
+    ...publicOregansInventorySnapshotVehicleFromCar(car, scope, observedAt, vehicleKey),
+    previousPrice: normalizeSpace(previous?.price),
+    previousPriceValue: nullableFiniteNumber(previous?.price_value),
+    currentPrice: normalizeSpace(car.price),
+    currentPriceValue: nullableFiniteNumber(car.priceValue),
+  };
+}
+
+function oregansInventorySnapshotPriceChanged(previous, car) {
+  const previousPriceValue = nullableFiniteNumber(previous?.price_value);
+  const currentPriceValue = nullableFiniteNumber(car?.priceValue ?? parseCurrency(car?.price));
+  if (previousPriceValue !== null && currentPriceValue !== null) {
+    return previousPriceValue !== currentPriceValue;
+  }
+
+  const previousPrice = normalizeSpace(previous?.price);
+  const currentPrice = normalizeSpace(car?.price);
+  return Boolean(previousPrice && currentPrice && previousPrice !== currentPrice);
+}
+
+function nullableFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 async function queueInventoryAddedPushNotifications(vehicles, timestamp) {
   const groups = vehiclesByTargetDealership(vehicles);
   const deliveries = [];
@@ -3971,6 +4515,32 @@ async function queueInventoryAddedPushNotifications(vehicles, timestamp) {
     });
   }
   return aggregatePushDeliveries(deliveries);
+}
+
+async function queueInventoryPriceChangePushNotifications(vehicles, timestamp) {
+  const totals = emptyPushDeliveryTotals();
+  const deliveries = [];
+  for (const vehicle of Array.isArray(vehicles) ? vehicles.filter(Boolean) : []) {
+    const delivery = await queuePushNotifications({
+      payload: oregansInventoryPriceChangePushPayload(vehicle, timestamp),
+    });
+    addPushDeliveryTotals(totals, delivery);
+    deliveries.push({
+      vehicleKey: vehicle.vehicleKey || "",
+      stockNumber: vehicle.stockNumber || "",
+      requested: Number(delivery.requested) || 0,
+      delivered: Number(delivery.delivered) || 0,
+      failed: Number(delivery.failed) || 0,
+      skipped: Number(delivery.skipped) || 0,
+      staleRemoved: Number(delivery.staleRemoved) || 0,
+      retiredRemoved: Number(delivery.retiredRemoved) || 0,
+      logged: Number(delivery.logged) || 0,
+    });
+  }
+  return {
+    ...totals,
+    vehicles: deliveries,
+  };
 }
 
 function emptyPushDeliveryTotals() {
@@ -4068,6 +4638,28 @@ function oregansInventoryAddedPushPayload(vehicles, timestamp) {
     inventoryTypeId: normalizeSpace(first.inventoryTypeId || defaultInventoryTypeId),
     inventoryKey: first.inventoryKey || first.vin || "",
     stockNumber: first.stockNumber || "",
+    timestamp,
+  };
+}
+
+function oregansInventoryPriceChangePushPayload(vehicle, timestamp) {
+  const timestampMs = Date.parse(timestamp) || Date.now();
+  const tagVehicleKey = inventoryAddedPushTagVehicleKey(vehicle);
+  const messageId = `price-change-${timestampMs}-${tagVehicleKey}-${crypto.randomUUID().slice(0, 8)}`;
+  return {
+    kind: "price_change",
+    type: "price_change",
+    notificationType: "price_change",
+    route: "notifications",
+    messageId,
+    title: inventoryPriceChangePushTitle(vehicle),
+    body: inventoryPriceChangePushBody(vehicle),
+    tag: `carpostclub-price-change-${tagVehicleKey}-${timestampMs}`,
+    url: notificationsDeepLink({ notificationId: messageId }),
+    dealershipId: vehicle.dealershipId,
+    inventoryTypeId: normalizeSpace(vehicle.inventoryTypeId || defaultInventoryTypeId),
+    inventoryKey: vehicle.inventoryKey || vehicle.vin || "",
+    stockNumber: vehicle.stockNumber || "",
     timestamp,
   };
 }
@@ -4257,6 +4849,61 @@ function safeParseJson(value, fallback) {
 
 function emptyMarketplaceCopyStore() {
   return { users: {} };
+}
+
+function marketplaceCopyHistoryWithSnapshot(previousStore, metadata = {}) {
+  const existingHistory = Array.isArray(previousStore?.history) ? previousStore.history : [];
+  const snapshot = marketplaceCopyStoreSnapshot(previousStore, metadata);
+  const history = snapshot ? [...existingHistory, snapshot] : existingHistory;
+  return history.slice(-8);
+}
+
+function marketplaceCopyStoreSnapshot(store, metadata = {}) {
+  if (!store || typeof store !== "object") return null;
+  const hasStoreContent = store.promptVersion
+    || store.inputHash
+    || Array.isArray(store.variants)
+    || (store.users && Object.keys(store.users).length > 0);
+  if (!hasStoreContent) return null;
+
+  return {
+    replacedAt: normalizeIsoDate(metadata.replacedAt) || new Date().toISOString(),
+    reason: normalizeSpace(metadata.reason || "regenerated").slice(0, 80),
+    replacedBy: metadata.replacedBy || null,
+    mode: normalizeSpace(store.mode).slice(0, 80),
+    promptVersion: normalizeSpace(store.promptVersion).slice(0, 120),
+    inputHash: normalizeSpace(store.inputHash).slice(0, 160),
+    generatedAt: normalizeIsoDate(store.generatedAt) || "",
+    variantCount: Array.isArray(store.variants) ? store.variants.length : Number(store.variantCount || 0) || 0,
+    userDescriptions: marketplaceCopyUserDescriptionSnapshots(store),
+    variants: marketplaceCopyVariantSnapshots(store),
+  };
+}
+
+function marketplaceCopyUserDescriptionSnapshots(store = {}) {
+  return Object.entries(store.users && typeof store.users === "object" ? store.users : {})
+    .map(([userKey, copy]) => ({
+      userKey: normalizeSpace(userKey).slice(0, 120),
+      variantId: normalizeSpace(copy?.variantId).slice(0, 80),
+      promptVersion: normalizeSpace(copy?.promptVersion).slice(0, 120),
+      source: normalizeSpace(copy?.source).slice(0, 80),
+      generatedAt: normalizeIsoDate(copy?.generatedAt) || "",
+      description: String(copy?.description || "").slice(0, 1800),
+    }))
+    .filter((snapshot) => snapshot.description);
+}
+
+function marketplaceCopyVariantSnapshots(store = {}) {
+  return (Array.isArray(store.variants) ? store.variants : [])
+    .map((variant) => ({
+      id: normalizeSpace(variant?.id).slice(0, 80),
+      source: normalizeSpace(variant?.source).slice(0, 80),
+      model: normalizeSpace(variant?.model).slice(0, 120) || null,
+      generatedAt: normalizeIsoDate(variant?.generatedAt) || "",
+      description: String(variant?.description || "").slice(0, 1800),
+    }))
+    .filter((snapshot) => snapshot.id && snapshot.description)
+    .slice(0, marketplaceDescriptionVariantCount);
 }
 
 async function readMarketplaceCopyStore(albumId) {
@@ -4572,7 +5219,7 @@ function marketplaceVehicleLead(car, fields = {}) {
   const titleToken = normalizeSearchToken(title);
   const trimToken = normalizeSearchToken(trim);
   if (trimToken && titleToken.includes(trimToken)) return title;
-  return `${title} - ${trim}`;
+  return `${title} ${trim}`;
 }
 
 function marketplaceMileageText(fields = {}, car = {}) {
@@ -4613,138 +5260,90 @@ function marketplaceArticlePhrase(value) {
   return /^[aeiou]/i.test(text) ? `an ${text}` : `a ${text}`;
 }
 
+function marketplaceBodyStyleBenefit(bodyStyle) {
+  const style = normalizeSearchToken(bodyStyle);
+  if (!style) return "";
+  if (style.includes("suv")) return "The SUV layout gives you useful space for daily driving, errands, and weekend cargo.";
+  if (style.includes("truck")) return "The truck layout adds practical cargo flexibility for work, errands, and rougher weather.";
+  if (style.includes("minivan") || style === "van") return "The minivan layout is a strong fit for passengers, family gear, and day-to-day flexibility.";
+  if (style.includes("hatch")) return "The hatchback layout keeps it easy to park while still giving you flexible cargo room.";
+  if (style.includes("sedan")) return "The sedan layout keeps the vehicle easy to live with for commuting and everyday driving.";
+  if (style.includes("wagon")) return "The wagon layout gives you a useful mix of passenger comfort and cargo space.";
+  return "";
+}
+
+function marketplaceWinterBenefit(car = {}) {
+  const text = normalizeSearchToken([car.title, car.trim, car.tagline, car.descriptionPreview].filter(Boolean).join(" "));
+  if (/\bawd\b|all wheel drive/.test(text)) return "All-wheel drive is a helpful plus for Nova Scotia winter roads.";
+  if (/\b4wd\b|four wheel drive/.test(text)) return "Four-wheel drive adds useful confidence for winter weather and rougher road conditions.";
+  return "";
+}
+
+function marketplaceDescriptionFeatureHighlights(car = {}, limit = 5) {
+  return featureHighlights(car).slice(0, limit);
+}
+
+function marketplaceDescriptionFeatureBlock(highlights = []) {
+  if (highlights.length < 3) return "";
+  return [
+    "Feature highlights:",
+    ...highlights.slice(0, 5).map((highlight) => `- ${highlight}`),
+  ].join("\n");
+}
+
+function marketplaceDescriptionDetailBlock(car, fields = {}) {
+  const mileageText = marketplaceMileageText(fields, car);
+  const bodyStyle = marketplaceUsefulFact(fields.bodyStyle);
+  const exteriorColor = marketplaceUsefulFact(fields.exteriorColor);
+  const interiorColor = marketplaceUsefulInteriorColor(fields.interiorColor);
+  const transmission = marketplaceUsefulFact(fields.transmission);
+  const fuelType = marketplaceUsefulFact(fields.fuelType);
+  const highlights = marketplaceDescriptionFeatureHighlights(car, 3);
+  const detailLines = [
+    mileageText && `Mileage: ${mileageText}`,
+    bodyStyle && `Body Style: ${bodyStyle}`,
+    exteriorColor && `Exterior: ${exteriorColor}`,
+    interiorColor && `Interior: ${interiorColor}`,
+    transmission && `Transmission: ${transmission}`,
+    fuelType && `Fuel Type: ${fuelType}`,
+    highlights.length && `Features: ${naturalList(highlights.slice(0, 3))}`,
+    car.vin && `VIN: ${car.vin}`,
+  ].filter(Boolean);
+  return detailLines.join("\n");
+}
+
 function buildMarketplaceLeadControlBaseDescription(car, fields = {}, variantSeed = "", user = null) {
   const lead = marketplaceVehicleLead(car, fields);
   const posterKey = marketplaceUserKey(user);
-  const modelName = marketplaceUsefulFact(fields.model || car.model) || "vehicle";
-  const mileageText = marketplaceMileageText(fields, car);
-  const priceText = marketplacePriceText(fields, car);
-  const exteriorColor = marketplaceUsefulFact(fields.exteriorColor);
-  const interiorColor = marketplaceUsefulInteriorColor(fields.interiorColor);
-  const transmission = marketplaceTransmissionPhrase(fields.transmission);
-  const fuelType = marketplaceFuelPhrase(fields.fuelType);
   const openers = [
-    `${lead}.`,
-    `Here is a ${lead}.`,
-    `${lead} with the key details ready to review.`,
-    `${lead} with practical equipment and clear vehicle details.`,
+    `${lead}. Key vehicle details are listed below.`,
+    `${lead}. Vehicle information is organized below.`,
+    `${lead}. Main specifications are included below.`,
+    `${lead}. Important vehicle details are shown below.`,
+    `Vehicle summary for ${lead}.`,
+    `${lead}. Details are provided in a simple format.`,
+    `${lead}. The main information is listed below.`,
+    `${lead}. A concise vehicle summary is included below.`,
   ];
   const opener = openers[marketplaceVariantIndex(variantSeed, openers.length, `${car.vin}:${posterKey}`)];
-  const summarySentences = [];
-
-  const colorAndMileage = [];
-  if (exteriorColor) {
-    colorAndMileage.push(`finished in ${exteriorColor}${interiorColor ? ` with ${interiorColor} interior` : ""}`);
-  }
-  if (mileageText) colorAndMileage.push(`${mileageText} on the odometer`);
-  if (colorAndMileage.length) {
-    summarySentences.push(`This ${modelName} is ${naturalList(colorAndMileage)}.`);
-  }
-
-  const drivetrain = [transmission, fuelType].filter(Boolean).map(marketplaceArticlePhrase);
-  if (drivetrain.length) {
-    summarySentences.push(`It comes with ${naturalList(drivetrain)}.`);
-  }
-
-  const highlights = featureHighlights(car);
-  if (highlights.length) {
-    const highlightIntro = [
-      "Highlights include",
-      "Useful features include",
-      "The feature list includes",
-      "Notable equipment includes",
-    ][marketplaceVariantIndex(`${variantSeed}:lead-control-highlights`, 4, posterKey)];
-    summarySentences.push(`${highlightIntro} ${naturalList(highlights.slice(0, 5))}.`);
-  }
 
   const lines = [
     opener,
-    summarySentences.filter(Boolean).join(" "),
   ].filter(Boolean);
 
-  const detailLines = [
-    priceText && `Price: ${priceText}`,
-    car.vin && `VIN: ${car.vin}`,
-    mileageText && `Mileage: ${mileageText}`,
-  ].filter(Boolean);
-  if (detailLines.length) lines.push(detailLines.join("\n"));
+  const detailBlock = marketplaceDescriptionDetailBlock(car, fields);
+  if (detailBlock) lines.push(detailBlock);
 
   return lines.join("\n\n");
 }
 
 function buildMarketplaceDescription(car, fields, user, variantSeed = "") {
-  if (shouldLeadControlMarketplaceDescription(user)) {
-    return finalizeMarketplaceBuyerDescription(
-      buildMarketplaceLeadControlBaseDescription(car, fields, variantSeed, user),
-      fields,
-      car,
-      user,
-    );
-  }
-
-  const lead = marketplaceVehicleLead(car, fields);
-  const dealership = marketplaceDealershipContext(car);
-  const dealershipName = fields.dealershipName || dealership.name;
-  const dealershipLocation = fields.location || dealership.location;
-  const posterKey = marketplaceUserKey(user);
-  const openers = [
-    `${lead} at ${dealershipName}.`,
-    `${lead} - ${dealershipName}.`,
-    `${dealershipName} has this ${lead}.`,
-    `${lead} available through ${dealershipName}.`,
-    `Now at ${dealershipName}: ${lead}.`,
-    `${lead} from ${dealershipName}.`,
-  ];
-  const openerIndex = marketplaceVariantIndex(variantSeed, openers.length, `${car.vin}:${posterKey}`);
-
-  const modelName = marketplaceUsefulFact(fields.model || car.model) || "vehicle";
-  const mileageText = marketplaceMileageText(fields, car);
-  const priceText = marketplacePriceText(fields, car);
-  const exteriorColor = marketplaceUsefulFact(fields.exteriorColor);
-  const interiorColor = marketplaceUsefulInteriorColor(fields.interiorColor);
-  const transmission = marketplaceTransmissionPhrase(fields.transmission);
-  const fuelType = marketplaceFuelPhrase(fields.fuelType);
-  const summarySentences = [];
-
-  const colorAndMileage = [];
-  if (exteriorColor) {
-    colorAndMileage.push(`finished in ${exteriorColor}${interiorColor ? ` with ${interiorColor} interior` : ""}`);
-  }
-  if (mileageText) colorAndMileage.push(`${mileageText} on the odometer`);
-  if (colorAndMileage.length) {
-    summarySentences.push(`This ${modelName} is ${naturalList(colorAndMileage)}.`);
-  }
-
-  const drivetrain = [transmission, fuelType].filter(Boolean).map(marketplaceArticlePhrase);
-  if (drivetrain.length) {
-    summarySentences.push(`It comes with ${naturalList(drivetrain)}.`);
-  }
-
-  const highlights = featureHighlights(car);
-  if (highlights.length) {
-    const highlightIntro = [
-      "Highlights include",
-      "Useful features include",
-      "The feature list includes",
-      "Notable equipment includes",
-    ][marketplaceVariantIndex(`${variantSeed}:highlights`, 4, posterKey)];
-    summarySentences.push(`${highlightIntro} ${naturalList(highlights.slice(0, 5))}.`);
-  }
-  summarySentences.push(`Located at ${dealershipName} in ${dealershipLocation}.`);
-
-  const lines = [
-    openers[openerIndex],
-    summarySentences.filter(Boolean).join(" "),
-  ].filter(Boolean);
-
-  const detailLines = [
-    priceText && `Price: ${priceText}`,
-    car.vin && `VIN: ${car.vin}`,
-    mileageText && `Mileage: ${mileageText}`,
-  ].filter(Boolean);
-  if (detailLines.length) lines.push(detailLines.join("\n"));
-
-  return finalizeMarketplaceBuyerDescription(lines.join("\n\n"), fields, car, user);
+  return finalizeMarketplaceBuyerDescription(
+    buildMarketplaceLeadControlBaseDescription(car, fields, variantSeed, user),
+    fields,
+    car,
+    user,
+  );
 }
 
 function marketplaceVariantIndex(variantSeed, count, salt = "") {
@@ -4785,28 +5384,92 @@ function buildMarketplaceCopyText({ title, fields, description, car, user = null
 }
 
 function finalizeMarketplaceBuyerDescription(description, fields, car = null, user = null) {
-  if (shouldLeadControlMarketplaceDescription(user)) {
-    const safeDescription = sanitizeMarketplaceLeadControlDescription(description, fields, car)
-      || buildMarketplaceLeadControlBaseDescription(car || {}, fields || {}, "", user);
-    return stripMarketplaceInventoryNumbers(
-      appendMarketplaceLeadControlClosing(appendMarketplacePriceDisclosure(safeDescription, fields, car)),
-      car,
-    );
-  }
-
+  const fallbackDescription = buildMarketplaceLeadControlBaseDescription(car || {}, fields || {}, "", user);
+  const safeDescription = sanitizeMarketplaceBuyerDescription(description, fields, car)
+    || sanitizeMarketplaceBuyerDescription(fallbackDescription, fields, car)
+    || fallbackDescription;
   return stripMarketplaceInventoryNumbers(
-    appendMarketplaceContactLine(appendMarketplacePriceDisclosure(description, fields, car), fields, car, user),
+    appendMarketplaceContactLine(appendMarketplacePriceDisclosure(safeDescription, fields, car), fields, car, user),
     car,
   );
 }
 
 function appendMarketplacePriceDisclosure(description, fields, car = null) {
-  const text = String(description || "").trim();
+  const text = stripMarketplacePriceMentions(description, fields, car).trim();
   const footer = buildMarketplacePriceDisclosure(fields, car);
   if (!text) return footer;
   const paragraphs = text.split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean);
   const withoutDisclosure = paragraphs.filter((paragraph) => !hasMarketplacePriceDisclosure(paragraph));
   return [...withoutDisclosure, footer].join("\n\n");
+}
+
+function sanitizeMarketplaceBuyerDescription(description, fields = {}, car = null) {
+  const withoutPrice = stripMarketplacePriceMentions(description, fields, car);
+  return sanitizeMarketplaceLeadControlDescription(withoutPrice, fields, car);
+}
+
+function stripMarketplacePriceMentions(description, fields = {}, car = null) {
+  const text = String(description || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n/g, "\n")
+    .trim();
+  if (!text) return "";
+  const pricePatterns = marketplacePriceMentionPatterns(fields, car);
+  return text
+    .split(/\n{2,}/)
+    .map((paragraph) => stripMarketplacePriceParagraph(paragraph, pricePatterns))
+    .filter(Boolean)
+    .join("\n\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function stripMarketplacePriceParagraph(paragraph, pricePatterns = []) {
+  const lines = String(paragraph || "")
+    .split("\n")
+    .map((line) => stripMarketplacePriceLine(line, pricePatterns))
+    .filter(Boolean);
+  return lines.join("\n").trim();
+}
+
+function stripMarketplacePriceLine(line, pricePatterns = []) {
+  const text = String(line || "").trim();
+  if (!text || hasMarketplacePriceDisclosure(text) || /^\s*(?:asking\s+)?price\s*[:,-]/i.test(text)) return "";
+  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
+  return sentences
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .filter((sentence) => !hasMarketplacePriceMention(sentence, pricePatterns))
+    .join(" ")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function hasMarketplacePriceMention(value, pricePatterns = []) {
+  const text = String(value || "");
+  if (!text) return false;
+  if (/\b(?:price|priced|asking|listed\s+at|selling\s+for|advertised\s+at)\b/i.test(text)) return true;
+  return pricePatterns.some((pattern) => pattern.test(text));
+}
+
+function marketplacePriceMentionPatterns(fields = {}, car = null) {
+  const rawPrice = fields?.price || parseCurrency(car?.price);
+  const values = new Set([marketplacePriceText(fields || {}, car || {}), car?.price]);
+  if (rawPrice) {
+    const localized = rawPrice.toLocaleString("en-CA");
+    const plain = String(rawPrice);
+    [localized, plain, localized.replace(/,/g, ""), localized.replace(/,/g, " ")].forEach((value) => {
+      if (!value) return;
+      values.add(value);
+      values.add(`$${value}`);
+      values.add(`CA$${value}`);
+    });
+  }
+  return [...values]
+    .map(normalizeSpace)
+    .filter(Boolean)
+    .map((value) => new RegExp(escapeRegExp(value).replace(/,/g, "[,\\s]?"), "i"));
 }
 
 function buildMarketplacePriceDisclosure(fields, car = null) {
@@ -4839,20 +5502,7 @@ function appendMarketplaceContactLine(description, fields = {}, car = null, user
 }
 
 function buildMarketplaceContactLine(fields = {}, car = null, user = null) {
-  const dealership = marketplaceDealershipContext(car || {});
-  const dealershipName = fields.dealershipName || dealership.name;
-  const city = fields.dealershipCity || dealership.city;
-  const contactName = marketplaceContactNameForUser(user, fields.contactName || dealership.contactName || marketplaceContactPerson);
-  const seed = `${marketplaceUserKey(user)}:${car?.vin || car?.stockNumber || dealershipName}`;
-  const lines = [
-    `Send a message with any questions, or stop by ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
-    `For questions or a closer look, contact ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
-    `If you would like to see it in person, visit ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
-    `Send a message to arrange a closer look, or visit ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
-    `Questions are welcome. At ${dealershipName}${city ? ` in ${city}` : ""}, ask for ${contactName}.`,
-    `For more details, contact ${dealershipName}${city ? ` in ${city}` : ""} and ask for ${contactName}.`,
-  ];
-  return lines[marketplaceVariantIndex(seed, lines.length, fields.location || "")];
+  return "Message for more details!";
 }
 
 function appendMarketplaceLeadControlClosing(description) {
@@ -4999,6 +5649,7 @@ function isMarketplaceLeadControlClosingParagraph(value) {
 
 function isMarketplaceContactParagraph(value) {
   const text = String(value || "").trim();
+  if (/^message\s+for\s+more\s+details!?$/i.test(text)) return true;
   return /\b(?:message|contact|reach|stop by|visit|come by|questions|closer look|arrange)\b/i.test(text)
     && /\bask for\s+[A-Z0-9][A-Z0-9 .'-]{0,60}\b/i.test(text);
 }
@@ -5051,7 +5702,7 @@ function hasMarketplacePriceDisclosure(description) {
     && /\b14%\s*HST\b/i.test(description);
 }
 
-function normalizeMarketplaceGeneratedDescription(value, fallbackDescription) {
+function normalizeMarketplaceGeneratedDescription(value, fallbackDescription, input = null) {
   const text = String(value || "")
     .replace(/\u00a0/g, " ")
     .replace(/\r\n/g, "\n")
@@ -5063,8 +5714,81 @@ function normalizeMarketplaceGeneratedDescription(value, fallbackDescription) {
   if (!text || text.length < 70) return fallbackDescription;
   if (/as an ai|i can(?:'|’)t|i cannot/i.test(text)) return fallbackDescription;
   if (/^\s*(?:i(?:'|’)m listing|i am listing|listing this|posting this)\b/i.test(text)) return fallbackDescription;
-  if (/\b(?:body style not specified|interior colou?r is other|other interior)\b/i.test(text)) return fallbackDescription;
+  if (/\b(?:not specified|not available|not provided|not listed|not shown|not disclosed|not stated|unspecified|unavailable|unknown|n\/a|body style not specified|interior colou?r is other|other interior)\b/i.test(text)) return fallbackDescription;
+  if (hasMarketplaceBannedCopyTone(text)) return fallbackDescription;
+  if (hasUnsupportedMarketplaceGeneratedClaim(text, input)) return fallbackDescription;
   return text.slice(0, 1400);
+}
+
+function hasMarketplaceBannedCopyTone(value) {
+  return /#|[\u{1F300}-\u{1FAFF}]|(?:\b(?:wow|hurry|act fast|look no further|turn heads|dream ride|beast|loaded to the max|perfect blend|must-see|must see|priced to sell|priced to move|won't last long|do not miss out|don't miss out)\b)/iu.test(String(value || ""));
+}
+
+function hasUnsupportedMarketplaceGeneratedClaim(description, input = null) {
+  const text = String(description || "");
+  const sourceText = marketplaceGeneratedSourceText(input);
+  if (!sourceText) return false;
+
+  const unsupportedFeatureClaims = [
+    {
+      claim: /\b(?:awd|all[-\s]?wheel drive|all[-\s]?wheel|4wd|four[-\s]?wheel drive|four[-\s]?wheel|winter confidence|winter roads?)\b/i,
+      source: /\b(?:awd|all[-\s]?wheel drive|all[-\s]?wheel|4wd|four[-\s]?wheel drive|four[-\s]?wheel)\b/i,
+    },
+    {
+      claim: /\b(?:hybrid|plug[-\s]?in|phev|electric|ev)\b/i,
+      source: /\b(?:hybrid|plug[-\s]?in|phev|electric|ev)\b/i,
+    },
+    {
+      claim: /\b(?:diesel)\b/i,
+      source: /\b(?:diesel)\b/i,
+    },
+    {
+      claim: /\b(?:leather)\b/i,
+      source: /\b(?:leather)\b/i,
+    },
+    {
+      claim: /\b(?:sunroof|moonroof)\b/i,
+      source: /\b(?:sunroof|moonroof)\b/i,
+    },
+    {
+      claim: /\b(?:navigation|nav system)\b/i,
+      source: /\b(?:navigation|nav system)\b/i,
+    },
+    {
+      claim: /\b(?:backup camera|rearview camera|camera)\b/i,
+      source: /\b(?:backup camera|rearview camera|camera)\b/i,
+    },
+    {
+      claim: /\b(?:heated seats?|cooled seats?|ventilated seats?)\b/i,
+      source: /\b(?:heated seats?|cooled seats?|ventilated seats?)\b/i,
+    },
+    {
+      claim: /\b(?:comfort|comfortable)\b/i,
+      source: /\b(?:comfort|comfortable|heated seats?|cooled seats?|ventilated seats?|leather|power seats?)\b/i,
+    },
+    {
+      claim: /\b(?:easy to park|easy manoeuv|easy maneuver|manoeuvrability|maneuverability|nimble)\b/i,
+      source: /\b(?:easy to park|easy manoeuv|easy maneuver|manoeuvrability|maneuverability|nimble)\b/i,
+    },
+    {
+      claim: /\b(?:towing|tow package|trailer)\b/i,
+      source: /\b(?:towing|tow package|trailer)\b/i,
+    },
+  ];
+
+  if (unsupportedFeatureClaims.some(({ claim, source }) => claim.test(text) && !source.test(sourceText))) return true;
+  if (/\b(?:clean|like new|near new)\b/i.test(text) && !/\b(?:clean|like new|near new|near brand new)\b/i.test(sourceText)) return true;
+  if (/\b(?:excellent|very good|good)\s+condition\b/i.test(text) && !/\b(?:excellent|very good|good)\s+condition\b/i.test(sourceText)) return true;
+  if (/\breliable\b/i.test(text) && !/\breliable\b/i.test(sourceText)) return true;
+  return false;
+}
+
+function marketplaceGeneratedSourceText(input = null) {
+  const facts = {
+    vehicle: input?.vehicle || {},
+    inventoryCopy: input?.inventoryCopy || {},
+  };
+  return JSON.stringify(facts);
 }
 
 function featureHighlights(car) {
@@ -5077,6 +5801,8 @@ function featureHighlights(car) {
     .split(/[|,;]+/)
     .map((item) => normalizeSpace(item.replace(/[!.]+$/g, "")))
     .filter((item) => item && !/^\*+$/.test(item))
+    .filter((item) => !/^(?:just arrived|just traded|new arrival|fresh trade)$/i.test(item))
+    .filter((item) => !/\b(?:won't last long|priced to move|priced to sell|must see|don't miss out)\b/i.test(item))
     .filter((item) => {
       const key = item.toLowerCase();
       if (seen.has(key)) return false;
@@ -5102,12 +5828,18 @@ function inferBodyStyle(car) {
   const model = normalizeSearchToken(car.model);
   const title = normalizeSearchToken([car.title, car.trim, car.tagline, car.bodyStyle].filter(Boolean).join(" "));
   if (title.includes("hatch")) return "Hatchback";
-  if (["santa cruz"].includes(model)) return "Truck";
+  if (["santa cruz", "silverado", "sierra", "f-150", "f150", "ram 1500", "tacoma", "tundra", "ranger", "frontier", "colorado", "canyon"].includes(model)) return "Truck";
   if ([
     "seltos", "kona", "venue", "sportage", "telluride", "countryman", "envista",
     "kicks", "qashqai", "sorento", "tucson", "rogue", "cr-v", "crv",
+    "rav4", "rav 4", "highlander", "4runner", "cx-5", "cx5", "cx-30", "cx30",
+    "escape", "edge", "explorer", "equinox", "trailblazer", "trax", "terrain",
+    "compass", "cherokee", "grand cherokee", "wrangler", "forester", "outback",
+    "ascent", "crosstrek", "pilot", "hr-v", "hrv", "passport", "pathfinder",
+    "murano", "armada", "palisade", "santa fe", "santafe", "elantra n-line suv",
   ].includes(model)) return "SUV";
-  if (["corolla", "jetta", "forte", "elantra", "sentra", "civic"].includes(model)) return "Sedan";
+  if (["sedona", "carnival", "sienna", "odyssey", "pacifica", "grand caravan", "caravan"].includes(model)) return "Minivan";
+  if (["corolla", "jetta", "forte", "elantra", "sentra", "civic", "k4", "k5", "rio", "optima", "camry", "accord", "altima", "malibu", "versa"].includes(model)) return "Sedan";
   return null;
 }
 
@@ -5119,6 +5851,8 @@ function normalizeMarketplaceBodyStyle(value) {
     truck: "Truck",
     pickup: "Truck",
     sedan: "Sedan",
+    "cross-over": "SUV",
+    "cross over": "SUV",
     hatch: "Hatchback",
     hatchback: "Hatchback",
     suv: "SUV",
@@ -5265,7 +5999,18 @@ function parseInventoryResult(result) {
     interiorColor: cleanSpecValue(specs["Interior Colour"] || specs["Interior Color"]),
     odometer: cleanSpecValue(specs.Odometer),
     odometerValue: parseNullableInteger(specs.Odometer),
-    bodyStyle: cleanSpecValue(specs["Body Style"]),
+    bodyStyle: cleanSpecValue(
+      specs["Body Style"]
+      || specs["Body Type"]
+      || specs.Body
+      || specs["Vehicle Type"]
+      || vehicle.vehicleBodyStyleGroup?.name
+      || vehicle.bodyStyleGroup?.name
+      || vehicle.vehicleBodyStyle?.name
+      || vehicle.bodyStyle?.name
+      || vehicle.bodyStyle
+      || vehicle.bodyType,
+    ),
     fuelType: cleanSpecValue(specs.Fuel || specs["Fuel Type"]),
     transmission: cleanSpecValue(specs.Transmission),
     descriptionPreview: cleanText(extractClassText(html, "ouvsrDescription")).replace(/\s+More$/, ""),
@@ -6799,6 +7544,56 @@ async function markNotificationsRead(user, ids = null) {
   });
 }
 
+async function markMediaGalleryNotificationsReadForAlbums(user, albums = []) {
+  const username = normalizeAuthUsername(user?.username);
+  if (!username) throw httpError(401, "Authentication required.");
+  const albumIds = new Set();
+  const inventoryKeys = new Set();
+  for (const album of albums) {
+    const albumId = cleanAlbumId(album?.id);
+    if (albumId) albumIds.add(albumId);
+    const inventoryKey = mediaGalleryNotificationInventoryKeyForAlbum(album);
+    if (inventoryKey) inventoryKeys.add(inventoryKey);
+  }
+  if (!albumIds.size && !inventoryKeys.size) return 0;
+
+  const now = new Date().toISOString();
+  return updateNotificationLog((store) => {
+    let marked = 0;
+    for (const entry of store.notifications) {
+      if (entry.username !== username || entry.readAt) continue;
+      if (!notificationRecordTargetsMediaGallery(entry)) continue;
+      const entryAlbumId = cleanAlbumId(entry.albumId);
+      const entryInventoryKey = normalizeSpace(entry.inventoryKey);
+      if (
+        (entryAlbumId && albumIds.has(entryAlbumId))
+        || (entryInventoryKey && inventoryKeys.has(entryInventoryKey))
+      ) {
+        entry.readAt = now;
+        marked += 1;
+      }
+    }
+    return marked;
+  });
+}
+
+function notificationRecordTargetsMediaGallery(record) {
+  const tokens = [
+    record?.route,
+    record?.notificationType,
+    record?.type,
+    record?.kind,
+  ].map((value) => normalizeNotificationToken(value));
+  return tokens.includes("media_gallery")
+    || tokens.includes("media_upload")
+    || tokens.includes("upload");
+}
+
+function mediaGalleryNotificationInventoryKeyForAlbum(album) {
+  const vehicle = album?.vehicle || {};
+  return normalizeSpace(vehicle.inventoryKey || vehicle.manualInventoryId || vehicle.vin);
+}
+
 function pruneNotificationLog(store) {
   const counts = new Map();
   store.notifications = store.notifications.filter((entry) => {
@@ -6981,8 +7776,14 @@ function chatPushPayload(message) {
 
 function previewPushPayload(input = {}, user = {}) {
   const requestedKind = normalizeSpace(input.kind || input.type || "inventory_added").toLowerCase();
-  const kind = requestedKind === "upload" ? "upload" : requestedKind === "inventory_added" ? "inventory_added" : "";
-  if (!kind) throw httpError(400, "Choose inventory_added or upload preview.");
+  const kind = requestedKind === "upload"
+    ? "upload"
+    : requestedKind === "inventory_added"
+      ? "inventory_added"
+      : requestedKind === "price_change"
+        ? "price_change"
+        : "";
+  if (!kind) throw httpError(400, "Choose inventory_added, price_change, or upload preview.");
 
   const now = new Date().toISOString();
   const messageId = `preview-${kind}-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
@@ -7014,8 +7815,8 @@ function previewPushPayload(input = {}, user = {}) {
       route: "media_gallery",
       preview: true,
       messageId,
-      title: titleOverride || uploadPushTitle({ displayName: previewUploader, username: user?.username }),
-      body: bodyOverride || uploadPushBody(previewCar),
+      title: titleOverride || uploadPushTitle({ displayName: previewUploader, username: user?.username }, previewCar),
+      body: hasBodyOverride ? bodyOverride : uploadPushBody(previewCar),
       tag: `carpostclub-preview-${messageId}`,
       url: mediaGalleryDeepLink(previewCar),
       dealershipId: dealership?.id || "",
@@ -7029,6 +7830,37 @@ function previewPushPayload(input = {}, user = {}) {
   }
 
   const sampleVehicle = previewVehicleSample(dealershipLabel);
+  if (kind === "price_change") {
+    const previewCar = {
+      dealershipId: dealership?.id || "",
+      inventoryTypeId: defaultInventoryTypeId,
+      inventoryKey: "a10412a",
+      stockNumber: "a10412a",
+      year: "2020",
+      make: sampleVehicle.make,
+      model: sampleVehicle.model,
+      previousPrice: normalizeSpace(input.previousPrice) || "$34,990",
+      currentPrice: normalizeSpace(input.currentPrice || input.price) || "$32,990",
+    };
+    return {
+      kind,
+      type: "price_change",
+      notificationType: "price_change",
+      route: "notifications",
+      preview: true,
+      messageId,
+      title: titleOverride || inventoryPriceChangePushTitle(previewCar),
+      body: hasBodyOverride ? bodyOverride : inventoryPriceChangePushBody(previewCar),
+      tag: `carpostclub-preview-${messageId}`,
+      url: notificationsDeepLink({ notificationId: messageId }),
+      dealershipId: dealership?.id || "",
+      inventoryTypeId: previewCar.inventoryTypeId,
+      inventoryKey: previewCar.inventoryKey,
+      stockNumber: previewCar.stockNumber,
+      timestamp: now,
+    };
+  }
+
   const previewCar = {
     dealershipId: dealership?.id || "",
     inventoryTypeId: defaultInventoryTypeId,
@@ -7081,7 +7913,7 @@ function uploadAlbumEventPayload(car, result, user) {
     uploadId: `upload-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`,
     albumId: album?.id || "",
     mediaCount,
-    title: uploadPushTitle(uploadedBy),
+    title: uploadPushTitle(uploadedBy, car || album?.vehicle),
     body: uploadPushBody(car || album?.vehicle),
     tag: `carpostclub-upload-${carInventoryNotificationKey(car)}`,
     url: mediaGalleryDeepLink(car, { albumId: album?.id || "" }),
@@ -7105,8 +7937,8 @@ function uploadPushPayload(car, mediaCount, uploadEvent = null) {
     uploadId: uploadEvent?.uploadId || "",
     albumId: uploadEvent?.albumId || "",
     mediaCount,
-    title: uploadEvent?.title || uploadPushTitle(uploadedBy),
-    body: uploadEvent?.body || uploadPushBody(car),
+    title: uploadEvent?.title || uploadPushTitle(uploadedBy, car),
+    body: Object.hasOwn(uploadEvent || {}, "body") ? uploadEvent.body : uploadPushBody(car),
     tag: uploadEvent?.tag || `carpostclub-upload-${carInventoryNotificationKey(car)}`,
     url: uploadEvent?.url || mediaGalleryDeepLink(car),
     dealershipId: car?.dealership?.id || car?.dealershipId,
@@ -7118,14 +7950,14 @@ function uploadPushPayload(car, mediaCount, uploadEvent = null) {
   };
 }
 
-function uploadPushTitle(uploadedBy) {
+function uploadPushTitle(uploadedBy, car = null) {
   const name = normalizeDisplayName(uploadedBy?.displayName || uploadedBy?.username) || "Someone";
-  return `${name} uploaded a car`;
+  const label = vehicleUploadPushLabel(car);
+  return label ? `${name} uploaded ${label}` : `${name} uploaded a car`;
 }
 
-function uploadPushBody(car) {
-  const label = vehicleUploadPushLabel(car) || car?.stockNumber || car?.title || "a vehicle";
-  return `Photos added for ${label}.`;
+function uploadPushBody(_car) {
+  return "";
 }
 
 function vehicleUploadPushLabel(car) {
@@ -7149,6 +7981,22 @@ function inventoryAddedPushText(vehicle, dealershipLabel = "") {
   const model = displayVehicleWords(vehicle?.model);
   const details = [stock, year, vehicleMake, model].filter(Boolean).join(" ");
   return normalizeSpace(`new ${make} Inventory ${details}`);
+}
+
+function inventoryPriceChangePushTitle(vehicle) {
+  const stock = normalizeSpace(vehicle?.stockNumber || vehicle?.inventoryKey);
+  const year = normalizeSpace(vehicle?.year).replace(/[^0-9]/g, "");
+  const make = displayVehicleWord(vehicle?.make || "Vehicle");
+  const details = [stock, year, make].filter(Boolean).join(" ");
+  return normalizeSpace(`(PRICE CHANGE!!!) ${details}`);
+}
+
+function inventoryPriceChangePushBody(vehicle) {
+  const previousPrice = normalizeSpace(vehicle?.previousPrice);
+  const currentPrice = normalizeSpace(vehicle?.currentPrice || vehicle?.price);
+  if (previousPrice && currentPrice && previousPrice !== currentPrice) return `${previousPrice} -> ${currentPrice}`;
+  if (currentPrice) return `Now ${currentPrice}`;
+  return "";
 }
 
 function inventoryAddedPushTagVehicleKey(vehicle) {
@@ -7205,6 +8053,14 @@ function vehicleDeepLink(car, { openAlbum = false } = {}) {
 function mediaGalleryDeepLink(car, { openAlbum = false, albumId = "" } = {}) {
   const query = vehicleRouteParams(car, { openAlbum, albumId }).toString();
   return query ? `/gallery?${query}` : "/gallery";
+}
+
+function notificationsDeepLink({ notificationId = "" } = {}) {
+  const params = new URLSearchParams();
+  params.set("openNotifications", "1");
+  const cleanNotificationId = cleanPushNotificationId(notificationId);
+  if (cleanNotificationId) params.set("notificationId", cleanNotificationId);
+  return `/?${params.toString()}`;
 }
 
 function vehicleRouteParams(car, { openAlbum = false, albumId = "" } = {}) {
@@ -8959,7 +9815,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260610-gallery-notification-v61">
+  <link rel="stylesheet" href="/styles.css?v=20260611-availability-filter-v66">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">
@@ -9031,6 +9887,13 @@ function parseBooleanEnv(name, fallback) {
   const value = process.env[name];
   if (value === undefined || value === "") return fallback;
   return /^(1|true|yes|on)$/i.test(value);
+}
+
+function parseBooleanValue(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  return /^(1|true|yes|on)$/i.test(String(value).trim());
 }
 
 function positiveInteger(value, fallback) {

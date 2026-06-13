@@ -12,6 +12,7 @@
     "backup:state": "node scripts/backup_state.mjs",
     "restore:check": "node scripts/restore_state_check.mjs",
     "monitor:production": "node scripts/production_monitor.mjs",
+    "backfill:marketplace-descriptions": "node scripts/backfill_marketplace_descriptions.mjs",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "playwright test"
   },

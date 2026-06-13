@@ -1,6 +1,6 @@
 const APP_ICON = "/icons/carpostclub-icon-192.png";
 const APP_BADGE = "/icons/carpostclub-apple-touch-icon.png";
-const CACHE_VERSION = "carpostclub-pwa-v61";
+const CACHE_VERSION = "carpostclub-pwa-v66";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/offline.html",
@@ -156,6 +156,9 @@ function notificationTargetPath(payload = {}) {
   }
 
   const route = notificationToken(payload.route);
+  if (route === "notifications" || route === "notification_panel") {
+    return notificationsPath(payload, explicitPath);
+  }
   if (route === "media_gallery" || route === "gallery") {
     return mediaGalleryPath(payload, explicitPath);
   }
@@ -166,6 +169,9 @@ function notificationTargetPath(payload = {}) {
   const type = notificationToken(payload.notificationType || payload.type || payload.kind);
   if (type === "upload" || type === "media_upload" || type === "new_media_upload" || type === "inventory_removed") {
     return mediaGalleryPath(payload, explicitPath);
+  }
+  if (type === "price_change") {
+    return notificationsPath(payload, explicitPath);
   }
   if (type === "inventory_added" || type === "new_inventory") {
     return intakePath(payload, explicitPath);
@@ -181,6 +187,18 @@ function mediaGalleryPath(payload = {}, fallbackPath = "") {
   params.delete("openAlbum");
   const query = params.toString();
   return query ? `/gallery?${query}` : "/gallery";
+}
+
+function notificationsPath(payload = {}, fallbackPath = "") {
+  const fallback = cleanNavigationPath(fallbackPath);
+  const params = notificationParams(payload, fallback);
+  params.set("openNotifications", "1");
+  const notificationId = payload.notificationId || payload.messageId;
+  if (notificationId && !params.has("notificationId")) {
+    params.set("notificationId", String(notificationId).slice(0, 120));
+  }
+  const query = params.toString();
+  return query ? `/?${query}` : "/?openNotifications=1";
 }
 
 function intakePath(payload = {}, fallbackPath = "") {

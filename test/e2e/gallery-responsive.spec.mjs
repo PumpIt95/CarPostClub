@@ -185,6 +185,156 @@ test("gallery unread UI fits desktop, laptop, tablet, and mobile screens", async
   }
 });
 
+test("header unread badges stay visible across gallery navigation", async ({ page }) => {
+  const harness = await startTestServer();
+  const firstLiveCar = INVENTORY_CARS[0];
+  const secondLiveCar = INVENTORY_CARS[1];
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const speaker = await createApprovedAccount(harness, {
+      username: "badge.chat.sender",
+      displayName: "Badge Chat Sender",
+      password: "badge-chat-sender-123"
+    });
+    const firstUpload = await uploadPhotos(harness, {
+      dealershipId: firstLiveCar.dealershipId,
+      inventoryTypeId: firstLiveCar.inventoryTypeId,
+      vin: firstLiveCar.vin,
+      photos: [
+        {
+          filename: "header-badge-first-front.png",
+          type: "image/png",
+          body: pngBytes(0)
+        }
+      ]
+    });
+    expect(firstUpload.status).toBe(201);
+    const secondUpload = await uploadPhotos(harness, {
+      dealershipId: secondLiveCar.dealershipId,
+      inventoryTypeId: secondLiveCar.inventoryTypeId,
+      vin: secondLiveCar.vin,
+      photos: [
+        {
+          filename: "header-badge-second-front.png",
+          type: "image/png",
+          body: pngBytes(1)
+        }
+      ]
+    });
+    expect(secondUpload.status).toBe(201);
+    await postChatMessage(harness, speaker.cookie, "Unread while browsing gallery");
+
+    await loginWithPage(page, harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
+    await expect(page.locator("#pageTitle")).toHaveText("Vehicle media intake");
+    await expect(page.locator("#galleryUnread")).toHaveText("2");
+    await expect(page.locator("#galleryUnread")).toBeVisible();
+    await expect(page.locator("#galleryPageLink")).toHaveAttribute("aria-label", "Open media gallery, 2 unread");
+
+    await page.locator("#galleryPageLink").click();
+    await expect(page).toHaveURL(`${harness.baseUrl}/gallery`);
+    await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
+    await expect(page.locator("#galleryUnread")).toHaveText("2");
+    const kiaFolder = page.locator(".gallery-folder-card.has-unread", { hasText: "O'Regan's Kia Halifax" });
+    await expect(kiaFolder).toContainText("2 new");
+    await expect(kiaFolder.locator(".gallery-unread-badge")).toHaveText("2");
+    await expect(page.locator("#chatUnread")).toHaveText("1");
+    await expect(page.locator("#chatUnread")).toBeVisible();
+    await expect(page.locator("#chatToggle")).toHaveAttribute("aria-label", "Open chat, 1 unread");
+
+    await kiaFolder.click();
+    await expect(page.locator(".album-card.is-unread")).toHaveCount(2);
+    const firstSeenResponse = page.waitForResponse((response) => /\/api\/albums\/[^/]+\/seen$/.test(new URL(response.url()).pathname));
+    await page.locator(".album-card.is-unread .album-summary-button").first().click();
+    await firstSeenResponse;
+    await expect(page.locator("#galleryUnread")).toHaveText("1");
+    const secondSeenResponse = page.waitForResponse((response) => /\/api\/albums\/[^/]+\/seen$/.test(new URL(response.url()).pathname));
+    await page.locator(".album-card.is-unread .album-summary-button").first().click();
+    await secondSeenResponse;
+    await expect(page.locator(".album-card.is-unread")).toHaveCount(0);
+
+    await page.goto(`${harness.baseUrl}/`);
+    await expect(page.locator("#galleryUnread")).toBeHidden();
+    await expect(page.locator("#chatUnread")).toHaveText("1");
+    await expect(page.locator("#chatUnread")).toBeVisible();
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("brand-new users see media gallery notification badges until the post is opened", async ({ page }) => {
+  const harness = await startTestServer();
+  const liveCar = INVENTORY_CARS[1];
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const viewer = await createApprovedAccount(harness, {
+      username: "brand.new.gallery.badge",
+      displayName: "Brand New Gallery Badge",
+      password: "brand-new-gallery-badge-123"
+    });
+    const subscription = await postJsonWithCookie(harness, viewer.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("brand-new-gallery-badge")
+    });
+    expect(subscription.status).toBe(201);
+
+    const upload = await uploadPhotos(harness, {
+      dealershipId: liveCar.dealershipId,
+      inventoryTypeId: liveCar.inventoryTypeId,
+      vin: liveCar.vin,
+      photos: [
+        {
+          filename: "brand-new-gallery-badge-front.png",
+          type: "image/png",
+          body: pngBytes(1)
+        }
+      ]
+    });
+    expect(upload.status).toBe(201);
+
+    const notificationSource = await waitForNotificationCount(harness, viewer.cookie, 1);
+    expect(notificationSource.notifications[0].route).toBe("media_gallery");
+    expect(notificationSource.notifications[0].notificationType).toBe("media_upload");
+    expect(notificationSource.notifications[0].albumId).toBe(upload.body.album.id);
+
+    await loginWithPage(page, harness.baseUrl, viewer.username, viewer.password);
+    await expect(page.locator("#pageTitle")).toHaveText("Vehicle media intake");
+    await expect(page.locator("#galleryUnread")).toHaveText("1");
+    await expect(page.locator("#galleryUnread")).toBeVisible();
+
+    await page.locator("#galleryPageLink").click();
+    await expect(page).toHaveURL(`${harness.baseUrl}/gallery`);
+    await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
+    await expect(page.locator("#galleryUnread")).toHaveText("1");
+    await expect(page.locator("#galleryUnread")).toBeVisible();
+
+    await page.locator("#chatToggle").click();
+    await expect(page.locator("#chatPanel")).toHaveClass(/is-open/);
+    await expect(page.locator("#galleryUnread")).toHaveText("1");
+    await page.locator("#chatClose").click();
+    await expect(page.locator("#chatPanel")).not.toHaveClass(/is-open/);
+    await expect(page.locator("#galleryUnread")).toHaveText("1");
+
+    await page.locator("#uploadPageLink").click();
+    await expect(page).toHaveURL(`${harness.baseUrl}/`);
+    await expect(page.locator("#pageTitle")).toHaveText("Vehicle media intake");
+    await expect(page.locator("#galleryUnread")).toHaveText("1");
+    await expect(page.locator("#galleryUnread")).toBeVisible();
+
+    await page.locator("#galleryPageLink").click();
+    await expect(page).toHaveURL(`${harness.baseUrl}/gallery`);
+    await page.locator(".gallery-folder-card.has-unread", { hasText: "O'Regan's Kia Halifax" }).click();
+    const seenResponse = page.waitForResponse((response) => /\/api\/albums\/[^/]+\/seen$/.test(new URL(response.url()).pathname));
+    await page.locator(".album-card.is-unread .album-summary-button").click();
+    await seenResponse;
+    await expect(page.locator(".album-card.is-unread")).toHaveCount(0);
+    await expect(page.locator("#galleryUnread")).toBeHidden();
+
+    const afterOpenNotifications = await getJsonWithCookie(harness, viewer.cookie, "/api/notifications");
+    expect(afterOpenNotifications.unreadCount).toBe(0);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("admin gallery folder overview fits four dealerships in an iPhone 16 first viewport", async ({ page }) => {
   const harness = await startTestServer();
   try {
@@ -720,6 +870,65 @@ test("live upload appears while a dealership gallery folder is already open", as
   }
 });
 
+test("dealership gallery defaults to available uploads and filters sold packages", async ({ page }) => {
+  const harness = await startTestServer();
+  const availableCar = INVENTORY_CARS[0];
+  const soldCar = INVENTORY_CARS[1];
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    await uploadPhotos(harness, {
+      dealershipId: availableCar.dealershipId,
+      inventoryTypeId: availableCar.inventoryTypeId,
+      vin: availableCar.vin,
+      photos: [
+        {
+          filename: "available-package-front.png",
+          type: "image/png",
+          body: pngBytes(0)
+        }
+      ]
+    });
+    await uploadPhotos(harness, {
+      dealershipId: soldCar.dealershipId,
+      inventoryTypeId: soldCar.inventoryTypeId,
+      vin: soldCar.vin,
+      photos: [
+        {
+          filename: "sold-package-front.png",
+          type: "image/png",
+          body: pngBytes(1)
+        }
+      ]
+    });
+    await writeInventoryMock(harness, [availableCar, INVENTORY_CARS[2]]);
+    await sleep(20);
+
+    await loginWithPage(page, harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
+    await page.goto(`${harness.baseUrl}/gallery`);
+    await expect(page.locator("#pageTitle")).toHaveText("Media gallery");
+    await page.locator(".gallery-folder-card", { hasText: "O'Regan's Kia Halifax" }).click();
+
+    await expect(page.getByRole("button", { name: "Available 1" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Sold 1" })).toBeVisible();
+    await expect(page.locator(".album-card", { hasText: availableCar.stockNumber })).toBeVisible();
+    await expect(page.locator(".album-card", { hasText: soldCar.stockNumber })).toHaveCount(0);
+    await expect(page.locator(".inventory-status-badge.is-available")).toHaveText("Available");
+
+    await page.getByRole("button", { name: "Sold 1" }).click();
+    await expect(page.getByRole("button", { name: "Sold 1" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator(".album-card", { hasText: soldCar.stockNumber })).toBeVisible();
+    await expect(page.locator(".album-card", { hasText: availableCar.stockNumber })).toHaveCount(0);
+    await expect(page.locator(".inventory-status-badge.is-sold")).toHaveText("Sold");
+
+    await page.getByRole("button", { name: "All 2" }).click();
+    await expect(page.locator(".album-card", { hasText: availableCar.stockNumber })).toBeVisible();
+    await expect(page.locator(".album-card", { hasText: soldCar.stockNumber })).toBeVisible();
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("uploader sees their own live upload as unread until opening the album", async ({ page }) => {
   const harness = await startTestServer();
   const liveCar = INVENTORY_CARS[1];
@@ -1037,6 +1246,7 @@ async function startTestServer() {
       UPLOAD_ROOT: uploadRoot,
       TMP_ROOT: tmpRoot,
       OREGANS_INVENTORY_MOCK_FILE: inventoryMockFile,
+      OREGANS_INVENTORY_CACHE_TTL_MS: "1",
       CARPOSTCLUB_AUTH_USERNAME: TEST_USERNAME,
       CARPOSTCLUB_AUTH_PASSWORD: TEST_PASSWORD,
       CARPOSTCLUB_AUTH_PASSWORD_HASH: "",
@@ -1172,6 +1382,67 @@ async function uploadPhotosWithCookie(harness, cookie, { dealershipId, inventory
   return {
     status: response.status,
     body: await response.json()
+  };
+}
+
+async function postChatMessage(harness, cookie, text) {
+  const response = await fetch(`${harness.baseUrl}/api/chat/messages`, {
+    method: "POST",
+    headers: {
+      Cookie: cookie,
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify({ text })
+  });
+  const body = await response.json();
+  expect(response.status).toBe(201);
+  return body;
+}
+
+async function getJsonWithCookie(harness, cookie, pathname) {
+  const response = await fetch(`${harness.baseUrl}${pathname}`, {
+    headers: { Cookie: cookie, Accept: "application/json" }
+  });
+  const body = await response.json();
+  expect(response.status, JSON.stringify(body)).toBe(200);
+  return body;
+}
+
+async function waitForNotificationCount(harness, cookie, count) {
+  const deadline = Date.now() + 3000;
+  let latest = null;
+  while (Date.now() < deadline) {
+    latest = await getJsonWithCookie(harness, cookie, "/api/notifications");
+    if (latest.unreadCount === count && latest.notifications.length === count) return latest;
+    await sleep(40);
+  }
+  throw new Error(`Timed out waiting for ${count} notifications; latest=${JSON.stringify(latest)}`);
+}
+
+async function postJsonWithCookie(harness, cookie, pathname, body) {
+  const response = await fetch(`${harness.baseUrl}${pathname}`, {
+    method: "POST",
+    headers: {
+      Cookie: cookie,
+      Accept: "application/json",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  return {
+    status: response.status,
+    body: await response.json()
+  };
+}
+
+function pushSubscriptionFor(id) {
+  return {
+    endpoint: `https://push.example.test/send/${id}`,
+    keys: {
+      p256dh: "B".repeat(88),
+      auth: "A".repeat(22)
+    }
   };
 }
 
