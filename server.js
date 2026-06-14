@@ -1432,7 +1432,7 @@ function carFromAlbum(album) {
     trim: normalizeSpace(vehicle.trim),
     tagline: "",
     price: normalizeSpace(vehicle.price),
-    priceValue: parseCurrency(vehicle.price),
+    priceValue: nullableFiniteNumber(vehicle.priceValue) ?? parseCurrency(vehicle.price),
     ownerLocation: normalizeSpace(vehicle.dealershipName || dealership.name),
     detailUrl: sanitizedOregansDetailUrl(vehicle.detailUrl || album?.sourceUrl, source),
     exteriorColor: normalizeSpace(vehicle.exteriorColor),
@@ -2695,6 +2695,7 @@ async function writeCarAlbumMetadata(albumId, car, user = null) {
       model: car.model,
       trim: car.trim,
       price: car.price,
+      priceValue: car.priceValue ?? parseCurrency(car.price),
       odometer: car.odometer,
       exteriorColor: car.exteriorColor,
       interiorColor: car.interiorColor,
@@ -3551,6 +3552,9 @@ async function backfillMarketplaceDescriptionForAlbum(album, user, options = {})
   if (car.source === "manual" && !options.includeManual) return marketplaceBackfillSkipped(base, "manual_inventory");
   if (sourceStatus === "source_removed" && !options.includeSourceRemoved) return marketplaceBackfillSkipped(base, "source_removed");
   if (!shouldGenerateMarketplaceDescription(fields)) return marketplaceBackfillSkipped(base, "missing_required_facts");
+  if (!marketplaceCopyStoreAllowsAutoRegeneration(existingStore) && !options.force) {
+    return marketplaceBackfillSkipped(base, "protected_description_store");
+  }
   if (!options.force && isMarketplaceUploadPoolCurrent(existingStore, inputHash)) {
     return marketplaceBackfillSkipped(base, "already_current");
   }
@@ -3732,6 +3736,9 @@ async function getMarketplaceDescriptionForUser({ car, fields, user, album, forc
   const inputHash = marketplaceDescriptionInputHash(car, fields);
   let store = await readMarketplaceCopyStore(album.id);
   if (!isMarketplaceUploadPoolCurrent(store, inputHash)) {
+    if (!marketplaceCopyStoreAllowsAutoRegeneration(store) && !force) {
+      return { ...fallback, source: "protected_stale", inputHash };
+    }
     await prepareMarketplaceDescriptionsForUpload(car, user, {
       album,
       uploadedMediaCount: album.mediaCount || 0,
@@ -3863,7 +3870,15 @@ function marketplaceDescriptionReasoningOptions(model) {
 }
 
 function marketplaceDescriptionInputHash(car, fields) {
-  return hashJson(buildMarketplaceDescriptionFactsInput({ car, fields }));
+  const priceCad = nullableFiniteNumber(fields?.price ?? parseCurrency(car?.price));
+  return hashJson({
+    ...buildMarketplaceDescriptionFactsInput({ car, fields }),
+    priceDisclosure: {
+      priceCad,
+      feeCad: marketplacePriceDisclosureFee,
+      hstPercent: marketplacePriceDisclosureHst,
+    },
+  });
 }
 
 function buildMarketplaceDescriptionPoolInput({ car, fields, users = [], count = marketplaceDescriptionVariantCount }) {
@@ -4134,6 +4149,24 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
     successfulScopes,
     errors,
   });
+  const albumPriceReconciliationPromise = writeResult.priceChanges.length
+    ? reconcileAlbumPricesForInventoryPriceChanges(writeResult.priceChanges, finishedAt).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`O'Regan's inventory album price reconciliation failed: ${message}`);
+      return {
+        status: "failed",
+        error: message,
+        priceChangeCount: writeResult.priceChanges.length,
+        matchedAlbumCount: 0,
+        updatedAlbumCount: 0,
+        alreadyCurrentAlbumCount: 0,
+        regeneratedDescriptionCount: 0,
+        staleDescriptionCount: 0,
+        skippedCount: 0,
+        records: [],
+      };
+    })
+    : null;
   const pushDeliveryPromise = writeResult.newlyObserved.length
     ? queueInventoryAddedPushNotifications(writeResult.newlyObserved, finishedAt)
     : null;
@@ -4145,6 +4178,9 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
     : null;
   const priceChangePushDelivery = priceChangePushDeliveryPromise && pushAwaitDelivery
     ? await priceChangePushDeliveryPromise
+    : null;
+  const albumPriceReconciliation = albumPriceReconciliationPromise
+    ? await albumPriceReconciliationPromise
     : null;
 
   return {
@@ -4164,6 +4200,7 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
       count: writeResult.priceChanges.length,
       vehicles: writeResult.priceChanges.slice(0, 20),
     },
+    ...(albumPriceReconciliation ? { albumPriceReconciliation } : {}),
     ...(pushDelivery ? { pushDelivery } : {}),
     ...(priceChangePushDelivery ? { priceChangePushDelivery } : {}),
   };
@@ -4493,6 +4530,227 @@ function nullableFiniteNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+async function reconcileAlbumPricesForInventoryPriceChanges(priceChanges = [], observedAt = new Date().toISOString()) {
+  const changes = Array.isArray(priceChanges) ? priceChanges.filter(Boolean) : [];
+  const summary = {
+    status: "completed",
+    priceChangeCount: changes.length,
+    matchedAlbumCount: 0,
+    updatedAlbumCount: 0,
+    alreadyCurrentAlbumCount: 0,
+    regeneratedDescriptionCount: 0,
+    staleDescriptionCount: 0,
+    skippedCount: 0,
+    records: [],
+  };
+  if (!changes.length) return summary;
+
+  const albums = await listAlbums();
+  for (const change of changes) {
+    const matches = matchingAlbumsForInventoryPriceChange(albums, change);
+    if (!matches.length) {
+      summary.skippedCount += 1;
+      summary.records.push(albumPriceReconciliationRecord(change, {
+        action: "skipped",
+        reason: "no_matching_media_gallery_album",
+      }));
+      continue;
+    }
+
+    for (const album of matches) {
+      summary.matchedAlbumCount += 1;
+      const update = await updateAlbumVehiclePriceFromInventoryPriceChange(album, change, observedAt);
+      if (!update.updated) {
+        if (update.reason === "already_current") summary.alreadyCurrentAlbumCount += 1;
+        else summary.skippedCount += 1;
+        summary.records.push(albumPriceReconciliationRecord(change, {
+          albumId: album.id,
+          action: "skipped",
+          reason: update.reason,
+        }));
+        continue;
+      }
+
+      summary.updatedAlbumCount += 1;
+      const description = await reconcileMarketplaceDescriptionAfterAlbumPriceChange(update.album, change, observedAt);
+      if (description.action === "regenerated") summary.regeneratedDescriptionCount += 1;
+      if (description.action === "marked_stale") summary.staleDescriptionCount += 1;
+      summary.records.push(albumPriceReconciliationRecord(change, {
+        albumId: update.album.id,
+        action: "updated",
+        reason: "price_changed",
+        previousAlbumPrice: update.previousAlbumPrice,
+        currentPrice: update.currentPrice,
+        descriptionAction: description.action,
+      }));
+    }
+  }
+
+  summary.records = summary.records.slice(0, 20);
+  return summary;
+}
+
+function matchingAlbumsForInventoryPriceChange(albums = [], change = {}) {
+  const scopedAlbums = albums.filter((album) => albumPriceChangeScopeMatches(album, change));
+  const vinMatches = scopedAlbums.filter((album) => albumMatchesPriceChangeVin(album, change));
+  if (vinMatches.length) return vinMatches;
+  return scopedAlbums.filter((album) => albumMatchesPriceChangeStock(album, change));
+}
+
+function albumPriceChangeScopeMatches(album = {}, change = {}) {
+  const vehicle = album?.vehicle || {};
+  const source = normalizeSpace(vehicle.source || "oregans").toLowerCase();
+  if (source === "manual") return false;
+
+  const dealershipId = normalizeSpace(vehicle.dealershipId || album?.dealership?.id);
+  const inventoryTypeId = normalizeSpace(vehicle.inventoryTypeId || album?.inventoryTypeId);
+  return Boolean(
+    dealershipId
+    && inventoryTypeId
+    && dealershipId === normalizeSpace(change.dealershipId)
+    && inventoryTypeId === normalizeSpace(change.inventoryTypeId),
+  );
+}
+
+function albumMatchesPriceChangeVin(album = {}, change = {}) {
+  const changeVin = inventoryIdentityToken(change.vin);
+  if (!changeVin) return false;
+  const vehicle = album?.vehicle || {};
+  return [vehicle.vin, vehicle.inventoryKey]
+    .map(inventoryIdentityToken)
+    .some((token) => token && token === changeVin);
+}
+
+function albumMatchesPriceChangeStock(album = {}, change = {}) {
+  const changeStock = inventoryIdentityToken(change.stockNumber);
+  if (!changeStock) return false;
+  const vehicle = album?.vehicle || {};
+  const albumVin = vehicleVinIdentityToken(vehicle);
+  const changeVin = inventoryIdentityToken(change.vin);
+  if (albumVin && changeVin && albumVin !== changeVin) return false;
+  return inventoryIdentityToken(vehicle.stockNumber) === changeStock;
+}
+
+function inventoryIdentityToken(value) {
+  return normalizeSpace(value).toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function vehicleVinIdentityToken(vehicle = {}) {
+  const vin = inventoryIdentityToken(vehicle.vin);
+  if (vin) return vin;
+  const inventoryKey = inventoryIdentityToken(vehicle.inventoryKey);
+  return inventoryKey.length >= 11 ? inventoryKey : "";
+}
+
+async function updateAlbumVehiclePriceFromInventoryPriceChange(album, change, observedAt) {
+  const albumId = cleanAlbumId(album?.id);
+  const currentPrice = normalizeSpace(change.currentPrice || change.price);
+  if (!currentPrice) return { updated: false, reason: "missing_current_price" };
+
+  const metadata = await readAlbumMetadata(albumId);
+  if (!albumPriceChangeScopeMatches(metadata, change)) return { updated: false, reason: "album_identity_mismatch" };
+  if (!albumMatchesPriceChangeVin(metadata, change) && !albumMatchesPriceChangeStock(metadata, change)) {
+    return { updated: false, reason: "album_identity_mismatch" };
+  }
+
+  const vehicle = metadata.vehicle && typeof metadata.vehicle === "object" ? { ...metadata.vehicle } : {};
+  const previousAlbumPrice = normalizeSpace(vehicle.price);
+  const previousAlbumPriceValue = nullableFiniteNumber(vehicle.priceValue ?? parseCurrency(previousAlbumPrice));
+  const currentPriceValue = nullableFiniteNumber(change.currentPriceValue ?? parseCurrency(currentPrice));
+  const priceTextChanged = previousAlbumPrice !== currentPrice;
+  const priceValueChanged = currentPriceValue !== null
+    && previousAlbumPriceValue !== null
+    && currentPriceValue !== previousAlbumPriceValue;
+  if (!priceTextChanged && !priceValueChanged) return { updated: false, reason: "already_current" };
+
+  vehicle.price = currentPrice;
+  if (currentPriceValue !== null) vehicle.priceValue = currentPriceValue;
+  else delete vehicle.priceValue;
+  vehicle.previousPrice = previousAlbumPrice || normalizeSpace(change.previousPrice);
+  const previousPriceValue = previousAlbumPriceValue ?? nullableFiniteNumber(change.previousPriceValue);
+  if (previousPriceValue !== null) vehicle.previousPriceValue = previousPriceValue;
+  vehicle.priceUpdatedAt = observedAt;
+  vehicle.priceSource = "oregans_inventory_snapshot";
+
+  metadata.vehicle = vehicle;
+  metadata.priceReconciledAt = observedAt;
+  metadata.priceReconciledBy = "oregans_inventory_snapshot";
+  metadata.priceReconciliation = {
+    source: "oregans_inventory_snapshot",
+    vehicleKey: normalizeSpace(change.vehicleKey),
+    observedAt,
+    previousPrice: vehicle.previousPrice,
+    previousPriceValue: previousPriceValue ?? null,
+    currentPrice,
+    currentPriceValue: currentPriceValue ?? null,
+  };
+
+  await writeJson(path.join(albumPath(albumId), ".album.json"), metadata);
+  return {
+    updated: true,
+    album: await readAlbum(albumId),
+    previousAlbumPrice,
+    currentPrice,
+  };
+}
+
+async function reconcileMarketplaceDescriptionAfterAlbumPriceChange(album, change, observedAt) {
+  if (!album?.id || !album.mediaCount) return { action: "skipped", reason: "no_media" };
+  const car = carFromAlbum(album);
+  const fields = buildMarketplaceFields(car);
+  if (!shouldGenerateMarketplaceDescription(fields)) return { action: "skipped", reason: "missing_required_facts" };
+
+  const inputHash = marketplaceDescriptionInputHash(car, fields);
+  const store = await readMarketplaceCopyStore(album.id);
+  if (isMarketplaceUploadPoolCurrent(store, inputHash)) return { action: "already_current", inputHash };
+
+  if (!marketplaceCopyStoreAllowsAutoRegeneration(store)) {
+    await markMarketplaceCopyStoreStaleForPriceChange(album.id, store, change, observedAt, inputHash);
+    return { action: "marked_stale", inputHash };
+  }
+
+  const generation = await prepareMarketplaceDescriptionsForUpload(car, bootstrapAdminUser(), {
+    album,
+    uploadedMediaCount: album.mediaCount || 0,
+    force: true,
+    reason: "inventory_price_change",
+  });
+  return { action: "regenerated", inputHash, source: generation.source };
+}
+
+function marketplaceCopyStoreAllowsAutoRegeneration(store) {
+  if (!store || typeof store !== "object") return true;
+  if (store.manual === true || store.protected === true) return false;
+  const mode = normalizeSpace(store.mode).toLowerCase();
+  if (!mode) return true;
+  return mode === "upload_pool";
+}
+
+async function markMarketplaceCopyStoreStaleForPriceChange(albumId, store, change, observedAt, inputHash) {
+  await writeMarketplaceCopyStore(albumId, {
+    ...store,
+    stale: {
+      reason: "inventory_price_change",
+      detectedAt: observedAt,
+      previousPrice: normalizeSpace(change.previousPrice),
+      currentPrice: normalizeSpace(change.currentPrice || change.price),
+      inputHash,
+    },
+  });
+}
+
+function albumPriceReconciliationRecord(change = {}, overrides = {}) {
+  return {
+    stockNumber: normalizeSpace(change.stockNumber),
+    vin: normalizeSpace(change.vin),
+    dealershipId: normalizeSpace(change.dealershipId),
+    inventoryTypeId: normalizeSpace(change.inventoryTypeId),
+    previousPrice: normalizeSpace(change.previousPrice),
+    currentPrice: normalizeSpace(change.currentPrice || change.price),
+    ...overrides,
+  };
 }
 
 async function queueInventoryAddedPushNotifications(vehicles, timestamp) {

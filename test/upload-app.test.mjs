@@ -1863,6 +1863,19 @@ test("O'Regan's inventory price changes send all-user push alerts", async () => 
   try {
     harness.cookie = await login(harness.baseUrl);
 
+    const uploaded = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [{ filename: "price-change-front.jpg", type: "image/jpeg", body: jpegBytes("price-change-front") }],
+    });
+    assert.equal(uploaded.status, 201);
+    assert.equal(uploaded.body.album.id, TEST_ALBUM_ID);
+    assert.equal(uploaded.body.album.vehicle.price, "$30,990");
+    assertSingleMarketplaceDescriptionPrice(uploaded.body.marketplaceDraft.description);
+    const initialMarketplaceCopy = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
+    assert.equal(initialMarketplaceCopy.mode, "upload_pool");
+
     const firstRun = await postJson(harness, "/api/inventory/snapshots/run", {});
     assert.equal(firstRun.status, 201);
     assert.equal(firstRun.body.snapshot.newInventory.count, 0);
@@ -1898,11 +1911,40 @@ test("O'Regan's inventory price changes send all-user push alerts", async () => 
     assert.equal(secondRun.body.snapshot.priceChanges.vehicles[0].stockNumber, TEST_CAR.stockNumber);
     assert.equal(secondRun.body.snapshot.priceChanges.vehicles[0].previousPrice, "$30,990");
     assert.equal(secondRun.body.snapshot.priceChanges.vehicles[0].currentPrice, "$29,990");
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.status, "completed");
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.priceChangeCount, 1);
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.matchedAlbumCount, 1);
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.updatedAlbumCount, 1);
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.regeneratedDescriptionCount, 1);
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.records[0].albumId, TEST_ALBUM_ID);
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.records[0].descriptionAction, "regenerated");
     assert.equal(secondRun.body.snapshot.priceChangePushDelivery.requested, 2);
     assert.equal(secondRun.body.snapshot.priceChangePushDelivery.skipped, 2);
     assert.equal(secondRun.body.snapshot.priceChangePushDelivery.logged, 2);
     assert.equal(secondRun.body.snapshot.priceChangePushDelivery.vehicles[0].stockNumber, TEST_CAR.stockNumber);
     assert.equal(secondRun.body.snapshot.priceChangePushDelivery.vehicles[0].logged, 2);
+
+    const updatedAlbumMetadata = JSON.parse(
+      await fs.readFile(path.join(harness.uploadRoot, TEST_ALBUM_ID, ".album.json"), "utf8"),
+    );
+    assert.equal(updatedAlbumMetadata.vehicle.price, "$29,990");
+    assert.equal(updatedAlbumMetadata.vehicle.priceValue, 29990);
+    assert.equal(updatedAlbumMetadata.vehicle.previousPrice, "$30,990");
+    assert.equal(updatedAlbumMetadata.vehicle.previousPriceValue, 30990);
+    assert.equal(updatedAlbumMetadata.vehicle.priceSource, "oregans_inventory_snapshot");
+    assert.equal(updatedAlbumMetadata.priceReconciliation.previousPrice, "$30,990");
+    assert.equal(updatedAlbumMetadata.priceReconciliation.currentPrice, "$29,990");
+
+    const refreshedMarketplaceCopy = await readMarketplaceDescriptionDbStore(harness, TEST_ALBUM_ID);
+    assert.notEqual(refreshedMarketplaceCopy.inputHash, initialMarketplaceCopy.inputHash);
+    assert.ok(refreshedMarketplaceCopy.history.some((entry) => entry.reason === "inventory_price_change"));
+
+    const albumDraft = await getJson(harness, `/api/albums/${TEST_ALBUM_ID}/marketplace-draft`);
+    assert.equal(albumDraft.album.vehicle.price, "$29,990");
+    assert.equal(albumDraft.draft.fields.price, 29990);
+    assert.equal(albumDraft.draft.descriptionInputHash, refreshedMarketplaceCopy.inputHash);
+    assertSingleMarketplaceDescriptionPrice(albumDraft.draft.description, "$29,990");
+    assert.doesNotMatch(albumDraft.draft.description, /\$30,990/);
 
     const notifications = await getJson(harness, "/api/notifications");
     assert.equal(notifications.unreadCount, 1);
