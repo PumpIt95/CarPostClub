@@ -1202,7 +1202,7 @@ async function handleUploadLiveEvent(payload) {
   if (state.handledUploadEventIds.has(key)) return;
   rememberUploadLiveEvent(key);
 
-  showStatus(event.body || "Media uploaded.");
+  showStatus(event.liveStatusBody || event.body || "Media uploaded.");
   await refreshAlbumsAfterLiveUpload(event);
 }
 
@@ -1216,6 +1216,7 @@ function normalizeUploadLiveEvent(payload) {
     albumId: String(payload.albumId || "").trim(),
     mediaCount,
     body: String(payload.body || "").trim(),
+    liveStatusBody: String(payload.liveStatusBody || payload.statusBody || "").trim(),
     uploadedAt: String(payload.uploadedAt || payload.timestamp || "").trim(),
   };
 }
@@ -1227,6 +1228,7 @@ function uploadLiveEventKey(event) {
     event.uploadedAt,
     event.mediaCount,
     event.body,
+    event.liveStatusBody,
   ].join(":");
 }
 

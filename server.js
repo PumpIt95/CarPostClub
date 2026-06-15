@@ -1491,6 +1491,7 @@ function inventoryLifecycleDocumentAction(inventoryStatus) {
   if (action === "already_sold") return "Matching Konner John Marketplace listing is already sold.";
   if (action === "skip_no_live_listing") return "No matching live Konner John Marketplace listing was found during the last sweep.";
   if (action === "skip_already_live") return "Already represented on Konner John Marketplace; do not publish a duplicate.";
+  if (action === "recheck_facebook_before_post") return "Recheck Konner John Marketplace before publishing; previous Facebook evidence is stale.";
   if (action === "review_duplicate_live_evidence") return "Review ambiguous live Facebook evidence before publishing.";
   if (action === "review_sold_match") return "Review the sold matching Facebook listing before publishing a duplicate.";
   if (action === "post_if_not_live") return "Post to Konner John Marketplace if it is not already live.";
@@ -2299,6 +2300,8 @@ function inventoryLifecycleState({ sourceStatus, album, checkedAt = null, facebo
   if (sourceStatus === "source_active") {
     const facebookOverride = sourceActiveFacebookLifecycleOverride(trustedFacebookListing, { hasPackagePhotos, checkedAt });
     if (facebookOverride) return facebookOverride;
+    const staleFacebookOverride = sourceActiveStaleFacebookLifecycleOverride(facebookListing, { hasPackagePhotos, checkedAt });
+    if (staleFacebookOverride) return staleFacebookOverride;
     return {
       sourceStatus: "source_active",
       packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
@@ -2315,6 +2318,19 @@ function inventoryLifecycleState({ sourceStatus, album, checkedAt = null, facebo
     packageStatus: hasPackagePhotos ? "photo_matched" : "needs_photos",
     facebookState: "unknown",
     facebookAction: "review",
+    shouldMarkFacebookSold: false,
+    canPostToFacebook: false,
+    checkedAt,
+  };
+}
+
+function sourceActiveStaleFacebookLifecycleOverride(facebookListing, { hasPackagePhotos, checkedAt }) {
+  if (!facebookListing?.stale) return null;
+  return {
+    sourceStatus: "source_active",
+    packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+    facebookState: "stale_facebook_evidence",
+    facebookAction: hasPackagePhotos ? "recheck_facebook_before_post" : "capture_photos",
     shouldMarkFacebookSold: false,
     canPostToFacebook: false,
     checkedAt,
@@ -4200,6 +4216,10 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
       count: writeResult.priceChanges.length,
       vehicles: writeResult.priceChanges.slice(0, 20),
     },
+    removedInventory: {
+      count: writeResult.removedInventoryCount,
+      vehicles: writeResult.removedInventory.slice(0, 20),
+    },
     ...(albumPriceReconciliation ? { albumPriceReconciliation } : {}),
     ...(pushDelivery ? { pushDelivery } : {}),
     ...(priceChangePushDelivery ? { priceChangePushDelivery } : {}),
@@ -4314,6 +4334,15 @@ function writeOregansInventorySnapshotRun({
       AND present = 1
       AND last_snapshot_run_id <> ?
   `);
+  const selectRemoved = oregansInventorySnapshotsDb.prepare(`
+    SELECT *
+    FROM oregans_inventory_vehicles
+    WHERE dealership_id = ?
+      AND inventory_type_id = ?
+      AND present = 0
+      AND removed_at = ?
+    ORDER BY stock_number, title
+  `);
   const selectVehicle = oregansInventorySnapshotsDb.prepare(`
     SELECT vehicle_key, present, price, price_value
     FROM oregans_inventory_vehicles
@@ -4354,6 +4383,8 @@ function writeOregansInventorySnapshotRun({
 
   const newlyObserved = [];
   const priceChanges = [];
+  const removedInventory = [];
+  let removedInventoryCount = 0;
   oregansInventorySnapshotsDb.exec("BEGIN IMMEDIATE");
   try {
     const scopeHasBaseline = new Map(successfulScopes.map((scope) => [
@@ -4397,7 +4428,12 @@ function writeOregansInventorySnapshotRun({
     }
 
     for (const scope of successfulScopes) {
-      markRemoved.run(finishedAt, scope.dealershipId, scope.inventoryTypeId, runId);
+      const removed = markRemoved.run(finishedAt, scope.dealershipId, scope.inventoryTypeId, runId);
+      removedInventoryCount += Number(removed?.changes || 0);
+      removedInventory.push(
+        ...selectRemoved.all(scope.dealershipId, scope.inventoryTypeId, finishedAt)
+          .map(publicOregansInventorySnapshotVehicleFromRow),
+      );
       upsertScope.run(
         scope.dealershipId,
         scope.inventoryTypeId,
@@ -4417,7 +4453,7 @@ function writeOregansInventorySnapshotRun({
     throw error;
   }
 
-  return { newlyObserved, priceChanges };
+  return { newlyObserved, priceChanges, removedInventory, removedInventoryCount };
 }
 
 function oregansInventorySnapshotVehicleRecord(car, scope, observedAt, runId) {
@@ -4511,6 +4547,38 @@ function publicOregansInventorySnapshotPriceChangeFromCar(car, scope, observedAt
     previousPriceValue: nullableFiniteNumber(previous?.price_value),
     currentPrice: normalizeSpace(car.price),
     currentPriceValue: nullableFiniteNumber(car.priceValue),
+  };
+}
+
+function publicOregansInventorySnapshotVehicleFromRow(row = {}) {
+  return {
+    vehicleKey: normalizeSpace(row.vehicle_key),
+    vin: normalizeSpace(row.vin),
+    stockNumber: normalizeSpace(row.stock_number),
+    dealershipId: normalizeSpace(row.dealership_id),
+    dealershipName: normalizeSpace(row.dealership_name),
+    inventoryTypeId: normalizeSpace(row.inventory_type_id),
+    inventoryTypeName: normalizeSpace(row.inventory_type_name),
+    title: normalizeSpace(row.title),
+    year: normalizeSpace(row.year),
+    make: normalizeSpace(row.make),
+    model: normalizeSpace(row.model),
+    trim: normalizeSpace(row.trim),
+    price: normalizeSpace(row.price),
+    priceValue: nullableFiniteNumber(row.price_value),
+    odometer: normalizeSpace(row.odometer),
+    odometerValue: nullableFiniteNumber(row.odometer_value),
+    exteriorColor: normalizeSpace(row.exterior_color),
+    interiorColor: normalizeSpace(row.interior_color),
+    bodyStyle: normalizeSpace(row.body_style),
+    fuelType: normalizeSpace(row.fuel_type),
+    transmission: normalizeSpace(row.transmission),
+    detailUrl: absolutizeOregansUrl(row.detail_url),
+    firstSeenAt: normalizeSpace(row.first_seen_at),
+    currentSeenAt: normalizeSpace(row.current_seen_at),
+    lastSeenAt: normalizeSpace(row.last_seen_at),
+    present: Boolean(Number(row.present)),
+    removedAt: normalizeSpace(row.removed_at),
   };
 }
 
@@ -8173,6 +8241,7 @@ function uploadAlbumEventPayload(car, result, user) {
     mediaCount,
     title: uploadPushTitle(uploadedBy, car || album?.vehicle),
     body: uploadPushBody(car || album?.vehicle),
+    liveStatusBody: uploadLiveStatusBody(car || album?.vehicle),
     tag: `carpostclub-upload-${carInventoryNotificationKey(car)}`,
     url: mediaGalleryDeepLink(car, { albumId: album?.id || "" }),
     dealershipId: car?.dealership?.id || car?.dealershipId,
@@ -8216,6 +8285,11 @@ function uploadPushTitle(uploadedBy, car = null) {
 
 function uploadPushBody(_car) {
   return "";
+}
+
+function uploadLiveStatusBody(car) {
+  const label = vehicleUploadPushLabel(car);
+  return label ? `Photos added for ${label}.` : "Media uploaded.";
 }
 
 function vehicleUploadPushLabel(car) {

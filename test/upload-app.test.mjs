@@ -1212,6 +1212,23 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.match(facebookTrackedDescriptionText, /Facebook sync: Already represented on Konner John Marketplace; do not publish a duplicate\./);
     assert.match(facebookTrackedDescriptionText, /Ready to post: No/);
 
+    const staleFacebookStatus = await postJson(harness, `/api/albums/${afterUpload.album.id}/facebook-listing-status`, {
+      state: "live",
+      listingId: "27358000090461601",
+      listingUrl: "https://www.facebook.com/marketplace/item/27358000090461601/",
+      title: "2026 Kia Seltos",
+      price: "CA$30,990",
+      matchedBy: ["vin", "stock"],
+      matchConfidence: "exact",
+      source: "test-facebook-sweep",
+      staleAfter: "2000-01-01T00:00:00.000Z",
+    });
+    assert.equal(staleFacebookStatus.status, 201);
+    assert.equal(staleFacebookStatus.body.facebookListing.stale, true);
+    assert.equal(staleFacebookStatus.body.inventoryStatus.lifecycle.facebookState, "stale_facebook_evidence");
+    assert.equal(staleFacebookStatus.body.inventoryStatus.lifecycle.facebookAction, "recheck_facebook_before_post");
+    assert.equal(staleFacebookStatus.body.inventoryStatus.lifecycle.canPostToFacebook, false);
+
     const regularDelete = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/photos/${encodeURIComponent(firstPhoto.filename)}`, {
       method: "DELETE",
       headers: { Cookie: approvedCookie, Accept: "application/json" },
@@ -1757,6 +1774,16 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     const thirdRun = await postJson(harness, "/api/inventory/snapshots/run", {});
     assert.equal(thirdRun.status, 201);
     assert.equal(thirdRun.body.snapshot.newInventory.count, 0);
+    assert.equal(thirdRun.body.snapshot.removedInventory.count, 2);
+    assert.deepEqual(
+      thirdRun.body.snapshot.removedInventory.vehicles.map((vehicle) => vehicle.stockNumber).sort(),
+      [TEST_CAR.stockNumber, SNAPSHOT_NEW_KIA_CAR.stockNumber].sort(),
+    );
+    const thirdRunAuditEvents = await readAuditLog(harness);
+    assertAuditEvent(thirdRunAuditEvents, "inventory.snapshot.manual_run", (event) => (
+      event.details.snapshotId === thirdRun.body.snapshot.id
+      && event.details.removedInventoryCount === 2
+    ));
 
     const finalStatus = await getJson(harness, "/api/inventory/snapshots/status");
     const kiaUsed = finalStatus.presentCounts.find((count) => count.dealershipId === "15" && count.inventoryTypeId === "2");
@@ -2558,6 +2585,7 @@ test("vehicle gallery unread state is tracked per user", async () => {
       assert.equal(event.uploadedBy.username, TEST_USERNAME);
       assert.equal(event.title, "admin uploaded U6247A - 2026 Kia Seltos X-Line AWD");
       assert.equal(event.body, "");
+      assert.equal(event.liveStatusBody, "Photos added for U6247A - 2026 Kia Seltos X-Line AWD.");
       assert.equal(event.type, "media_upload");
       assert.equal(event.notificationType, "media_upload");
       assert.equal(event.route, "media_gallery");
