@@ -136,8 +136,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.doesNotMatch(html, /id="galleryModelFilter"/);
   assert.doesNotMatch(html, /id="galleryYearFilter"/);
   assert.doesNotMatch(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260611-availability-filter-v66/);
-  assert.match(html, /\/styles\.css\?v=20260611-availability-filter-v66/);
+  assert.match(html, /\/app\.js\?v=20260616-chat-media-v68/);
+  assert.match(html, /\/styles\.css\?v=20260616-chat-media-v68/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -438,6 +438,8 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /handleUploadLiveEvent/);
   assert.match(source, /refreshAlbumsAfterLiveUpload/);
   assert.match(source, /handledUploadEventIds/);
+  assert.match(source, /liveStatusBody/);
+  assert.match(source, /event\.liveStatusBody \|\| event\.body \|\| "Media uploaded\."/);
   assert.match(source, /event\.data\?\.type !== "carpostclub:push"/);
   assert.match(source, /if \(!document\.hidden\) handlePageVisible\(\)/);
   assert.match(source, /openChat/);
@@ -517,7 +519,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v66/);
+  assert.match(serviceWorker, /carpostclub-pwa-v68/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -1107,7 +1109,7 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260611-availability-filter-v66/);
+  assert.match(source, /\/styles\.css\?v=20260616-chat-media-v68/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });

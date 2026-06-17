@@ -80,6 +80,7 @@ const s3MediaClient = s3MediaStorageEnabled
   : null;
 const chatMessagesPath = path.resolve(process.env.CHAT_MESSAGES_PATH || path.join(path.dirname(uploadRoot), "chat-messages.json"));
 const chatReadStatePath = path.resolve(process.env.CARPOSTCLUB_CHAT_READ_STATE_PATH || process.env.KONNER_CHAT_READ_STATE_PATH || process.env.CHAT_READ_STATE_PATH || path.join(path.dirname(uploadRoot), "chat-read-state.json"));
+const chatMediaRoot = path.resolve(process.env.CARPOSTCLUB_CHAT_MEDIA_ROOT || process.env.KONNER_CHAT_MEDIA_ROOT || path.join(path.dirname(uploadRoot), "chat-media"));
 const userPreferencesPath = path.resolve(process.env.CARPOSTCLUB_USER_PREFERENCES_PATH || process.env.KONNER_USER_PREFERENCES_PATH || process.env.USER_PREFERENCES_PATH || path.join(path.dirname(uploadRoot), "user-preferences.json"));
 const manualInventoryPath = path.resolve(process.env.MANUAL_INVENTORY_PATH || path.join(path.dirname(uploadRoot), "manual-inventory.json"));
 const albumSeenPath = path.resolve(process.env.CARPOSTCLUB_ALBUM_SEEN_PATH || process.env.KONNER_ALBUM_SEEN_PATH || process.env.ALBUM_SEEN_PATH || path.join(path.dirname(uploadRoot), "album-seen.json"));
@@ -95,6 +96,10 @@ const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 100);
 const chatMessageLimit = positiveInteger(process.env.CHAT_MESSAGE_LIMIT, 500);
 const chatResponseLimit = Math.min(chatMessageLimit, positiveInteger(process.env.CHAT_RESPONSE_LIMIT, 100));
 const chatMessageMaxLength = positiveInteger(process.env.CHAT_MESSAGE_MAX_LENGTH, 1000);
+const chatAttachmentLimit = Math.min(maxUploadFiles, positiveInteger(process.env.CARPOSTCLUB_CHAT_ATTACHMENT_LIMIT || process.env.KONNER_CHAT_ATTACHMENT_LIMIT, 4));
+const chatGifSearchLimit = Math.min(24, positiveInteger(process.env.CARPOSTCLUB_GIPHY_LIMIT || process.env.GIPHY_LIMIT, 12));
+const giphyApiKey = normalizeSpace(process.env.CARPOSTCLUB_GIPHY_API_KEY || process.env.GIPHY_API_KEY || "");
+const giphyRating = normalizeSpace(process.env.CARPOSTCLUB_GIPHY_RATING || process.env.GIPHY_RATING || "pg-13").slice(0, 12) || "pg-13";
 const marketplaceDescriptionModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_MODEL || "gpt-5-nano";
 const marketplaceDescriptionFallbackModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_FALLBACK_MODEL || "gpt-4.1-nano";
 const marketplaceDescriptionVariantCount = positiveInteger(process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_VARIANT_COUNT, 6);
@@ -280,6 +285,7 @@ await fs.mkdir(path.dirname(marketplaceDescriptionsDbPath), { recursive: true })
 await fs.mkdir(path.dirname(oregansInventorySnapshotsDbPath), { recursive: true });
 await fs.mkdir(path.dirname(chatMessagesPath), { recursive: true });
 await fs.mkdir(path.dirname(chatReadStatePath), { recursive: true });
+await fs.mkdir(chatMediaRoot, { recursive: true });
 await fs.mkdir(path.dirname(userPreferencesPath), { recursive: true });
 await fs.mkdir(path.dirname(manualInventoryPath), { recursive: true });
 await fs.mkdir(path.dirname(albumSeenPath), { recursive: true });
@@ -1491,6 +1497,7 @@ function inventoryLifecycleDocumentAction(inventoryStatus) {
   if (action === "already_sold") return "Matching Konner John Marketplace listing is already sold.";
   if (action === "skip_no_live_listing") return "No matching live Konner John Marketplace listing was found during the last sweep.";
   if (action === "skip_already_live") return "Already represented on Konner John Marketplace; do not publish a duplicate.";
+  if (action === "recheck_facebook_before_post") return "Recheck Konner John Marketplace before publishing; previous Facebook evidence is stale.";
   if (action === "review_duplicate_live_evidence") return "Review ambiguous live Facebook evidence before publishing.";
   if (action === "review_sold_match") return "Review the sold matching Facebook listing before publishing a duplicate.";
   if (action === "post_if_not_live") return "Post to Konner John Marketplace if it is not already live.";
@@ -1673,9 +1680,43 @@ app.get("/api/chat/stream", requireAuth, (req, res) => {
   writeChatEvent(res, ": connected\n\n");
 });
 
-app.post("/api/chat/messages", requireAuth, async (req, res, next) => {
+app.get("/api/chat/media/:filename", requireAuth, serveChatMedia);
+
+app.get("/api/gifs/search", requireAuth, async (req, res, next) => {
   try {
-    const message = await appendChatMessage(normalizeChatMessageText(req.body?.text), req.authUser);
+    if (!giphyApiKey) {
+      res.status(503).json({
+        ok: false,
+        configured: false,
+        error: "GIF search is not configured.",
+      });
+      return;
+    }
+
+    const gifs = await searchGiphyGifs({
+      q: req.query.q,
+      limit: req.query.limit,
+    });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      configured: true,
+      gifs,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/chat/messages", requireAuth, upload.array("attachments", chatAttachmentLimit), async (req, res, next) => {
+  const files = Array.isArray(req.files) ? req.files : [];
+  let savedAttachments = [];
+  try {
+    const text = normalizeOptionalChatMessageText(req.body?.text);
+    savedAttachments = await saveChatUploadedAttachments(files, req.authUser);
+    const gifAttachment = normalizeChatGifAttachmentInput(req.body?.gif || req.body?.giphy || req.body?.gifUrl);
+    const attachments = gifAttachment ? [...savedAttachments, gifAttachment] : savedAttachments;
+    const message = await appendChatMessage({ text, attachments }, req.authUser);
     broadcastChatMessage(message);
     const pushDeliveryPromise = queuePushNotifications({
       excludeUsername: req.authUser.username,
@@ -1688,6 +1729,8 @@ app.post("/api/chat/messages", requireAuth, async (req, res, next) => {
       ...(pushDelivery ? { pushDelivery } : {}),
     });
   } catch (error) {
+    await cleanupTempFiles(files);
+    await cleanupChatAttachments(savedAttachments);
     next(error);
   }
 });
@@ -1730,7 +1773,7 @@ function applySecurityHeaders(_req, res, next) {
     "form-action 'self'",
     "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    "img-src 'self' data: blob: https://*.giphy.com https://*.giphyusercontent.com",
     "media-src 'self' blob:",
     "connect-src 'self'",
     "manifest-src 'self'",
@@ -2299,6 +2342,8 @@ function inventoryLifecycleState({ sourceStatus, album, checkedAt = null, facebo
   if (sourceStatus === "source_active") {
     const facebookOverride = sourceActiveFacebookLifecycleOverride(trustedFacebookListing, { hasPackagePhotos, checkedAt });
     if (facebookOverride) return facebookOverride;
+    const staleFacebookOverride = sourceActiveStaleFacebookLifecycleOverride(facebookListing, { hasPackagePhotos, checkedAt });
+    if (staleFacebookOverride) return staleFacebookOverride;
     return {
       sourceStatus: "source_active",
       packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
@@ -2315,6 +2360,19 @@ function inventoryLifecycleState({ sourceStatus, album, checkedAt = null, facebo
     packageStatus: hasPackagePhotos ? "photo_matched" : "needs_photos",
     facebookState: "unknown",
     facebookAction: "review",
+    shouldMarkFacebookSold: false,
+    canPostToFacebook: false,
+    checkedAt,
+  };
+}
+
+function sourceActiveStaleFacebookLifecycleOverride(facebookListing, { hasPackagePhotos, checkedAt }) {
+  if (!facebookListing?.stale) return null;
+  return {
+    sourceStatus: "source_active",
+    packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+    facebookState: "stale_facebook_evidence",
+    facebookAction: hasPackagePhotos ? "recheck_facebook_before_post" : "capture_photos",
     shouldMarkFacebookSold: false,
     canPostToFacebook: false,
     checkedAt,
@@ -4171,7 +4229,16 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
     ? queueInventoryAddedPushNotifications(writeResult.newlyObserved, finishedAt)
     : null;
   const priceChangePushDeliveryPromise = writeResult.priceChanges.length
-    ? queueInventoryPriceChangePushNotifications(writeResult.priceChanges, finishedAt)
+    ? priceChangesWithCarPostClubMedia(writeResult.priceChanges)
+      .then((priceChangesForPush) => (
+        priceChangesForPush.length
+          ? queueInventoryPriceChangePushNotifications(priceChangesForPush, finishedAt)
+          : null
+      ))
+      .catch((error) => {
+        console.warn(`O'Regan's inventory price-change push eligibility failed: ${error?.message || error}`);
+        return null;
+      })
     : null;
   const pushDelivery = pushDeliveryPromise && pushAwaitDelivery
     ? await pushDeliveryPromise
@@ -4199,6 +4266,10 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
     priceChanges: {
       count: writeResult.priceChanges.length,
       vehicles: writeResult.priceChanges.slice(0, 20),
+    },
+    removedInventory: {
+      count: writeResult.removedInventoryCount,
+      vehicles: writeResult.removedInventory.slice(0, 20),
     },
     ...(albumPriceReconciliation ? { albumPriceReconciliation } : {}),
     ...(pushDelivery ? { pushDelivery } : {}),
@@ -4314,6 +4385,15 @@ function writeOregansInventorySnapshotRun({
       AND present = 1
       AND last_snapshot_run_id <> ?
   `);
+  const selectRemoved = oregansInventorySnapshotsDb.prepare(`
+    SELECT *
+    FROM oregans_inventory_vehicles
+    WHERE dealership_id = ?
+      AND inventory_type_id = ?
+      AND present = 0
+      AND removed_at = ?
+    ORDER BY stock_number, title
+  `);
   const selectVehicle = oregansInventorySnapshotsDb.prepare(`
     SELECT vehicle_key, present, price, price_value
     FROM oregans_inventory_vehicles
@@ -4354,6 +4434,8 @@ function writeOregansInventorySnapshotRun({
 
   const newlyObserved = [];
   const priceChanges = [];
+  const removedInventory = [];
+  let removedInventoryCount = 0;
   oregansInventorySnapshotsDb.exec("BEGIN IMMEDIATE");
   try {
     const scopeHasBaseline = new Map(successfulScopes.map((scope) => [
@@ -4397,7 +4479,12 @@ function writeOregansInventorySnapshotRun({
     }
 
     for (const scope of successfulScopes) {
-      markRemoved.run(finishedAt, scope.dealershipId, scope.inventoryTypeId, runId);
+      const removed = markRemoved.run(finishedAt, scope.dealershipId, scope.inventoryTypeId, runId);
+      removedInventoryCount += Number(removed?.changes || 0);
+      removedInventory.push(
+        ...selectRemoved.all(scope.dealershipId, scope.inventoryTypeId, finishedAt)
+          .map(publicOregansInventorySnapshotVehicleFromRow),
+      );
       upsertScope.run(
         scope.dealershipId,
         scope.inventoryTypeId,
@@ -4417,7 +4504,7 @@ function writeOregansInventorySnapshotRun({
     throw error;
   }
 
-  return { newlyObserved, priceChanges };
+  return { newlyObserved, priceChanges, removedInventory, removedInventoryCount };
 }
 
 function oregansInventorySnapshotVehicleRecord(car, scope, observedAt, runId) {
@@ -4514,6 +4601,38 @@ function publicOregansInventorySnapshotPriceChangeFromCar(car, scope, observedAt
   };
 }
 
+function publicOregansInventorySnapshotVehicleFromRow(row = {}) {
+  return {
+    vehicleKey: normalizeSpace(row.vehicle_key),
+    vin: normalizeSpace(row.vin),
+    stockNumber: normalizeSpace(row.stock_number),
+    dealershipId: normalizeSpace(row.dealership_id),
+    dealershipName: normalizeSpace(row.dealership_name),
+    inventoryTypeId: normalizeSpace(row.inventory_type_id),
+    inventoryTypeName: normalizeSpace(row.inventory_type_name),
+    title: normalizeSpace(row.title),
+    year: normalizeSpace(row.year),
+    make: normalizeSpace(row.make),
+    model: normalizeSpace(row.model),
+    trim: normalizeSpace(row.trim),
+    price: normalizeSpace(row.price),
+    priceValue: nullableFiniteNumber(row.price_value),
+    odometer: normalizeSpace(row.odometer),
+    odometerValue: nullableFiniteNumber(row.odometer_value),
+    exteriorColor: normalizeSpace(row.exterior_color),
+    interiorColor: normalizeSpace(row.interior_color),
+    bodyStyle: normalizeSpace(row.body_style),
+    fuelType: normalizeSpace(row.fuel_type),
+    transmission: normalizeSpace(row.transmission),
+    detailUrl: absolutizeOregansUrl(row.detail_url),
+    firstSeenAt: normalizeSpace(row.first_seen_at),
+    currentSeenAt: normalizeSpace(row.current_seen_at),
+    lastSeenAt: normalizeSpace(row.last_seen_at),
+    present: Boolean(Number(row.present)),
+    removedAt: normalizeSpace(row.removed_at),
+  };
+}
+
 function oregansInventorySnapshotPriceChanged(previous, car) {
   const previousPriceValue = nullableFiniteNumber(previous?.price_value);
   const currentPriceValue = nullableFiniteNumber(car?.priceValue ?? parseCurrency(car?.price));
@@ -4597,6 +4716,17 @@ function matchingAlbumsForInventoryPriceChange(albums = [], change = {}) {
   const vinMatches = scopedAlbums.filter((album) => albumMatchesPriceChangeVin(album, change));
   if (vinMatches.length) return vinMatches;
   return scopedAlbums.filter((album) => albumMatchesPriceChangeStock(album, change));
+}
+
+async function priceChangesWithCarPostClubMedia(priceChanges = []) {
+  const changes = Array.isArray(priceChanges) ? priceChanges.filter(Boolean) : [];
+  if (!changes.length) return [];
+
+  const albums = await listAlbums();
+  return changes.filter((change) => {
+    return matchingAlbumsForInventoryPriceChange(albums, change)
+      .some((album) => Number(album?.mediaCount || 0) > 0);
+  });
 }
 
 function albumPriceChangeScopeMatches(album = {}, change = {}) {
@@ -7023,7 +7153,18 @@ async function readChatMessages() {
     .slice(-chatMessageLimit);
 }
 
-async function appendChatMessage(text, user) {
+async function appendChatMessage(input, user) {
+  const draft = typeof input === "string"
+    ? { text: input, attachments: [] }
+    : input && typeof input === "object"
+      ? input
+      : {};
+  const text = sanitizeChatMessageText(draft.text, { truncate: true });
+  const attachments = normalizeChatAttachments(draft.attachments);
+  if (!text && !attachments.length) {
+    throw httpError(400, "Enter a message or attach a photo/GIF before sending.");
+  }
+
   const authorUsername = normalizeAuthUsername(user?.username || authUsername);
   const authorDisplayName = normalizeChatAuthor(user?.displayName || authorUsername || authUsername);
   const message = {
@@ -7032,6 +7173,7 @@ async function appendChatMessage(text, user) {
     authorDisplayName,
     authorUsername,
     text,
+    attachments,
     createdAt: new Date().toISOString(),
   };
 
@@ -7043,6 +7185,252 @@ async function appendChatMessage(text, user) {
   });
 
   return chatWritePromise;
+}
+
+async function serveChatMedia(req, res, next) {
+  try {
+    const filename = cleanChatMediaFilename(req.params.filename);
+    const filePath = path.join(chatMediaRoot, filename);
+    const stats = await fs.stat(filePath).catch(() => null);
+    if (!stats?.isFile()) throw httpError(404, "Chat media not found.");
+    sendMediaFile(req, res, filePath, filename, stats, {
+      downloadName: isDownloadRequest(req) ? mediaDownloadName(req.query.name, filename) : "",
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function saveChatUploadedAttachments(files, user) {
+  const selected = Array.isArray(files) ? files : [];
+  if (!selected.length) return [];
+  if (selected.length > chatAttachmentLimit) {
+    throw httpError(400, `Attach up to ${chatAttachmentLimit} ${chatAttachmentLimit === 1 ? "photo" : "photos"} at a time.`);
+  }
+
+  await fs.mkdir(chatMediaRoot, { recursive: true });
+  const attachments = [];
+  for (const file of selected) {
+    attachments.push(await saveChatUploadedAttachment(file, user));
+  }
+  return attachments;
+}
+
+async function saveChatUploadedAttachment(file, user) {
+  const mimetype = normalizeSpace(file?.mimetype).toLowerCase();
+  const originalName = path.basename(String(file?.originalname || "chat-photo"));
+  if (!file?.path || mimetype.startsWith("video/") || isVideoFilename(originalName)) {
+    throw httpError(400, "Only photos and GIFs can be attached to chat.");
+  }
+  if (!mimetype.startsWith("image/") && !isPhotoFilename(originalName)) {
+    throw httpError(400, "Only photos and GIFs can be attached to chat.");
+  }
+
+  const extension = extensionFor(originalName, mimetype);
+  if (!imageExtensions.has(extension)) {
+    throw httpError(400, "Only photos and GIFs can be attached to chat.");
+  }
+
+  const filename = cleanChatMediaFilename(`${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}${extension}`);
+  await moveFile(file.path, path.join(chatMediaRoot, filename));
+  return normalizeChatUploadedAttachment({
+    id: filename,
+    source: "upload",
+    filename,
+    originalName,
+    contentType: mimetype || contentTypeFor(filename),
+    bytes: Number(file.size || 0),
+    uploadedBy: publicUploader(user),
+  });
+}
+
+async function cleanupChatAttachments(attachments) {
+  const uploads = normalizeChatAttachments(attachments)
+    .filter((attachment) => attachment.source === "upload")
+    .map((attachment) => fs.unlink(path.join(chatMediaRoot, attachment.filename)).catch(() => {}));
+  await Promise.all(uploads);
+}
+
+function normalizeChatAttachments(value) {
+  if (!Array.isArray(value)) return [];
+  const attachments = [];
+  for (const item of value) {
+    const attachment = normalizeChatAttachment(item);
+    if (attachment) attachments.push(attachment);
+    if (attachments.length >= chatAttachmentLimit + 1) break;
+  }
+  return attachments;
+}
+
+function normalizeChatAttachment(value) {
+  if (!value || typeof value !== "object") return null;
+  try {
+    const source = normalizeSpace(value.source).toLowerCase();
+    if (source === "upload") return normalizeChatUploadedAttachment(value);
+    if (source === "giphy" || source === "url" || value.url || value.gifUrl) {
+      return normalizeChatGifAttachmentInput(value);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function normalizeChatUploadedAttachment(value) {
+  const filename = cleanChatMediaFilename(value.filename || value.id);
+  const originalName = path.basename(String(value.originalName || value.name || filename)).slice(0, 160);
+  const contentType = normalizeSpace(value.contentType || value.mimetype || contentTypeFor(filename)).toLowerCase();
+  const isGif = contentType === "image/gif" || path.extname(filename).toLowerCase() === ".gif";
+  return {
+    id: filename,
+    type: isGif ? "gif" : "image",
+    source: "upload",
+    url: chatMediaUrl(filename),
+    downloadUrl: `${chatMediaUrl(filename)}?download=1`,
+    filename,
+    originalName: originalName || filename,
+    contentType: contentType || contentTypeFor(filename),
+    bytes: Math.max(0, Math.floor(Number(value.bytes || 0))),
+    uploadedBy: publicUploader(value.uploadedBy),
+  };
+}
+
+function normalizeChatGifAttachmentInput(value) {
+  const source = parseChatGifInput(value);
+  if (!source) return null;
+  const url = normalizeGiphyUrl(source.url || source.gifUrl);
+  const previewUrl = source.previewUrl || source.thumbnailUrl
+    ? normalizeGiphyUrl(source.previewUrl || source.thumbnailUrl)
+    : url;
+  const attributionUrl = normalizeGiphyAttributionUrl(source.attributionUrl || source.giphyUrl || source.pageUrl || "");
+  return {
+    id: normalizeSpace(source.id || source.gifId).slice(0, 120) || `gif-${crypto.randomUUID().slice(0, 8)}`,
+    type: "gif",
+    source: "giphy",
+    title: normalizeSpace(source.title || "GIF").slice(0, 160) || "GIF",
+    url,
+    previewUrl,
+    width: Math.min(4000, positiveInteger(source.width, 0)),
+    height: Math.min(4000, positiveInteger(source.height, 0)),
+    attributionUrl,
+  };
+}
+
+function parseChatGifInput(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object") return parsed;
+      } catch {
+        throw httpError(400, "Choose a valid GIF before sending.");
+      }
+    }
+    return { url: trimmed };
+  }
+  if (typeof value === "object") return value;
+  throw httpError(400, "Choose a valid GIF before sending.");
+}
+
+function chatMediaUrl(filename) {
+  return `/api/chat/media/${encodeURIComponent(cleanChatMediaFilename(filename))}`;
+}
+
+function cleanChatMediaFilename(value) {
+  const filename = path.basename(String(value || ""));
+  if (!filename || filename.length > 180 || !/^[a-z0-9][a-z0-9._-]*$/i.test(filename) || !isPhotoFilename(filename)) {
+    throw httpError(400, "Invalid chat media filename.");
+  }
+  return filename;
+}
+
+function normalizeGiphyUrl(value) {
+  const raw = normalizeSpace(value);
+  if (!raw) throw httpError(400, "Choose a valid GIF before sending.");
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw httpError(400, "Choose a valid GIF before sending.");
+  }
+  if (parsed.protocol !== "https:" || !isGiphyHostname(parsed.hostname)) {
+    throw httpError(400, "Only GIPHY GIF links can be sent.");
+  }
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+function normalizeGiphyAttributionUrl(value) {
+  const raw = normalizeSpace(value);
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol === "https:" && isGiphyHostname(parsed.hostname)) {
+      parsed.hash = "";
+      return parsed.toString();
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function isGiphyHostname(value) {
+  const hostname = normalizeSpace(value).toLowerCase();
+  return hostname === "giphy.com"
+    || hostname.endsWith(".giphy.com")
+    || hostname === "giphyusercontent.com"
+    || hostname.endsWith(".giphyusercontent.com");
+}
+
+async function searchGiphyGifs({ q = "", limit = chatGifSearchLimit } = {}) {
+  const query = normalizeSpace(q).slice(0, 80);
+  const count = Math.min(24, positiveInteger(limit, chatGifSearchLimit));
+  const endpoint = query
+    ? "https://api.giphy.com/v1/gifs/search"
+    : "https://api.giphy.com/v1/gifs/trending";
+  const params = new URLSearchParams({
+    api_key: giphyApiKey,
+    limit: String(count),
+    rating: giphyRating,
+  });
+  if (query) {
+    params.set("q", query);
+    params.set("lang", "en");
+  }
+
+  const response = await fetch(`${endpoint}?${params}`, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) throw httpError(502, "GIF search failed. Try again in a moment.");
+  const body = await response.json();
+  const gifs = Array.isArray(body?.data)
+    ? body.data.map(giphyResultToAttachment).filter(Boolean)
+    : [];
+  return gifs.slice(0, count);
+}
+
+function giphyResultToAttachment(value) {
+  const images = value?.images && typeof value.images === "object" ? value.images : {};
+  const full = images.downsized_medium || images.downsized || images.original || images.fixed_height || {};
+  const preview = images.fixed_width_small || images.preview_gif || images.downsized_still || full;
+  try {
+    return normalizeChatGifAttachmentInput({
+      id: value.id,
+      title: value.title,
+      url: full.url,
+      previewUrl: preview.url || full.url,
+      width: full.width,
+      height: full.height,
+      attributionUrl: value.url,
+    });
+  } catch {
+    return null;
+  }
 }
 
 async function chatReadStateForUser(user) {
@@ -7274,7 +7662,8 @@ function writeSseEvent(res, payload) {
 function normalizeStoredChatMessage(value) {
   if (!value || typeof value !== "object") return null;
   const text = sanitizeChatMessageText(value.text, { truncate: true });
-  if (!text) return null;
+  const attachments = normalizeChatAttachments(value.attachments);
+  if (!text && !attachments.length) return null;
   const createdAt = Number.isFinite(Date.parse(value.createdAt))
     ? new Date(value.createdAt).toISOString()
     : new Date().toISOString();
@@ -7284,13 +7673,19 @@ function normalizeStoredChatMessage(value) {
     authorDisplayName: normalizeChatAuthor(value.authorDisplayName || value.author),
     authorUsername: normalizeAuthUsername(value.authorUsername || value.username),
     text,
+    attachments,
     createdAt,
   };
 }
 
 function normalizeChatMessageText(value) {
-  const text = sanitizeChatMessageText(value);
+  const text = normalizeOptionalChatMessageText(value);
   if (!text) throw httpError(400, "Enter a message before sending.");
+  return text;
+}
+
+function normalizeOptionalChatMessageText(value) {
+  const text = sanitizeChatMessageText(value);
   if (text.length > chatMessageMaxLength) {
     throw httpError(400, `Messages must be ${chatMessageMaxLength} characters or less.`);
   }
@@ -8026,10 +8421,22 @@ function chatPushPayload(message) {
     author: message.author,
     timestamp: message.createdAt,
     title: `${message.author} in chat`,
-    body: message.text,
+    body: chatPushBody(message),
     tag: `carpostclub-chat-${messageId}`,
     url: "/?openChat=1",
   };
+}
+
+function chatPushBody(message) {
+  const text = sanitizeChatMessageText(message?.text);
+  if (text) return text;
+  const attachments = normalizeChatAttachments(message?.attachments);
+  const hasGif = attachments.some((attachment) => attachment.type === "gif");
+  const hasImage = attachments.some((attachment) => attachment.type === "image");
+  if (hasGif && hasImage) return "sent photos and GIFs";
+  if (hasGif) return "sent a GIF";
+  if (hasImage) return attachments.length === 1 ? "sent a photo" : "sent photos";
+  return "sent an attachment";
 }
 
 function previewPushPayload(input = {}, user = {}) {
@@ -8173,6 +8580,7 @@ function uploadAlbumEventPayload(car, result, user) {
     mediaCount,
     title: uploadPushTitle(uploadedBy, car || album?.vehicle),
     body: uploadPushBody(car || album?.vehicle),
+    liveStatusBody: uploadLiveStatusBody(car || album?.vehicle),
     tag: `carpostclub-upload-${carInventoryNotificationKey(car)}`,
     url: mediaGalleryDeepLink(car, { albumId: album?.id || "" }),
     dealershipId: car?.dealership?.id || car?.dealershipId,
@@ -8216,6 +8624,11 @@ function uploadPushTitle(uploadedBy, car = null) {
 
 function uploadPushBody(_car) {
   return "";
+}
+
+function uploadLiveStatusBody(car) {
+  const label = vehicleUploadPushLabel(car);
+  return label ? `Photos added for ${label}.` : "Media uploaded.";
 }
 
 function vehicleUploadPushLabel(car) {
@@ -10073,7 +10486,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260611-availability-filter-v66">
+  <link rel="stylesheet" href="/styles.css?v=20260616-chat-media-v68">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">

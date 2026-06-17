@@ -4,6 +4,10 @@
 
 Any time a package, dependency, language, library, repository, web search, tool, runtime, documentation, or other resource would make the work more capable or help complete the task, use it without asking first, as long as it fits the task and active system/developer constraints.
 
+## Automation Terminology
+
+- `CCA` means customer contact automations: automations that check mailbox/Facebook digest messages, Telegram, message memory expiry cleanup, shallow scanner flows, and related customer-contact monitoring jobs.
+
 ## Inventory Model
 
 - O'Regan's inventory is the upstream availability signal. If a vehicle disappears from the O'Regan's-backed CarPostClub inventory feed, treat that vehicle as no longer available, even if CarPostClub still has uploaded photos.
