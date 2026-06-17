@@ -18,5 +18,16 @@ scripts/__pycache__/
 # Generated Facebook/ops working artifacts
 facebook-*.json
 facebook-*.md
+facebook-marketplace-*/
 facebook-post-packages-current/
 pre-close-appointment-digest-*.md
+
+# Local operation reports and repair backups
+AUTOMATION_*.md
+HEALTH_REPORT.md
+MAINTENANCE_*.md
+PHASE*.md
+WATCHDOG_*.md
+automation-skills-backup/
+*-backups/
+production-inventory-*.json

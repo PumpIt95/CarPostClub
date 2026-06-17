@@ -464,7 +464,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260611-availability-filter-v66/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260616-chat-media-v68/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -2558,6 +2558,7 @@ test("vehicle gallery unread state is tracked per user", async () => {
       assert.equal(event.uploadedBy.username, TEST_USERNAME);
       assert.equal(event.title, "admin uploaded U6247A - 2026 Kia Seltos X-Line AWD");
       assert.equal(event.body, "");
+      assert.equal(event.liveStatusBody, "Photos added for U6247A - 2026 Kia Seltos X-Line AWD.");
       assert.equal(event.type, "media_upload");
       assert.equal(event.notificationType, "media_upload");
       assert.equal(event.route, "media_gallery");
