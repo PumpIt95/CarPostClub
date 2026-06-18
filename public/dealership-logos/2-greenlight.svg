@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 288" role="img" aria-labelledby="title desc">
+  <title id="title">GreenLight Used Cars</title>
+  <desc id="desc">GreenLight dealership logo with a traffic light icon.</desc>
+  <rect width="512" height="288" fill="#fff"/>
+  <g transform="translate(46 55)">
+    <rect x="0" y="0" width="52" height="116" rx="6" fill="#f5f7f8" stroke="#4b4f54" stroke-width="6"/>
+    <circle cx="26" cy="24" r="14" fill="#f6f7f7" stroke="#4b4f54" stroke-width="4"/>
+    <circle cx="26" cy="58" r="14" fill="#f6f7f7" stroke="#4b4f54" stroke-width="4"/>
+    <circle cx="26" cy="92" r="14" fill="#7ac943" stroke="#4b4f54" stroke-width="4"/>
+    <path d="M20 116h12v55H20z" fill="#4b4f54"/>
+    <path d="M7 171h38v10H7z" fill="#4b4f54"/>
+  </g>
+  <text x="124" y="115" fill="#76c043" font-family="Arial Black, Impact, sans-serif" font-size="57" font-weight="900" letter-spacing="0">GREEN LIGHT</text>
+  <text x="172" y="174" fill="#4b4f54" font-family="Arial, Helvetica, sans-serif" font-size="43" font-weight="700" letter-spacing="24">USED CARS</text>
+</svg>

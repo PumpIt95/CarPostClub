@@ -215,7 +215,7 @@ const oregansBodyStyleGroups = Object.freeze([
 ]);
 const oregansDealerships = Object.freeze([
   { id: "1", name: "O'Regan's Mercedes-Benz" },
-  { id: "2", name: "O'Regan's Green Light Used Car Centre Halifax" },
+  { id: "2", name: "O'Regan's GreenLight Halifax", logoUrl: "/dealership-logos/2-greenlight.webp" },
   { id: "3", name: "O'Regan's Infiniti/Nissan Halifax", logoUrl: "/dealership-logos/3-nissan.webp" },
   { id: "6", name: "O'Regan's Kia Dartmouth" },
   { id: "7", name: "O'Regan's Toyota Dartmouth" },
@@ -232,7 +232,7 @@ const oregansDealerships = Object.freeze([
   { id: "31", name: "O'Regan's Volkswagen Halifax", logoUrl: "/dealership-logos/31-volkswagen.webp" },
   { id: "40", name: "O'Regan's Lexus" },
 ]);
-const inventoryPicklistDealershipIds = Object.freeze(["3", "15", "18", "31"]);
+const inventoryPicklistDealershipIds = Object.freeze(["3", "15", "18", "2"]);
 const inventoryPicklistDealerships = Object.freeze(
   inventoryPicklistDealershipIds
     .map((id) => oregansDealerships.find((dealership) => dealership.id === id))
@@ -240,14 +240,14 @@ const inventoryPicklistDealerships = Object.freeze(
 );
 const authDealershipOptions = Object.freeze([
   { id: "15", key: "kia", label: "Kia" },
-  { id: "31", key: "vw", label: "VW" },
+  { id: "2", key: "greenlight", label: "GreenLight" },
   { id: "18", key: "gm", label: "GM" },
   { id: "3", key: "nissan", label: "Nissan" },
 ].map((option) => ({
   ...option,
   name: oregansDealerships.find((dealership) => dealership.id === option.id)?.name || option.label,
 })));
-const pushDryRunDealershipIds = Object.freeze(["15", "18", "3", "31"]);
+const pushDryRunDealershipIds = Object.freeze(["15", "18", "3", "2"]);
 const authBootstrapDealershipId = normalizeAuthDealershipId(
   process.env.CARPOSTCLUB_AUTH_DEALERSHIP_ID
     || process.env.KONNER_AUTH_DEALERSHIP_ID
@@ -634,7 +634,7 @@ app.post("/admin/users/:username/dealership", requireAdmin, async (req, res, nex
   try {
     const dealershipId = normalizeAuthDealershipId(req.body?.dealershipId || req.body?.dealership);
     if (!dealershipId) {
-      res.redirect(303, adminUsersUrl({ error: "Choose Kia, VW, GM, or Nissan." }));
+      res.redirect(303, adminUsersUrl({ error: "Choose Kia, GreenLight, GM, or Nissan." }));
       return;
     }
 
@@ -8561,7 +8561,7 @@ function previewVehicleSample(dealershipLabel) {
   const label = normalizeSpace(dealershipLabel).toLowerCase();
   if (label === "gm") return { make: "Chevrolet", model: "Silverado", trim: "Custom" };
   if (label === "nissan") return { make: "Nissan", model: "Rogue", trim: "SV" };
-  if (label === "vw") return { make: "Volkswagen", model: "Tiguan", trim: "Comfortline" };
+  if (label === "greenlight") return { make: "Toyota", model: "RAV4", trim: "LE AWD" };
   if (label === "kia") return { make: "Kia", model: "Sportage", trim: "" };
   return { make: dealershipLabel, model: "Preview", trim: "" };
 }
@@ -10003,7 +10003,7 @@ function validateSignup({ username, dealershipId, password, confirmPassword }) {
     return "That username already exists.";
   }
   if (!normalizeAuthDealershipId(dealershipId)) {
-    return "Choose Kia, VW, GM, or Nissan.";
+    return "Choose Kia, GreenLight, GM, or Nissan.";
   }
   return validatePasswordFields({ password, confirmPassword });
 }
@@ -10038,7 +10038,7 @@ function normalizeAuthDealershipId(value) {
     || dealership.key === lowered
     || dealership.label.toLowerCase() === lowered
     || dealership.name.toLowerCase() === lowered
-    || (lowered === "volkswagen" && dealership.key === "vw")
+    || (["green light", "greenlight"].includes(lowered) && dealership.key === "greenlight")
   ));
   return match?.id || "";
 }

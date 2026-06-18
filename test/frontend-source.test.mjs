@@ -526,7 +526,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(serviceWorker, /dealership-logos\/3-nissan\.webp/);
   assert.match(serviceWorker, /dealership-logos\/15-kia\.webp/);
   assert.match(serviceWorker, /dealership-logos\/18-gm\.webp/);
-  assert.match(serviceWorker, /dealership-logos\/31-volkswagen\.webp/);
+  assert.match(serviceWorker, /dealership-logos\/2-greenlight\.webp/);
   assert.doesNotMatch(serviceWorker, /Konner Photos/);
   assert.match(serviceWorker, /self\.addEventListener\("fetch"/);
   assert.match(serviceWorker, /networkFirstNavigation/);
@@ -862,13 +862,13 @@ test("brand assets include favicon, PWA icons, and social share image", async ()
   assert.equal(uploadMonkey.height, 512);
   assert.equal(uploadMonkey.hasAlpha, true);
 
-  for (const file of ["3-nissan.svg", "15-kia.svg", "18-gm.svg", "31-volkswagen.svg"]) {
+  for (const file of ["3-nissan.svg", "15-kia.svg", "18-gm.svg", "2-greenlight.svg"]) {
     const logo = await fs.readFile(`${dealershipLogosRoot}${file}`, "utf8");
     assert.match(logo, /<svg\b/);
     assert.match(logo, /<\/svg>/);
   }
 
-  for (const file of ["3-nissan.webp", "15-kia.webp", "18-gm.webp", "31-volkswagen.webp"]) {
+  for (const file of ["3-nissan.webp", "15-kia.webp", "18-gm.webp", "2-greenlight.webp"]) {
     const logo = await sharp(`${dealershipLogosRoot}${file}`).metadata();
     assert.equal(logo.format, "webp");
     assert.equal(logo.width, 512);

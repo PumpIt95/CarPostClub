@@ -385,7 +385,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       confirmPassword: NEW_PASSWORD,
     });
     assert.equal(missingDealershipSignup.status, 400);
-    assert.match(missingDealershipSignup.body, /Choose Kia, VW, GM, or Nissan/i);
+    assert.match(missingDealershipSignup.body, /Choose Kia, GreenLight, GM, or Nissan/i);
 
     const signup = await requestSignup(harness.baseUrl, {
       invite: invite.token,
@@ -641,7 +641,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       { id: "3", name: "O'Regan's Infiniti/Nissan Halifax", logoUrl: "/dealership-logos/3-nissan.webp" },
       { id: "15", name: "O'Regan's Kia Halifax", logoUrl: "/dealership-logos/15-kia.webp" },
       { id: "18", name: "O'Regan's Chevrolet Buick GMC Cadillac", logoUrl: "/dealership-logos/18-gm.webp" },
-      { id: "31", name: "O'Regan's Volkswagen Halifax", logoUrl: "/dealership-logos/31-volkswagen.webp" },
+      { id: "2", name: "O'Regan's GreenLight Halifax", logoUrl: "/dealership-logos/2-greenlight.webp" },
     ]);
     assert.ok(dealerships.inventoryTypes.some((type) => type.id === "2"));
 
@@ -2009,7 +2009,7 @@ test("admin push dry-run reports dealership targets", async () => {
     assert.deepEqual(targetsByLabel.get("GM").usernames, ["mwebber2030"]);
     assert.deepEqual(targetsByLabel.get("GM").users.map((user) => user.displayName), ["Michael"]);
     assert.deepEqual(targetsByLabel.get("Nissan").usernames, []);
-    assert.deepEqual(targetsByLabel.get("VW").usernames, []);
+    assert.deepEqual(targetsByLabel.get("GreenLight").usernames, []);
     assert.deepEqual(targetsByLabel.get("Kia").pushEnabledUsernames, [TEST_USERNAME]);
     assert.deepEqual(targetsByLabel.get("GM").pushEnabledUsernames, ["mwebber2030"]);
     assert.deepEqual(targetsByLabel.get("GM").pushEnabledUsers.map((user) => user.displayName), ["Michael"]);
@@ -2680,13 +2680,13 @@ test("vehicle upload push notifications go to all approved push-enabled users ex
     const noPushViewer = await createApprovedAccount(harness, {
       username: "no.push.viewer",
       displayName: "No Push Viewer",
-      dealershipId: "31",
+      dealershipId: "2",
       password: "no-push-viewer-123",
     });
     const rejectedViewer = await createApprovedAccount(harness, {
       username: "rejected.viewer",
       displayName: "Rejected Viewer",
-      dealershipId: "31",
+      dealershipId: "2",
       password: "rejected-viewer-123",
     });
 

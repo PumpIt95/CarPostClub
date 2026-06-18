@@ -18,7 +18,7 @@ const CORE_ASSETS = [
   "/dealership-logos/3-nissan.webp",
   "/dealership-logos/15-kia.webp",
   "/dealership-logos/18-gm.webp",
-  "/dealership-logos/31-volkswagen.webp",
+  "/dealership-logos/2-greenlight.webp",
 ];
 
 self.addEventListener("install", (event) => {

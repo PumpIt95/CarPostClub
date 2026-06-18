@@ -45,7 +45,7 @@ await checkJson("/api/albums", authHeaders, (body) => {
 await checkJson("/api/inventory/dealerships", authHeaders, (body) => {
   assert(body.ok === true, "dealerships ok flag is false");
   assert(Array.isArray(body.dealerships) && body.dealerships.length > 0, "dealerships response did not include dealerships[]");
-  assert(JSON.stringify(body.dealerships.map((dealership) => dealership.id)) === JSON.stringify(["3", "15", "18", "31"]), "dealerships response did not match the upload picklist");
+  assert(JSON.stringify(body.dealerships.map((dealership) => dealership.id)) === JSON.stringify(["3", "15", "18", "2"]), "dealerships response did not match the upload picklist");
   assert(body.dealerships.every((dealership) => typeof dealership.logoUrl === "string" && dealership.logoUrl.startsWith("/dealership-logos/")), "dealerships response did not include dealership logo URLs");
   assert(Array.isArray(body.inventoryTypes) && body.inventoryTypes.length > 0, "dealerships response did not include inventoryTypes[]");
 });
@@ -53,6 +53,13 @@ await checkJson("/api/inventory/dealerships", authHeaders, (body) => {
 await checkJson("/api/inventory/cars?dealershipId=15&inventoryTypeId=2", authHeaders, (body) => {
   assert(body.ok === true, "cars ok flag is false");
   assert(Array.isArray(body.cars), "cars response did not include cars[]");
+});
+
+await checkJson("/api/inventory/cars?dealershipId=2&inventoryTypeId=2", authHeaders, (body) => {
+  assert(body.ok === true, "GreenLight cars ok flag is false");
+  assert(body.dealership?.id === "2", "GreenLight cars response did not identify dealership 2");
+  assert(Array.isArray(body.cars), "GreenLight cars response did not include cars[]");
+  assert(body.cars.length > 0, "GreenLight cars response was empty");
 });
 
 await checkJson("/api/inventory/snapshots/status", authHeaders, (body) => {
