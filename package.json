@@ -13,6 +13,8 @@
     "restore:check": "node scripts/restore_state_check.mjs",
     "monitor:production": "node scripts/production_monitor.mjs",
     "backfill:marketplace-descriptions": "node scripts/backfill_marketplace_descriptions.mjs",
+    "publisher:ready": "node scripts/facebook_ready_publisher.mjs",
+    "publisher:fast-batch": "node scripts/facebook_ready_publisher_fast_batch.mjs",
     "cleanup:automation-artifacts": "python3 scripts/cleanup_automation_artifacts.py",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "playwright test"
