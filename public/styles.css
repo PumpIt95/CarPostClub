@@ -30,6 +30,7 @@
   --radius-full: 9999px;
   --radius-inputs: 0;
   --radius-buttons: 0;
+  --app-viewport-height: 100svh;
   font-family: var(--font-ui-monospace);
   font-size: var(--text-body);
   line-height: var(--leading-body);
@@ -2052,6 +2053,7 @@ textarea:focus {
   color: var(--color-ash-black);
   background: var(--color-cloud-white);
   box-shadow: 8px 8px 0 rgba(17, 17, 17, 0.16);
+  overflow: hidden;
 }
 
 .chat-panel.is-open {
@@ -2092,7 +2094,11 @@ textarea:focus {
   gap: 12px;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding: var(--spacing-16);
+  scrollbar-gutter: stable;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
 }
 
 .chat-empty {
@@ -3173,8 +3179,9 @@ textarea:focus {
     inset: 0;
     z-index: 100;
     width: 100vw;
-    height: 100svh;
-    min-height: 100svh;
+    height: var(--app-viewport-height, 100svh);
+    min-height: var(--app-viewport-height, 100svh);
+    max-height: var(--app-viewport-height, 100svh);
     border: 0;
     box-shadow: none;
   }
@@ -3193,7 +3200,23 @@ textarea:focus {
   }
 
   .chat-messages {
-    padding: var(--spacing-16);
+    gap: 10px;
+    padding: 12px;
+    scroll-padding-block: 12px;
+  }
+
+  .chat-message {
+    max-width: min(92%, 420px);
+  }
+
+  .chat-message-meta {
+    gap: var(--spacing-8);
+  }
+
+  .chat-message p {
+    padding: 9px 10px;
+    font-size: 13px;
+    line-height: 1.32;
   }
 
   .chat-reactions {
@@ -3207,7 +3230,45 @@ textarea:focus {
   }
 
   .chat-form {
+    gap: 6px;
+    background: var(--color-cloud-white);
+    box-shadow: 0 -6px 0 rgba(250, 250, 250, 0.92);
     padding: var(--spacing-8) var(--spacing-8) max(var(--spacing-8), env(safe-area-inset-bottom));
+  }
+
+  .chat-composer-row {
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 6px;
+  }
+
+  .chat-tools {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  .chat-tools .chat-tool-button {
+    width: 100%;
+    min-width: 0;
+    height: 36px;
+    padding: 0 6px;
+  }
+
+  .chat-tools .chat-tool-button svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .chat-form textarea {
+    min-height: 56px;
+    max-height: 96px;
+    padding: 10px;
+    font-size: 16px;
+  }
+
+  .chat-form .icon-button {
+    width: 44px;
+    height: 44px;
   }
 }
 

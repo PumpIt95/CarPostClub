@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260618T195503Z-chat-audio-button-v71-80a791a",
-  "createdAt": "2026-06-18T19:59:29.037Z",
-  "source": "docker-build",
+  "releaseId": "20260618T233248Z-chat-mobile-scroll-v72",
+  "createdAt": "2026-06-18T23:34:00.431Z",
+  "source": "codex-local-fix",
   "root": ".",
   "node": "v22.22.1",
   "files": [
@@ -53,8 +53,8 @@
     },
     {
       "path": "public/app.js",
-      "bytes": 182503,
-      "sha256": "d501d8f2f7596bd0d364583b6a06c8287b8a41927e8265e739cb8dec1217a7cb"
+      "bytes": 184963,
+      "sha256": "c177bb4566fbd74cdb3cffb86c51b5c7960c7b9a54efe2699cf55d03b162543b"
     },
     {
       "path": "public/brand-logos/gm.svg",
@@ -208,8 +208,8 @@
     },
     {
       "path": "public/index.html",
-      "bytes": 23598,
-      "sha256": "bdbb622296e0e7c05ed0beb162a5d7ec7a21e5e057962113aacd0bd48412f254"
+      "bytes": 23600,
+      "sha256": "e7c3996bc21b36bc36e07998d69d832ca3852402cc83d93f643541941819d0d1"
     },
     {
       "path": "public/manifest.webmanifest",
@@ -218,8 +218,8 @@
     },
     {
       "path": "public/offline.html",
-      "bytes": 1135,
-      "sha256": "62e13f77d014e374b7b3c68e99936bf786f0b4a6106308d031d9d049ac5c2c24"
+      "bytes": 1136,
+      "sha256": "7159c9c36cf65dc324d758a4e886242dccc77bf0bd51dcfd0d0cdb0caa684d97"
     },
     {
       "path": "public/share-card.png",
@@ -233,13 +233,13 @@
     },
     {
       "path": "public/styles.css",
-      "bytes": 63967,
-      "sha256": "a97f5fb04af5806cdc683eaf98493a6f22826ef757773d90c974d9399d9857ee"
+      "bytes": 65163,
+      "sha256": "ae53182d27c3426d3229bbcec704738160bb73d2516ab8d38c613e5adb2d2829"
     },
     {
       "path": "public/sw.js",
       "bytes": 12169,
-      "sha256": "f5d744f6b52fc054387ca017377564724b0ac3067d4e31b1e34d82a6084f73be"
+      "sha256": "1bb919f8bf0359248ad6112a8727c5eb9aa46e90bed44a7762b3d2e81984a6e8"
     },
     {
       "path": "public/upload-monkey.png",
@@ -268,8 +268,8 @@
     },
     {
       "path": "scripts/build_release_manifest.mjs",
-      "bytes": 3696,
-      "sha256": "f205ddd4519e5fa081bb8f7ffd192f54bdb5f4daafbd6a81695da6b379b0d7d1"
+      "bytes": 5368,
+      "sha256": "fb3710b1ced210b58b6549bd8f1d858d4f06904c9cdf904d6a4fe1565fc5820c"
     },
     {
       "path": "scripts/cleanup_automation_artifacts.py",
@@ -308,8 +308,8 @@
     },
     {
       "path": "server.js",
-      "bytes": 408148,
-      "sha256": "c7baab10cc1f127216dfc0db7f808d6f34ffc7254ae901fc71a6fa59654a0e60"
+      "bytes": 408149,
+      "sha256": "0b2211d644b8b5fec02aa3b3baa726575f4e75086a5428b2f2fcd8f7689151ea"
     }
   ]
 }

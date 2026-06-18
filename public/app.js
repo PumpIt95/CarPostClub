@@ -25,6 +25,12 @@ const state = {
   chatEventSource: null,
   chatReconnectTimer: null,
   chatReactionPending: new Set(),
+  chatTouchScroll: {
+    active: false,
+    lastY: 0,
+    startX: 0,
+    startY: 0,
+  },
   albumEventSource: null,
   albumReconnectTimer: null,
   albumLiveRefreshPromise: null,
@@ -237,6 +243,7 @@ init().catch((error) => showError(error));
 
 async function init() {
   applyPageMode();
+  syncViewportHeightVar();
   bindEvents();
   await loadCurrentUser().catch(() => {});
   loadNotifications().catch(reportBackgroundFetchError);
@@ -299,6 +306,10 @@ async function loadCurrentUser() {
 }
 
 function bindEvents() {
+  window.addEventListener("resize", syncViewportHeightVar);
+  window.visualViewport?.addEventListener("resize", syncViewportHeightVar);
+  window.visualViewport?.addEventListener("scroll", syncViewportHeightVar);
+
   window.addEventListener("beforeunload", (event) => {
     if (!state.uploading) return;
     event.preventDefault();
@@ -540,6 +551,10 @@ function bindEvents() {
   els.chatToggle.addEventListener("click", () => setChatOpen(!state.chatOpen, { feedback: true }));
   els.chatClose.addEventListener("click", () => setChatOpen(false, { feedback: true }));
   els.chatMessages.addEventListener("click", handleChatMessagesClick);
+  els.chatPanel.addEventListener("touchstart", handleChatTouchStart, { passive: true });
+  els.chatPanel.addEventListener("touchmove", handleChatTouchMove, { passive: false });
+  els.chatPanel.addEventListener("touchend", resetChatTouchScroll, { passive: true });
+  els.chatPanel.addEventListener("touchcancel", resetChatTouchScroll, { passive: true });
   els.chatForm.addEventListener("submit", sendChatMessage);
   els.chatInput.addEventListener("input", updateChatSendState);
   els.chatInput.addEventListener("keydown", (event) => {
@@ -1356,6 +1371,7 @@ async function refreshAlbumsAfterLiveUpload(event = null) {
 function setChatOpen(isOpen, { syncUrl = true, feedback = false } = {}) {
   if (feedback && Boolean(isOpen) !== state.chatOpen) haptic("select");
   state.chatOpen = Boolean(isOpen);
+  syncViewportHeightVar();
   els.chatPanel.hidden = !state.chatOpen;
   els.chatPanel.classList.toggle("is-open", state.chatOpen);
   document.body.classList.toggle("chat-view-active", state.chatOpen);
@@ -1377,6 +1393,13 @@ function setChatOpen(isOpen, { syncUrl = true, feedback = false } = {}) {
     }, 0);
   }
   updateChatChrome();
+}
+
+function syncViewportHeightVar() {
+  const viewportHeight = Math.round(window.visualViewport?.height || window.innerHeight || 0);
+  if (viewportHeight > 0) {
+    document.documentElement.style.setProperty("--app-viewport-height", `${viewportHeight}px`);
+  }
 }
 
 function syncChatUrl(isOpen) {
@@ -1441,6 +1464,49 @@ function handleChatMessagesClick(event) {
   if (!button || !els.chatMessages.contains(button)) return;
   event.preventDefault();
   reactToChatMessage(button.dataset.messageId, button.dataset.chatReaction);
+}
+
+function handleChatTouchStart(event) {
+  const touch = event.touches?.[0];
+  if (!state.chatOpen || !touch || !isChatTouchScrollTarget(event.target)) {
+    resetChatTouchScroll();
+    return;
+  }
+
+  state.chatTouchScroll = {
+    active: true,
+    lastY: touch.clientY,
+    startX: touch.clientX,
+    startY: touch.clientY,
+  };
+}
+
+function handleChatTouchMove(event) {
+  const touch = event.touches?.[0];
+  if (!state.chatTouchScroll.active || !touch || !event.cancelable) return;
+
+  const horizontalTravel = Math.abs(touch.clientX - state.chatTouchScroll.startX);
+  const verticalTravel = Math.abs(touch.clientY - state.chatTouchScroll.startY);
+  if (verticalTravel < 4 || horizontalTravel > verticalTravel) return;
+
+  const maxScrollTop = Math.max(0, els.chatMessages.scrollHeight - els.chatMessages.clientHeight);
+  if (!maxScrollTop) return;
+
+  const deltaY = state.chatTouchScroll.lastY - touch.clientY;
+  const nextScrollTop = Math.min(maxScrollTop, Math.max(0, els.chatMessages.scrollTop + deltaY));
+  els.chatMessages.scrollTop = nextScrollTop;
+  state.chatTouchScroll.lastY = touch.clientY;
+  event.preventDefault();
+}
+
+function resetChatTouchScroll() {
+  state.chatTouchScroll.active = false;
+}
+
+function isChatTouchScrollTarget(target) {
+  const element = target instanceof Element ? target : null;
+  if (!element || element.closest(".chat-header, .chat-form, audio, video")) return false;
+  return Boolean(element.closest("#chatMessages") || element.closest("#chatPanel"));
 }
 
 async function reactToChatMessage(messageId, reaction) {

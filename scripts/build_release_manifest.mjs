@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { promisify } from "node:util";
 
 const args = parseArgs(process.argv.slice(2));
 const root = path.resolve(args.root || process.cwd());
 const output = path.resolve(root, args.output || "release-manifest.json");
 const releaseId = args.releaseId || new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 const createdAt = args.createdAt || new Date().toISOString();
+const execFileAsync = promisify(execFile);
 
-const files = await collectFiles(root);
+const files = await collectManifestFiles(root);
 const manifest = {
   schemaVersion: 1,
   releaseId,
@@ -23,6 +26,36 @@ const manifest = {
 
 await fs.writeFile(output, `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(`Wrote ${path.relative(root, output) || output} with ${files.length} file(s) for release ${releaseId}.`);
+
+async function collectManifestFiles(directory) {
+  const gitFiles = await collectGitTrackedFiles(directory);
+  if (gitFiles) return gitFiles;
+  return collectFiles(directory);
+}
+
+async function collectGitTrackedFiles(directory) {
+  try {
+    const { stdout } = await execFileAsync("git", ["-C", directory, "ls-files", "-z"], {
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    const paths = stdout.split("\0")
+      .filter(Boolean)
+      .filter((relativePath) => !shouldSkipManifestPath(relativePath));
+    const results = [];
+    for (const relativePath of paths.sort((left, right) => left.localeCompare(right))) {
+      const absolutePath = path.join(directory, relativePath);
+      const buffer = await fs.readFile(absolutePath);
+      results.push({
+        path: toPosixPath(relativePath),
+        bytes: buffer.length,
+        sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
+      });
+    }
+    return results;
+  } catch {
+    return null;
+  }
+}
 
 async function collectFiles(directory, prefix = "") {
   const entries = await fs.readdir(directory, { withFileTypes: true });
@@ -52,6 +85,17 @@ async function collectFiles(directory, prefix = "") {
   return results;
 }
 
+function shouldSkipManifestPath(relativePath) {
+  const normalized = toPosixPath(relativePath);
+  const relativeOutput = toPosixPath(path.relative(root, output));
+  return normalized === relativeOutput
+    || normalized === "release-manifest.json"
+    || normalized === "playwright.config.mjs"
+    || normalized.startsWith("test/")
+    || normalized.startsWith("test-results/")
+    || normalized.startsWith("playwright-report/");
+}
+
 function shouldSkip(name, isDirectory) {
   if (
     name === ".DS_Store"
@@ -60,6 +104,7 @@ function shouldSkip(name, isDirectory) {
     || name === "CHROME_TABS.md"
     || name === "chrome-tab-registry.sqlite"
     || name.startsWith("facebook-marketplace-messages") && name.endsWith(".sqlite")
+    || name.startsWith("facebook-")
     || name === "playwright.config.mjs"
     || name === "production-inventory-current.json"
     || name === "release-manifest.json"
@@ -70,9 +115,12 @@ function shouldSkip(name, isDirectory) {
     || name === ".automation-locks"
     || name === "automation-runs"
     || name === "backups"
+    || name === "facebook-post-packages-current"
+    || name === "output"
     || name === "releases"
     || name === "test"
     || name === "test-results"
+    || name === "tmp"
     || name === "playwright-report";
 }
 

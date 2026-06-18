@@ -10720,7 +10720,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260618-chat-audio-button-v71">
+  <link rel="stylesheet" href="/styles.css?v=20260618-chat-mobile-scroll-v72">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">
