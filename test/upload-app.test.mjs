@@ -2367,11 +2367,38 @@ test("admin invite generation returns a signup URL for clipboard copy", async ()
 
 test("Shortcut inventory endpoint requires bearer token when configured", async () => {
   const token = "shortcut-token-for-tests";
+  const gallerylessCar = {
+    ...SNAPSHOT_NEW_CAR,
+    vin: "2T3R1RFV9RW000001",
+    stockNumber: "UG0001",
+    title: "Used 2024 Toyota Corolla LE",
+    year: "2024",
+    make: "Toyota",
+    model: "Corolla",
+    trim: "LE",
+    price: "$26,990",
+    detailUrl: "https://www.oregans.com/inventory/Used-2024-Toyota-Corolla-UG0001/",
+  };
   const harness = await startTestServer({
     env: { CARPOSTCLUB_SHORTCUTS_BEARER_TOKEN: token },
+    inventoryCars: [TEST_CAR, gallerylessCar],
   });
 
   try {
+    harness.cookie = await login(harness.baseUrl);
+    await uploadPhotos(harness, {
+      dealershipId: TEST_CAR.dealershipId,
+      inventoryTypeId: TEST_CAR.inventoryTypeId,
+      vin: TEST_CAR.vin,
+      photos: [
+        {
+          filename: "shortcut-gallery-photo.jpg",
+          type: "image/jpeg",
+          body: TEST_JPEG_BYTES,
+        },
+      ],
+    });
+
     const unauthenticated = await fetchJson(`${harness.baseUrl}/api/shortcuts/inventory-albums`);
     assert.equal(unauthenticated.status, 401);
     assert.match(unauthenticated.response.headers.get("www-authenticate") || "", /Bearer/);

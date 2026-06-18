@@ -35,7 +35,8 @@ the request `Host` header. Production also fails closed if no app password/hash 
 `CARPOSTCLUB_AUTH_DISABLED=true` for an intentionally unauthenticated deployment.
 
 The macOS/iOS Shortcut inventory endpoint can be protected with `CARPOSTCLUB_SHORTCUTS_BEARER_TOKEN`. When set,
-call `/api/shortcuts/inventory-albums` with `Authorization: Bearer <token>`.
+call `/api/shortcuts/inventory-albums` with `Authorization: Bearer <token>`. The endpoint returns active vehicles
+that already have a photo-gallery album, so the shortcut only lists photo-ready inventory.
 
 Admin-sensitive actions are written to a bounded audit log in the app data directory. Override this with
 `CARPOSTCLUB_AUDIT_LOG_PATH` and `CARPOSTCLUB_AUDIT_LOG_LIMIT`.

@@ -2981,8 +2981,15 @@ async function shortcutInventoryAlbumPicker(query = {}) {
   const dealership = shortcutDealershipFromQuery(query) || cleanDealershipId(shortcutDefaultDealershipId);
   const inventoryTypeId = shortcutInventoryTypeIdFromQuery(query) || defaultInventoryTypeId;
   const cars = await fetchInventoryCars({ dealershipId: dealership.id, inventoryTypeId });
-  const items = cars
-    .map((car) => shortcutInventoryAlbumItem(car, dealership))
+  const albumMatches = await Promise.all(cars.map(async (car) => {
+    const album = await findExistingVehicleAlbum(car);
+    if (!album || Number(album.mediaCount || 0) <= 0) return null;
+    return { car, album };
+  }));
+
+  const items = albumMatches
+    .filter(Boolean)
+    .map(({ car }) => shortcutInventoryAlbumItem(car, dealership))
     .filter(Boolean)
     .sort(compareShortcutInventoryAlbumItems);
 
