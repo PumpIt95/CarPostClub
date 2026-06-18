@@ -1212,6 +1212,23 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.match(facebookTrackedDescriptionText, /Facebook sync: Already represented on Konner John Marketplace; do not publish a duplicate\./);
     assert.match(facebookTrackedDescriptionText, /Ready to post: No/);
 
+    const staleFacebookStatus = await postJson(harness, `/api/albums/${afterUpload.album.id}/facebook-listing-status`, {
+      state: "live",
+      listingId: "27358000090461601",
+      listingUrl: "https://www.facebook.com/marketplace/item/27358000090461601/",
+      title: "2026 Kia Seltos",
+      price: "CA$30,990",
+      matchedBy: ["vin", "stock"],
+      matchConfidence: "exact",
+      source: "test-facebook-sweep",
+      staleAfter: "2000-01-01T00:00:00.000Z",
+    });
+    assert.equal(staleFacebookStatus.status, 201);
+    assert.equal(staleFacebookStatus.body.facebookListing.stale, true);
+    assert.equal(staleFacebookStatus.body.inventoryStatus.lifecycle.facebookState, "stale_facebook_evidence");
+    assert.equal(staleFacebookStatus.body.inventoryStatus.lifecycle.facebookAction, "recheck_facebook_before_post");
+    assert.equal(staleFacebookStatus.body.inventoryStatus.lifecycle.canPostToFacebook, false);
+
     const regularDelete = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/photos/${encodeURIComponent(firstPhoto.filename)}`, {
       method: "DELETE",
       headers: { Cookie: approvedCookie, Accept: "application/json" },
@@ -1757,6 +1774,16 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     const thirdRun = await postJson(harness, "/api/inventory/snapshots/run", {});
     assert.equal(thirdRun.status, 201);
     assert.equal(thirdRun.body.snapshot.newInventory.count, 0);
+    assert.equal(thirdRun.body.snapshot.removedInventory.count, 2);
+    assert.deepEqual(
+      thirdRun.body.snapshot.removedInventory.vehicles.map((vehicle) => vehicle.stockNumber).sort(),
+      [TEST_CAR.stockNumber, SNAPSHOT_NEW_KIA_CAR.stockNumber].sort(),
+    );
+    const thirdRunAuditEvents = await readAuditLog(harness);
+    assertAuditEvent(thirdRunAuditEvents, "inventory.snapshot.manual_run", (event) => (
+      event.details.snapshotId === thirdRun.body.snapshot.id
+      && event.details.removedInventoryCount === 2
+    ));
 
     const finalStatus = await getJson(harness, "/api/inventory/snapshots/status");
     const kiaUsed = finalStatus.presentCounts.find((count) => count.dealershipId === "15" && count.inventoryTypeId === "2");
@@ -1974,6 +2001,65 @@ test("O'Regan's inventory price changes send all-user push alerts", async () => 
     const afterDuplicateRun = await getJson(harness, "/api/notifications");
     assert.equal(afterDuplicateRun.unreadCount, 1);
     assert.equal(afterDuplicateRun.notifications.length, 1);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("O'Regan's inventory price changes without CPC media do not send push alerts", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+
+    const firstRun = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(firstRun.status, 201);
+    assert.equal(firstRun.body.snapshot.priceChanges.count, 0);
+
+    const michael = await createApprovedAccount(harness, {
+      username: "michael.noalbum.price",
+      displayName: "Michael",
+      dealershipId: "18",
+      password: "michael-noalbum-price-password-123",
+    });
+
+    await postJson(harness, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("admin-price-change-noalbum"),
+    });
+    await postJsonWithCookie(harness, michael.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("michael-price-change-noalbum"),
+    });
+
+    await sleep(20);
+    await writeInventoryMock(harness, [{
+      ...TEST_CAR,
+      price: "$29,990",
+    }]);
+
+    const secondRun = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(secondRun.status, 201);
+    assert.equal(secondRun.body.snapshot.status, "completed");
+    assert.equal(secondRun.body.snapshot.priceChanges.count, 1);
+    assert.equal(secondRun.body.snapshot.priceChanges.vehicles[0].stockNumber, TEST_CAR.stockNumber);
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.status, "completed");
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.priceChangeCount, 1);
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.matchedAlbumCount, 0);
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.skippedCount, 1);
+    assert.equal(secondRun.body.snapshot.albumPriceReconciliation.records[0].reason, "no_matching_media_gallery_album");
+    assert.equal(secondRun.body.snapshot.priceChangePushDelivery, undefined);
+
+    const notifications = await getJson(harness, "/api/notifications");
+    assert.equal(notifications.unreadCount, 0);
+    assert.equal(notifications.notifications.length, 0);
+
+    const michaelNotifications = await getJsonWithCookie(harness, michael.cookie, "/api/notifications");
+    assert.equal(michaelNotifications.unreadCount, 0);
+    assert.equal(michaelNotifications.notifications.length, 0);
+
+    const adminLog = await notificationLogForUsername(harness, TEST_USERNAME);
+    const michaelLog = await notificationLogForUsername(harness, michael.username);
+    assert.equal(adminLog.some((notification) => notification.kind === "price_change"), false);
+    assert.equal(michaelLog.some((notification) => notification.kind === "price_change"), false);
   } finally {
     await stopTestServer(harness);
   }
@@ -2836,6 +2922,66 @@ test("gm uploader is excluded while kia users receive the upload push", async ()
   }
 });
 
+test("chat messages support photo attachments and GIPHY GIFs", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+
+    const unconfiguredGifSearch = await fetchJson(`${harness.baseUrl}/api/gifs/search?q=wave`, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(unconfiguredGifSearch.status, 503);
+    assert.equal(unconfiguredGifSearch.body.configured, false);
+
+    const form = new FormData();
+    form.set("text", "Photo from the lot");
+    form.append("attachments", new Blob([pngBytes("chat-photo")], { type: "image/png" }), "chat-photo.png");
+    const photoPost = await fetchJson(`${harness.baseUrl}/api/chat/messages`, {
+      method: "POST",
+      headers: {
+        Cookie: harness.cookie,
+        Accept: "application/json",
+      },
+      body: form,
+    });
+    assert.equal(photoPost.status, 201);
+    assert.equal(photoPost.body.message.text, "Photo from the lot");
+    assert.equal(photoPost.body.message.attachments.length, 1);
+    assert.equal(photoPost.body.message.attachments[0].type, "image");
+    assert.equal(photoPost.body.message.attachments[0].source, "upload");
+    assert.match(photoPost.body.message.attachments[0].url, /^\/api\/chat\/media\//);
+
+    const mediaResponse = await fetch(`${harness.baseUrl}${photoPost.body.message.attachments[0].url}`, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(mediaResponse.status, 200);
+    assert.match(mediaResponse.headers.get("content-type") || "", /^image\/png/);
+    assert.ok((await mediaResponse.arrayBuffer()).byteLength > 0);
+
+    const gifPost = await postJson(harness, "/api/chat/messages", {
+      gif: {
+        id: "test-gif",
+        title: "Happy dance",
+        url: "https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif",
+        previewUrl: "https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif",
+        attributionUrl: "https://giphy.com/gifs/3oEjI6SIIHBdRxXI40",
+      },
+    });
+    assert.equal(gifPost.status, 201);
+    assert.equal(gifPost.body.message.text, "");
+    assert.equal(gifPost.body.message.attachments.length, 1);
+    assert.equal(gifPost.body.message.attachments[0].type, "gif");
+    assert.equal(gifPost.body.message.attachments[0].source, "giphy");
+
+    const messages = await getJson(harness, "/api/chat/messages");
+    assert.deepEqual(messages.messages.map((message) => message.attachments.length), [1, 1]);
+    assert.deepEqual(messages.messages.map((message) => message.attachments[0].type), ["image", "gif"]);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("chat read state is tracked per account across sessions", async () => {
   const harness = await startTestServer();
 
@@ -3103,6 +3249,8 @@ async function startTestServer({ env = {}, inventoryCars = [TEST_CAR] } = {}) {
       CARPOSTCLUB_AUTH_SESSION_SECRET: "test-session-secret",
       CARPOSTCLUB_AUTH_COOKIE_SECURE: "false",
       CARPOSTCLUB_PUSH_DELIVERY_DISABLED: "true",
+      CARPOSTCLUB_GIPHY_API_KEY: "",
+      GIPHY_API_KEY: "",
       OPENAI_API_KEY: "",
       ...env,
     },
