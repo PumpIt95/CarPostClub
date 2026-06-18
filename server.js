@@ -2981,8 +2981,17 @@ async function shortcutInventoryAlbumPicker(query = {}) {
   const dealership = shortcutDealershipFromQuery(query) || cleanDealershipId(shortcutDefaultDealershipId);
   const inventoryTypeId = shortcutInventoryTypeIdFromQuery(query) || defaultInventoryTypeId;
   const cars = await fetchInventoryCars({ dealershipId: dealership.id, inventoryTypeId });
-  const items = cars
-    .map((car) => shortcutInventoryAlbumItem(car, dealership))
+  const albums = await listAlbums();
+  const scopedAlbums = albums.filter((album) => albumMatchesInventoryScope(album, { dealershipId: dealership.id, inventoryTypeId }));
+  const albumMatches = cars.map((car) => {
+    const album = findReadOnlyVehicleAlbum(car, scopedAlbums);
+    if (!album || Number(album.mediaCount || 0) <= 0) return null;
+    return { car, album };
+  });
+
+  const items = albumMatches
+    .filter(Boolean)
+    .map(({ car }) => shortcutInventoryAlbumItem(car, dealership))
     .filter(Boolean)
     .sort(compareShortcutInventoryAlbumItems);
 
@@ -3002,6 +3011,50 @@ async function shortcutInventoryAlbumPicker(query = {}) {
     count: items.length,
     items,
   };
+}
+
+function findReadOnlyVehicleAlbum(car, albums = []) {
+  const targetAlbumId = carAlbumId(car);
+  return albums
+    .filter((album) => albumObjectMatchesVehicle(album, car))
+    .sort((left, right) => compareVehicleAlbumPreference(left, right, targetAlbumId))[0] || null;
+}
+
+function albumObjectMatchesVehicle(album, car) {
+  const vehicle = album?.vehicle || {};
+  const dealershipId = normalizeSpace(vehicle.dealershipId || album?.dealership?.id);
+  const inventoryTypeId = normalizeSpace(vehicle.inventoryTypeId || album?.inventoryTypeId);
+  const sameScope = (!dealershipId || dealershipId === normalizeSpace(car?.dealership?.id))
+    && (!inventoryTypeId || inventoryTypeId === normalizeSpace(car?.inventoryTypeId));
+
+  const carVin = normalizeSpace(car?.vin).toUpperCase();
+  const albumVin = normalizeSpace(vehicle.vin || vehicle.inventoryKey).toUpperCase();
+  let sawComparableStrongIdentifier = false;
+  if (carVin && albumVin) {
+    sawComparableStrongIdentifier = true;
+    if (carVin === albumVin) return sameScope;
+  }
+
+  const carInventoryKey = normalizeSpace(car?.inventoryKey || car?.manualInventoryId).toUpperCase();
+  const albumInventoryKey = normalizeSpace(vehicle.inventoryKey || vehicle.manualInventoryId).toUpperCase();
+  if (carInventoryKey && albumInventoryKey) {
+    sawComparableStrongIdentifier = true;
+    if (carInventoryKey === albumInventoryKey) return sameScope;
+  }
+
+  if (sawComparableStrongIdentifier) return false;
+
+  const carStock = normalizeSpace(car?.stockNumber).toUpperCase();
+  const albumStock = normalizeSpace(vehicle.stockNumber).toUpperCase();
+  return Boolean(carStock && albumStock && carStock === albumStock && sameScope);
+}
+
+function compareVehicleAlbumPreference(left, right, targetAlbumId) {
+  const mediaDelta = Number((right?.mediaCount || 0) > 0) - Number((left?.mediaCount || 0) > 0);
+  if (mediaDelta) return mediaDelta;
+  const targetDelta = Number(right?.id === targetAlbumId) - Number(left?.id === targetAlbumId);
+  if (targetDelta) return targetDelta;
+  return new Date(right?.updatedAt || 0).getTime() - new Date(left?.updatedAt || 0).getTime();
 }
 
 function shortcutInventoryAlbumItem(car, dealership = null) {

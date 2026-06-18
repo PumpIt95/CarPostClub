@@ -718,8 +718,10 @@ test("desktop gallery keeps Download Photos ZIP behavior", async ({ browser }) =
 test("upload vehicle search and manual source mode stay mutually exclusive", async ({ page }) => {
   const harness = await startTestServer();
   try {
+    await page.setViewportSize({ width: 390, height: 844 });
     await loginWithPage(page, harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
     await expect(page.locator("#pageTitle")).toHaveText("Vehicle media intake");
+    await assertUploadPageNoHorizontalScroll(page);
     await expect(page.locator(".picker-grid")).toBeVisible();
     await expect(page.locator("#manualCarForm")).toBeHidden();
     await expect(page.locator("#carSelect option")).toContainText(["Choose inventory"]);
@@ -731,6 +733,7 @@ test("upload vehicle search and manual source mode stay mutually exclusive", asy
     await expect(page.locator("#carSearchResults")).toBeVisible();
     await expect(page.locator("#carSearchResults")).toContainText("U7001");
     await expect(page.locator("#carSearchResults")).not.toContainText("U6247A");
+    await assertUploadPageNoHorizontalScroll(page);
 
     await page.locator(`#carSearchResults [data-inventory-key="${INVENTORY_CARS[1].vin}"]`).click();
     await expect(page.locator("#makeFilterSelect")).toHaveValue("Hyundai");
@@ -748,11 +751,13 @@ test("upload vehicle search and manual source mode stay mutually exclusive", asy
     await expect(page.locator(".inventory-actions")).toBeHidden();
     await expect(page.locator("#carSearchInput")).toHaveValue("");
     await expect(page.locator("#carSelect")).toHaveValue("");
+    await assertUploadPageNoHorizontalScroll(page);
 
     await page.getByRole("button", { name: /Already listed/ }).click();
     await expect(page.locator("#manualCarForm")).toBeHidden();
     await expect(page.locator(".picker-grid")).toBeVisible();
     await expect(page.locator(".inventory-actions")).toBeVisible();
+    await assertUploadPageNoHorizontalScroll(page);
   } finally {
     await stopTestServer(harness);
   }
@@ -1159,6 +1164,27 @@ async function assertGalleryFits(page) {
   expect(metrics.documentWidth, JSON.stringify(metrics, null, 2)).toBeLessThanOrEqual(metrics.viewportWidth + 1);
   expect(metrics.bodyWidth, JSON.stringify(metrics, null, 2)).toBeLessThanOrEqual(metrics.viewportWidth + 1);
   expect(metrics.visibleOffenders, JSON.stringify(metrics, null, 2)).toEqual([]);
+}
+
+async function assertUploadPageNoHorizontalScroll(page) {
+  const metrics = await page.evaluate(() => {
+    const root = document.documentElement;
+    const progress = document.querySelector("#uploadProgressShell");
+    window.scrollTo(99999, window.scrollY);
+    return {
+      viewportWidth: window.innerWidth,
+      documentWidth: root.scrollWidth,
+      bodyWidth: document.body.scrollWidth,
+      scrollX: window.scrollX,
+      progressClientWidth: progress?.clientWidth || 0,
+      progressScrollWidth: progress?.scrollWidth || 0
+    };
+  });
+
+  expect(metrics.documentWidth, JSON.stringify(metrics, null, 2)).toBeLessThanOrEqual(metrics.viewportWidth + 1);
+  expect(metrics.bodyWidth, JSON.stringify(metrics, null, 2)).toBeLessThanOrEqual(metrics.viewportWidth + 1);
+  expect(metrics.scrollX, JSON.stringify(metrics, null, 2)).toBe(0);
+  expect(metrics.progressScrollWidth, JSON.stringify(metrics, null, 2)).toBeLessThanOrEqual(metrics.progressClientWidth + 1);
 }
 
 async function assertBadgeInsideCard(page, cardSelector, badgeSelector) {

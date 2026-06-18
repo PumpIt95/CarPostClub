@@ -73,6 +73,14 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="chatPanel"/);
   assert.match(html, /id="chatPanel"[^>]*aria-hidden="true"[^>]*hidden/);
   assert.match(html, /id="chatForm"/);
+  assert.match(html, /id="chatPhotoInput"[^>]*type="file"[^>]*accept="image\/\*/);
+  assert.match(html, /id="chatPhotoButton"/);
+  assert.match(html, /id="chatGifButton"/);
+  assert.match(html, /id="chatGifPanel"[^>]*hidden/);
+  assert.match(html, /id="chatGifSearch"/);
+  assert.match(html, /id="chatGifResults"/);
+  assert.match(html, /id="chatGifUrl"/);
+  assert.match(html, /id="chatDraftPreview"/);
   assert.match(html, /Back to dashboard/);
   assert.match(html, /O'Regan's inventory/);
   assert.match(html, /id="videoButton"/);
@@ -368,6 +376,12 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /els\.dropZone\.disabled = !unlocked/);
   assert.match(source, /\/api\/chat\/messages/);
   assert.match(source, /\/api\/chat\/stream/);
+  assert.match(source, /\/api\/gifs\/search/);
+  assert.match(source, /chatMessageRequestOptions/);
+  assert.match(source, /new FormData\(\)/);
+  assert.match(source, /chatDraftFiles/);
+  assert.match(source, /chatDraftGif/);
+  assert.match(source, /normalizeChatMessageAttachments/);
   assert.match(source, /\/api\/albums\/stream/);
   assert.match(source, /navigator\.serviceWorker\.register\("\/sw\.js"\)/);
   assert.match(source, /navigator\.serviceWorker\.addEventListener\("message", handleServiceWorkerMessage\)/);
@@ -438,8 +452,6 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /handleUploadLiveEvent/);
   assert.match(source, /refreshAlbumsAfterLiveUpload/);
   assert.match(source, /handledUploadEventIds/);
-  assert.match(source, /liveStatusBody/);
-  assert.match(source, /event\.liveStatusBody \|\| event\.body \|\| "Media uploaded\."/);
   assert.match(source, /event\.data\?\.type !== "carpostclub:push"/);
   assert.match(source, /if \(!document\.hidden\) handlePageVisible\(\)/);
   assert.match(source, /openChat/);
@@ -888,6 +900,11 @@ test("mobile chat view and chat messages have distinct author accents", async ()
   assert.match(styles, /height: 100svh/);
   assert.match(styles, /width: 100vw/);
   assert.match(styles, /\.chat-back-button span/);
+  assert.match(styles, /\.chat-draft-preview/);
+  assert.match(styles, /\.chat-gif-panel/);
+  assert.match(styles, /\.chat-gif-results/);
+  assert.match(styles, /\.chat-attachments/);
+  assert.match(styles, /\.chat-attachment-badge/);
   assert.match(styles, /border-left: 6px solid var\(--chat-user-color\)/);
   assert.match(styles, /\.chat-message\.is-own/);
   assert.match(styles, /justify-self: end/);
@@ -1095,6 +1112,8 @@ test("security headers allow the app's dynamic inline style updates", async () =
 
   assert.match(source, /"script-src 'self' 'unsafe-inline'"/);
   assert.match(source, /"style-src 'self' 'unsafe-inline'"/);
+  assert.match(source, /https:\/\/\*\.giphy\.com/);
+  assert.match(source, /https:\/\/\*\.giphyusercontent\.com/);
 });
 
 test("auth pages expose PWA metadata and brand assets", async () => {
