@@ -2490,6 +2490,10 @@ test("Shortcut inventory endpoint requires bearer token when configured", async 
     assert.match(unauthenticated.response.headers.get("www-authenticate") || "", /Bearer/);
     assertNoStoreHeaders(unauthenticated.response);
 
+    const albumMetadataPath = path.join(harness.uploadRoot, TEST_ALBUM_ID, ".album.json");
+    const albumMetadataBeforeShortcut = await fs.readFile(albumMetadataPath, "utf8");
+    const storedStateBeforeShortcut = await snapshotStoredState(harness.tempRoot);
+
     const authorized = await fetchJson(`${harness.baseUrl}/api/shortcuts/inventory-albums`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -2498,6 +2502,8 @@ test("Shortcut inventory endpoint requires bearer token when configured", async 
     assert.equal(authorized.body.count, 1);
     assert.equal(authorized.body.items[0].vin, TEST_CAR.vin);
     assertNoStoreHeaders(authorized.response);
+    assert.equal(await fs.readFile(albumMetadataPath, "utf8"), albumMetadataBeforeShortcut);
+    assert.deepEqual(await snapshotStoredState(harness.tempRoot), storedStateBeforeShortcut);
   } finally {
     await stopTestServer(harness);
   }
@@ -3521,6 +3527,36 @@ async function readAuditLog(harness) {
     if (error?.code === "ENOENT") return [];
     throw error;
   }
+}
+
+async function snapshotStoredState(root) {
+  const files = [];
+
+  async function walk(directory) {
+    const entries = await fs.readdir(directory, { withFileTypes: true }).catch((error) => {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+
+    for (const entry of entries) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const body = await fs.readFile(fullPath);
+      files.push({
+        path: path.relative(root, fullPath),
+        size: body.length,
+        sha256: crypto.createHash("sha256").update(body).digest("hex"),
+      });
+    }
+  }
+
+  await walk(root);
+  return files.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 function assertAuditEvent(events, kind, predicate = () => true) {
