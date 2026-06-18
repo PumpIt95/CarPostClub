@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import childProcess from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -50,8 +51,9 @@ try {
   ledger.status = "error";
   ledger.error = String(error?.stack || error);
   if (args.runDir) {
-    ensureDir(args.runDir);
-    writeJson(path.join(args.runDir, "fast-batch-timing-ledger.json"), finishTimingLedger(ledger));
+    const runDir = requiredPath(args.runDir, "--run-dir");
+    ensureDir(runDir);
+    writeJson(safeChildPath(runDir, "fast-batch-timing-ledger.json"), finishTimingLedger(ledger));
   }
   throw error;
 }
@@ -119,11 +121,11 @@ async function runPlan(options, activeLedger) {
     const publishedRows = options.publishedResultsFile
       ? normalizePublishedRows(readJson(options.publishedResultsFile))
       : [];
-    return [...baseRows, ...publishedRows];
+    return dedupeFacebookEvidence([...baseRows, ...publishedRows]);
   });
 
   const plan = await timePhase("queueBuild", async () => buildPostingPlan(inventoryRows, facebookRows, options));
-  const outPath = path.join(runDir, options.output || "fast-batch-plan.json");
+  const outPath = safeChildPath(runDir, safeOutputFilename(options.output || "fast-batch-plan.json"));
   writeJson(outPath, plan);
 
   activeLedger.status = "ok";
@@ -134,13 +136,13 @@ async function runPlan(options, activeLedger) {
     alreadyLiveButNeedsUpdate: plan.alreadyLiveButNeedsUpdate.length,
     manualReview: plan.manualReview.length,
   };
-  writeJson(path.join(runDir, "fast-batch-timing-ledger.json"), finishTimingLedger(activeLedger));
+  writeJson(safeChildPath(runDir, "fast-batch-timing-ledger.json"), finishTimingLedger(activeLedger));
 
   printJson({
     ok: true,
     command: "plan",
     output: outPath,
-    timingLedger: path.join(runDir, "fast-batch-timing-ledger.json"),
+    timingLedger: safeChildPath(runDir, "fast-batch-timing-ledger.json"),
     summary: plan.summary,
   });
 }
@@ -158,7 +160,7 @@ async function runPrepPackages(options, activeLedger) {
   const coverChoices = await timePhase("coverPlanLoad", async () => loadCoverChoices(options.coverOrderFile));
   const result = await timePhase("photoPackagePrep", async () => prepareUploadReadyPackages(queue, coverChoices, options));
 
-  const outputPath = path.join(runDir, options.output || "upload-ready-summary.json");
+  const outputPath = safeChildPath(runDir, safeOutputFilename(options.output || "upload-ready-summary.json"));
   writeJson(outputPath, result);
 
   activeLedger.status = "ok";
@@ -168,13 +170,13 @@ async function runPrepPackages(options, activeLedger) {
     blocked: result.blocked.length,
     dryRun: Boolean(options.dryRun),
   };
-  writeJson(path.join(runDir, "fast-batch-timing-ledger.json"), finishTimingLedger(activeLedger));
+  writeJson(safeChildPath(runDir, "fast-batch-timing-ledger.json"), finishTimingLedger(activeLedger));
 
   printJson({
     ok: true,
     command: "prep-packages",
     output: outputPath,
-    timingLedger: path.join(runDir, "fast-batch-timing-ledger.json"),
+    timingLedger: safeChildPath(runDir, "fast-batch-timing-ledger.json"),
     summary: activeLedger.counts,
   });
 }
@@ -190,15 +192,10 @@ function normalizeInventoryRows(body, options) {
 
   return rows
     .map((row) => normalizeInventoryRow(row))
-    .filter((row) => {
-      if (!row.stock && !row.vin && !row.albumId) return false;
-      if (row.sourceActive === false) return false;
-      if (row.inventoryType && row.inventoryType !== "used") return false;
-      if (row.facebookReadyForPosting === false) return false;
-      if (row.mediaCount !== null && row.mediaCount < minPhotos) return false;
-      if (allowedDealerships.size && row.dealershipName && !allowedDealerships.has(row.dealershipName)) return false;
-      return true;
-    });
+    .map((row) => ({
+      ...row,
+      eligibility: inventoryCandidateEligibility(row, { minPhotos, allowedDealerships }),
+    }));
 }
 
 function normalizeInventoryRow(row) {
@@ -226,11 +223,49 @@ function normalizeInventoryRow(row) {
     bodyStyle: text(row.bodyStyle || row.marketplace?.fields?.bodyStyle || row.fields?.bodyStyle),
     dealershipName: text(row.dealershipName || row.dealership?.name || row.marketplace?.fields?.dealershipName),
     inventoryType: normalizeInventoryType(row),
-    facebookReadyForPosting: row.facebookReadyForPosting ?? row.facebookReady ?? null,
-    sourceActive: row.sourceActive ?? row.inventoryStatus?.active ?? true,
+    facebookReadyForPosting: normalizeFacebookReady(row),
+    sourceActive: normalizeSourceActive(row),
     detailUrl: text(row.detailUrl || row.url),
     raw: row,
   };
+}
+
+function inventoryCandidateEligibility(row, { minPhotos, allowedDealerships }) {
+  const reasons = [];
+  if (!row.stock && !row.vin && !row.albumId) reasons.push("missing-vehicle-identity");
+  if (row.sourceActive !== true) reasons.push(row.sourceActive === false ? "source-inactive" : "source-active-uncertain");
+  if (!row.inventoryType) reasons.push("inventory-type-uncertain");
+  else if (row.inventoryType !== "used") reasons.push("inventory-type-disallowed");
+  if (allowedDealerships.size) {
+    if (!row.dealershipName) reasons.push("dealership-uncertain");
+    else if (!allowedDealerships.has(row.dealershipName)) reasons.push("dealership-disallowed");
+  }
+  if (row.mediaCount === null) reasons.push("media-readiness-uncertain");
+  else if (row.mediaCount < minPhotos) reasons.push("insufficient-media");
+  if (row.facebookReadyForPosting !== true) {
+    reasons.push(row.facebookReadyForPosting === false ? "facebook-readiness-false" : "facebook-readiness-uncertain");
+  }
+  return {
+    ok: reasons.length === 0,
+    reasons,
+  };
+}
+
+function normalizeSourceActive(row) {
+  const explicit = row.sourceActive ?? row.inventoryStatus?.sourceActive ?? row.inventoryStatus?.active;
+  if (typeof explicit === "boolean") return explicit;
+  const status = lower(row.sourceStatus || row.inventoryStatus?.sourceStatus || row.inventoryStatus?.lifecycle?.sourceStatus);
+  if (["active", "source_active", "available"].includes(status)) return true;
+  if (["removed", "source_removed", "sold", "inactive"].includes(status)) return false;
+  return null;
+}
+
+function normalizeFacebookReady(row) {
+  const explicit = row.facebookReadyForPosting
+    ?? row.facebookReady
+    ?? row.readyToPost
+    ?? row.inventoryStatus?.lifecycle?.canPostToFacebook;
+  return typeof explicit === "boolean" ? explicit : null;
 }
 
 function normalizeFacebookRows(body) {
@@ -283,10 +318,100 @@ function normalizePublishedRows(rows) {
     .filter((row) => row.title && row.priceValue !== null);
 }
 
+function dedupeFacebookEvidence(rows) {
+  const selected = [];
+  const strongKeyToIndex = new Map();
+  const fallbackKeyToIndex = new Map();
+
+  for (const row of rows) {
+    const keys = facebookEvidenceKeys(row);
+    let existingIndex = keys.strong.find((key) => strongKeyToIndex.has(key));
+    if (existingIndex) {
+      existingIndex = strongKeyToIndex.get(existingIndex);
+    } else if (strongKeyToIndex.has(keys.rowKey)) {
+      existingIndex = strongKeyToIndex.get(keys.rowKey);
+    } else if (keys.fallback && fallbackKeyToIndex.has(keys.fallback)) {
+      const fallbackIndex = fallbackKeyToIndex.get(keys.fallback);
+      const fallbackRow = selected[fallbackIndex];
+      const fallbackKeys = facebookEvidenceKeys(fallbackRow);
+      if (
+        row.source === "published-results"
+        || fallbackRow.source === "published-results"
+        || !keys.strong.length
+        || !fallbackKeys.strong.length
+      ) {
+        existingIndex = fallbackIndex;
+      }
+    }
+
+    if (existingIndex === undefined) {
+      rememberFacebookEvidenceRow(selected, strongKeyToIndex, fallbackKeyToIndex, row);
+      continue;
+    }
+
+    const preferred = preferredFacebookEvidence(selected[existingIndex], row);
+    selected[existingIndex] = preferred;
+    rebuildFacebookEvidenceIndexes(selected, strongKeyToIndex, fallbackKeyToIndex);
+  }
+
+  return selected;
+}
+
+function facebookEvidenceKeys(row) {
+  const strong = [];
+  if (row.listingId) strong.push(`id:${lower(row.listingId)}`);
+  if (row.listingUrl) strong.push(`url:${normalizeListingUrl(row.listingUrl)}`);
+  if (row.stock) strong.push(`stock:${lower(row.stock)}`);
+  if (row.vin) strong.push(`vin:${lower(row.vin)}`);
+  const fallback = row.title && row.priceValue !== null ? `title-price:${listingKey(row.title, row.priceValue)}` : "";
+  return {
+    strong,
+    fallback,
+    rowKey: `row:${crypto.createHash("sha256").update(JSON.stringify(row.raw || row)).digest("hex")}`,
+  };
+}
+
+function rememberFacebookEvidenceRow(selected, strongKeyToIndex, fallbackKeyToIndex, row) {
+  const index = selected.length;
+  selected.push(row);
+  rememberFacebookEvidenceKeys(strongKeyToIndex, fallbackKeyToIndex, row, index);
+}
+
+function rememberFacebookEvidenceKeys(strongKeyToIndex, fallbackKeyToIndex, row, index) {
+  const keys = facebookEvidenceKeys(row);
+  for (const key of keys.strong) strongKeyToIndex.set(key, index);
+  strongKeyToIndex.set(keys.rowKey, index);
+  if (keys.fallback && !fallbackKeyToIndex.has(keys.fallback)) fallbackKeyToIndex.set(keys.fallback, index);
+}
+
+function rebuildFacebookEvidenceIndexes(selected, strongKeyToIndex, fallbackKeyToIndex) {
+  strongKeyToIndex.clear();
+  fallbackKeyToIndex.clear();
+  selected.forEach((row, index) => rememberFacebookEvidenceKeys(strongKeyToIndex, fallbackKeyToIndex, row, index));
+}
+
+function preferredFacebookEvidence(left, right) {
+  const leftFresh = left.source !== "published-results";
+  const rightFresh = right.source !== "published-results";
+  if (leftFresh !== rightFresh) return rightFresh ? right : left;
+  return left;
+}
+
+function normalizeListingUrl(value) {
+  try {
+    const parsed = new URL(value);
+    parsed.hash = "";
+    parsed.search = "";
+    return parsed.toString().replace(/\/+$/, "").toLowerCase();
+  } catch {
+    return lower(value).replace(/\/+$/, "");
+  }
+}
+
 function buildPostingPlan(inventoryRows, facebookRows, options) {
   const nearPriceThreshold = positiveInteger(options.nearPriceThreshold, 1000);
   const indexedFacebookRows = facebookRows.map((row, index) => ({ ...row, _matchId: index }));
-  const facebookCounts = new Map();
+  const remainingByListingKey = new Map();
   const remainingByTitle = new Map();
   const facebookByStock = buildUniqueIndex(indexedFacebookRows, "stock");
   const facebookByVin = buildUniqueIndex(indexedFacebookRows, "vin");
@@ -294,7 +419,8 @@ function buildPostingPlan(inventoryRows, facebookRows, options) {
 
   for (const row of indexedFacebookRows) {
     const key = listingKey(row.title, row.priceValue);
-    facebookCounts.set(key, (facebookCounts.get(key) || 0) + 1);
+    if (!remainingByListingKey.has(key)) remainingByListingKey.set(key, []);
+    remainingByListingKey.get(key).push(row);
     const titleKey = normalizeTitle(row.title);
     if (!remainingByTitle.has(titleKey)) remainingByTitle.set(titleKey, []);
     remainingByTitle.get(titleKey).push(row);
@@ -307,6 +433,15 @@ function buildPostingPlan(inventoryRows, facebookRows, options) {
   const manualReview = [];
 
   for (const candidate of inventoryRows) {
+    if (!candidate.eligibility?.ok) {
+      manualReview.push({
+        ...candidateSummary(candidate),
+        reason: candidate.eligibility?.reasons?.[0] || "candidate-not-eligible",
+        eligibilityReasons: candidate.eligibility?.reasons || ["candidate-not-eligible"],
+      });
+      continue;
+    }
+
     const identityMatch = findIdentityMatch(candidate, { stock: facebookByStock, vin: facebookByVin }, consumedFacebookIds);
     if (identityMatch.ambiguous) {
       manualReview.push({
@@ -317,7 +452,7 @@ function buildPostingPlan(inventoryRows, facebookRows, options) {
       continue;
     }
     if (identityMatch.row) {
-      consumeFacebookRow(identityMatch.row, facebookCounts, consumedFacebookIds);
+      consumeFacebookRow(identityMatch.row, consumedFacebookIds);
       alreadyLive.push({
         ...candidateSummary(candidate),
         match: {
@@ -334,34 +469,63 @@ function buildPostingPlan(inventoryRows, facebookRows, options) {
     }
 
     const key = listingKey(candidate.title, candidate.priceValue);
-    const exactCount = facebookCounts.get(key) || 0;
-    if (exactCount > 0) {
-      facebookCounts.set(key, exactCount - 1);
+    const exactMatch = findListingKeyMatch(key, remainingByListingKey, consumedFacebookIds);
+    if (exactMatch) {
+      consumeFacebookRow(exactMatch, consumedFacebookIds);
       alreadyLive.push({
         ...candidateSummary(candidate),
-        match: { type: "exact-title-price", key },
+        match: {
+          type: "exact-title-price",
+          key,
+          facebookTitle: exactMatch.title,
+          facebookPrice: exactMatch.price,
+          listingId: exactMatch.listingId,
+          listingUrl: exactMatch.listingUrl,
+          source: exactMatch.source,
+        },
       });
       continue;
     }
 
     const titleKey = normalizeTitle(candidate.title);
+    const duplicateTitleCount = duplicateInventoryKeys.get(titleKey) || 0;
     const sameTitleRows = remainingByTitle.get(titleKey) || [];
     const closeRows = sameTitleRows.filter((row) => !consumedFacebookIds.has(row._matchId)
       && row.priceValue !== null
       && candidate.priceValue !== null
       && Math.abs(row.priceValue - candidate.priceValue) <= nearPriceThreshold);
     if (closeRows.length) {
+      if (duplicateTitleCount > 1) {
+        manualReview.push({
+          ...candidateSummary(candidate),
+          reason: "ambiguous-near-price-duplicate-title",
+          match: nearPriceMatchSummary(closeRows),
+        });
+        continue;
+      }
+      if (closeRows.length > 1) {
+        manualReview.push({
+          ...candidateSummary(candidate),
+          reason: "ambiguous-near-price-facebook-match",
+          match: nearPriceMatchSummary(closeRows),
+        });
+        continue;
+      }
+      consumeFacebookRow(closeRows[0], consumedFacebookIds);
       alreadyLiveButNeedsUpdate.push({
         ...candidateSummary(candidate),
         match: {
           type: "same-title-near-price",
-          facebookPrices: closeRows.map((row) => row.price),
+          facebookPrices: [closeRows[0].price],
+          listingId: closeRows[0].listingId,
+          listingUrl: closeRows[0].listingUrl,
+          source: closeRows[0].source,
         },
       });
       continue;
     }
 
-    if ((duplicateInventoryKeys.get(titleKey) || 0) > 1) {
+    if (duplicateTitleCount > 1) {
       manualReview.push({
         ...candidateSummary(candidate),
         reason: "duplicate-inventory-title-without-live-exact-price",
@@ -393,6 +557,24 @@ function buildPostingPlan(inventoryRows, facebookRows, options) {
     alreadyLive,
     alreadyLiveButNeedsUpdate,
     manualReview,
+  };
+}
+
+function findListingKeyMatch(key, rowsByListingKey, consumedIds) {
+  return (rowsByListingKey.get(key) || []).find((row) => !consumedIds.has(row._matchId)) || null;
+}
+
+function nearPriceMatchSummary(rows) {
+  return {
+    type: "same-title-near-price",
+    candidates: rows.map((row) => ({
+      facebookTitle: row.title,
+      facebookPrice: row.price,
+      listingId: row.listingId,
+      listingUrl: row.listingUrl,
+      source: row.source,
+    })),
+    facebookPrices: rows.map((row) => row.price),
   };
 }
 
@@ -434,11 +616,8 @@ function findIdentityMatch(candidate, indexes, consumedIds) {
   return {};
 }
 
-function consumeFacebookRow(row, facebookCounts, consumedIds) {
+function consumeFacebookRow(row, consumedIds) {
   consumedIds.add(row._matchId);
-  const key = listingKey(row.title, row.priceValue);
-  const count = facebookCounts.get(key) || 0;
-  if (count > 0) facebookCounts.set(key, count - 1);
 }
 
 function countInventoryKeys(inventoryRows) {
@@ -479,8 +658,8 @@ function loadCoverChoices(filePath) {
 async function prepareUploadReadyPackages(queue, coverChoices, options) {
   const runDir = requiredPath(options.runDir, "--run-dir");
   const packagesDir = requiredPath(options.packagesDir, "--packages-dir");
-  const unpackedRoot = path.join(runDir, "unpacked");
-  const uploadRoot = path.join(runDir, "upload-ready");
+  const unpackedRoot = safeChildPath(runDir, "unpacked");
+  const uploadRoot = safeChildPath(runDir, "upload-ready");
   const blocked = [];
   const prepared = [];
 
@@ -490,9 +669,9 @@ async function prepareUploadReadyPackages(queue, coverChoices, options) {
   }
 
   for (const target of queue) {
-      const startedMs = performance.now();
-      try {
-        const zipPath = findPackageZip(packagesDir, target);
+    const startedMs = performance.now();
+    try {
+      const zipPath = findPackageZip(packagesDir, target);
       let rawPackageRoot = "";
       let mediaFiles = [];
       let fieldsPath = "";
@@ -523,7 +702,7 @@ async function prepareUploadReadyPackages(queue, coverChoices, options) {
         continue;
       }
 
-      const coverName = chosenCover || path.basename(mediaFiles[0]);
+      const coverName = safeArchiveFilename(chosenCover || path.basename(mediaFiles[0]), "cover");
       const coverPath = mediaFiles.find((file) => path.basename(file) === coverName);
       if (!coverPath) {
         const mediaLocation = options.dryRun
@@ -533,24 +712,24 @@ async function prepareUploadReadyPackages(queue, coverChoices, options) {
       }
 
       const orderedFiles = [coverPath, ...mediaFiles.filter((file) => file !== coverPath)];
-      const uploadPackageRoot = path.join(uploadRoot, `${target.stock || target.albumId}-upload-package`);
-      const photosDir = path.join(uploadPackageRoot, "photos");
-      const pickerDir = path.join(uploadPackageRoot, "facebook-upload-photos");
+      const uploadPackageRoot = safeChildPath(uploadRoot, safePackageDirectoryName(target));
+      const photosDir = safeChildPath(uploadPackageRoot, "photos");
+      const pickerDir = safeChildPath(uploadPackageRoot, "facebook-upload-photos");
       const records = [];
       const photoPaths = [];
 
       if (!options.dryRun) {
-        removeDir(uploadPackageRoot);
+        removeDirStrictChild(uploadRoot, uploadPackageRoot);
         ensureDir(photosDir);
         ensureDir(pickerDir);
       }
 
       orderedFiles.forEach((sourcePath, index) => {
         const ext = path.extname(sourcePath).toLowerCase();
-        const safeBase = sanitizeFilename(path.basename(sourcePath, ext));
+        const safeBase = sanitizePathLabel(path.basename(sourcePath, ext), "photo");
         const filename = `${String(index + 1).padStart(2, "0")}-${safeBase}${ext}`;
-        const photosPath = path.join(photosDir, filename);
-        const pickerPath = path.join(pickerDir, filename);
+        const photosPath = safeChildPath(photosDir, filename);
+        const pickerPath = safeChildPath(pickerDir, filename);
         if (!options.dryRun) {
           fs.copyFileSync(sourcePath, photosPath);
           fs.copyFileSync(sourcePath, pickerPath);
@@ -566,12 +745,12 @@ async function prepareUploadReadyPackages(queue, coverChoices, options) {
       });
 
       if (!options.dryRun) {
-        writeJson(path.join(photosDir, "photo-records.json"), { photos: records });
-        copyIfExists(fieldsPath, path.join(uploadPackageRoot, "facebook-marketplace-fields.json"));
-        copyIfExists(descriptionPath, path.join(uploadPackageRoot, "facebook-marketplace-description.txt"));
-        copyIfExists(manifestPath, path.join(uploadPackageRoot, "package-manifest.json"));
-        writeJson(path.join(uploadPackageRoot, "inventory-car.json"), target.raw || target);
-        writeJson(path.join(uploadPackageRoot, "photo-upload-plan.json"), {
+        writeJson(safeChildPath(photosDir, "photo-records.json"), { photos: records });
+        copyIfExists(fieldsPath, safeChildPath(uploadPackageRoot, "facebook-marketplace-fields.json"));
+        copyIfExists(descriptionPath, safeChildPath(uploadPackageRoot, "facebook-marketplace-description.txt"));
+        copyIfExists(manifestPath, safeChildPath(uploadPackageRoot, "package-manifest.json"));
+        writeJson(safeChildPath(uploadPackageRoot, "inventory-car.json"), target.raw || target);
+        writeJson(safeChildPath(uploadPackageRoot, "photo-upload-plan.json"), {
           uploadScope: "inventory-package-photos-only",
           photoCount: photoPaths.length,
           pickerFolder: pickerDir,
@@ -620,10 +799,24 @@ async function prepareUploadReadyPackages(queue, coverChoices, options) {
 }
 
 async function extractPackage(zipPath, unpackedRoot) {
-  const outputDir = path.join(unpackedRoot, path.basename(zipPath, ".zip"));
-  removeDir(outputDir);
+  const outputDir = safeChildPath(unpackedRoot, safeExtractDirectoryName(zipPath));
+  removeDirStrictChild(unpackedRoot, outputDir);
   ensureDir(outputDir);
-  await spawnChecked("unzip", ["-q", zipPath, "-d", outputDir]);
+  const entries = safeZipEntries(zipPath);
+  const outputPaths = new Set();
+  for (const entry of entries) {
+    if (entry.directory) continue;
+    const outputPath = safeZipOutputPath(outputDir, entry.name);
+    if (outputPaths.has(outputPath)) throw new Error(`Duplicate ZIP output path: ${entry.raw}`);
+    outputPaths.add(outputPath);
+  }
+  for (const entry of entries) {
+    if (entry.directory) continue;
+    const outputPath = safeZipOutputPath(outputDir, entry.name);
+    ensureDir(path.dirname(outputPath));
+    const body = childProcess.execFileSync("unzip", ["-p", zipPath, entry.raw], { encoding: "buffer", maxBuffer: 100 * 1024 * 1024 });
+    fs.writeFileSync(outputPath, body);
+  }
   return outputDir;
 }
 
@@ -638,54 +831,36 @@ function findPackageRoot(unpackedPath) {
   return unpackedPath;
 }
 
-function inferPackageRootFromZip(unpackedRoot, zipPath) {
-  return path.join(unpackedRoot, path.basename(zipPath, ".zip"));
-}
-
 function findPackageZip(packagesDir, target) {
   const files = fs.readdirSync(packagesDir)
     .filter((file) => file.toLowerCase().endsWith(".zip"));
-  const needles = [target.stock, target.albumId].filter(Boolean).map((value) => lower(value));
+  const needles = packageSearchTokens(target);
   const matches = files.filter((file) => needles.some((needle) => lower(file).includes(needle)));
   if (matches.length !== 1) {
     throw new Error(`Expected one package zip for ${target.stock || target.albumId}, found ${matches.length}: ${matches.join(", ")}`);
   }
-  return path.join(packagesDir, matches[0]);
+  return safeChildPath(packagesDir, safeArchiveFilename(matches[0], "package.zip"));
 }
 
 function listImageFiles(mediaDir) {
   if (!fs.existsSync(mediaDir)) return [];
   return fs.readdirSync(mediaDir)
+    .map((file) => safeArchiveFilename(file, "photo"))
     .filter((file) => IMAGE_EXTENSIONS.has(path.extname(file).toLowerCase()))
     .filter((file) => !/cover-photo-candidates|contact-sheet|proof/i.test(file))
     .sort(naturalCompare)
-    .map((file) => path.join(mediaDir, file));
+    .map((file) => safeChildPath(mediaDir, file));
 }
 
 function listZipImageEntries(zipPath) {
-  const output = childProcess.execFileSync("unzip", ["-Z1", zipPath], { encoding: "utf8" });
-  return output.split(/\r?\n/)
-    .filter(Boolean)
-    .filter((entry) => entry.includes("media/"))
+  return safeZipEntries(zipPath)
+    .filter((entry) => !entry.directory)
+    .map((entry) => entry.name)
+    .filter((entry) => entry.split("/").includes("media"))
     .filter((entry) => IMAGE_EXTENSIONS.has(path.extname(entry).toLowerCase()))
     .filter((entry) => !/cover-photo-candidates|contact-sheet|proof/i.test(entry))
     .sort(naturalCompare)
     .map((entry) => `zip://${zipPath}!/${entry}`);
-}
-
-function spawnChecked(command, commandArgs) {
-  return new Promise((resolve, reject) => {
-    const child = childProcess.spawn(command, commandArgs, { stdio: ["ignore", "pipe", "pipe"] });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${command} exited ${code}: ${stderr.trim()}`));
-    });
-  });
 }
 
 function candidateSummary(row) {
@@ -752,16 +927,119 @@ function naturalCompare(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
-function sanitizeFilename(value) {
-  return String(value).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "photo";
+function packageSearchTokens(target) {
+  const tokens = new Set();
+  for (const value of [target.stock, target.albumId, target.vin]) {
+    const raw = text(value);
+    if (!raw) continue;
+    const label = sanitizePathLabel(raw, "");
+    if (label) tokens.add(lower(label));
+    if (safePlainToken(raw)) tokens.add(lower(raw));
+  }
+  if (!tokens.size) throw new Error(`No safe package search token for ${target.title || "vehicle"}`);
+  return [...tokens];
+}
+
+function safePlainToken(value) {
+  const token = text(value);
+  return Boolean(token && !/[\\/:\u0000-\u001f\u007f]/.test(token) && token !== "." && token !== ".." && !path.isAbsolute(token));
+}
+
+function safePackageDirectoryName(target) {
+  const identity = [target.stock, target.albumId, target.vin, target.title].map(text).filter(Boolean).join("_") || "vehicle";
+  return `${safeHashedSegment(identity, "vehicle")}-upload-package`;
+}
+
+function safeExtractDirectoryName(zipPath) {
+  return `${safeHashedSegment(path.basename(zipPath, ".zip"), "package")}-extract`;
+}
+
+function safeHashedSegment(value, fallback) {
+  const label = sanitizePathLabel(value, fallback).slice(0, 48);
+  const digest = crypto.createHash("sha256").update(text(value) || fallback).digest("hex").slice(0, 12);
+  return `${label}-${digest}`;
+}
+
+function sanitizePathLabel(value, fallback = "item") {
+  const label = String(value || "")
+    .replace(/[\u0000-\u001f\u007f\\/:\s]+/g, "-")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^[.-]+|[.-]+$/g, "")
+    .replace(/-+/g, "-")
+    .slice(0, 80);
+  return label || fallback;
+}
+
+function safeOutputFilename(value) {
+  return safeArchiveFilename(value, "output.json");
+}
+
+function safeArchiveFilename(value, fallback) {
+  const name = text(value);
+  if (!name) return fallback;
+  if (path.isAbsolute(name) || /[\\/:\u0000-\u001f\u007f]/.test(name) || name === "." || name === "..") {
+    throw new Error(`Unsafe filename: ${name}`);
+  }
+  const base = path.basename(name);
+  if (base !== name || !base || base === "." || base === "..") throw new Error(`Unsafe filename: ${name}`);
+  return base;
+}
+
+function safeChildPath(root, ...segments) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(resolvedRoot, ...segments);
+  if (resolvedTarget === resolvedRoot || !resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error(`Path escapes expected root: ${resolvedTarget}`);
+  }
+  return resolvedTarget;
+}
+
+function removeDirStrictChild(root, target) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(target);
+  if (resolvedTarget === resolvedRoot || !resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`)) {
+    throw new Error(`Refusing recursive removal outside expected root: ${resolvedTarget}`);
+  }
+  fs.rmSync(resolvedTarget, { force: true, recursive: true });
+}
+
+function safeZipEntries(zipPath) {
+  const output = childProcess.execFileSync("unzip", ["-Z1", zipPath], { encoding: "utf8" });
+  const seen = new Set();
+  return output.split(/\r?\n/)
+    .filter(Boolean)
+    .map((raw) => safeZipEntry(raw))
+    .map((entry) => {
+      if (seen.has(entry.name)) throw new Error(`Duplicate ZIP entry: ${entry.raw}`);
+      seen.add(entry.name);
+      return entry;
+    });
+}
+
+function safeZipEntry(raw) {
+  const value = String(raw || "");
+  if (!value || /[\u0000-\u001f\u007f\\]/.test(value) || path.isAbsolute(value) || /^[A-Za-z]:/.test(value)) {
+    throw new Error(`Unsafe ZIP entry: ${value}`);
+  }
+  const directory = value.endsWith("/");
+  const trimmed = value.replace(/\/+$/g, "");
+  const segments = trimmed.split("/");
+  if (!trimmed || segments.some((segment) => !segment || segment === "." || segment === ".." || /[\u0000-\u001f\u007f\\/]/.test(segment))) {
+    throw new Error(`Unsafe ZIP entry: ${value}`);
+  }
+  return {
+    raw: value,
+    name: segments.join("/"),
+    directory,
+  };
+}
+
+function safeZipOutputPath(root, entryName) {
+  return safeChildPath(root, ...entryName.split("/"));
 }
 
 function copyIfExists(source, destination) {
   if (fs.existsSync(source)) fs.copyFileSync(source, destination);
-}
-
-function removeDir(dirPath) {
-  fs.rmSync(dirPath, { force: true, recursive: true });
 }
 
 function ensureDir(dirPath) {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -153,6 +154,217 @@ test("successful 10-car proof artifacts preserve upload and verification pattern
   }
 });
 
+test("package prep confines traversal-like stock values inside the run directory", () => {
+  const root = freshTempRoot("containment");
+  const runDir = path.join(root, "run");
+  const packagesDir = path.join(root, "packages");
+  fs.mkdirSync(packagesDir, { recursive: true });
+
+  const outsidePackage = path.join(root, "outside-upload-package");
+  const sentinel = path.join(outsidePackage, "sentinel.txt");
+  fs.mkdirSync(outsidePackage, { recursive: true });
+  fs.writeFileSync(sentinel, "outside must survive\n");
+
+  writeStoredZip(path.join(packagesDir, "outside.zip"), {
+    "package-manifest.json": JSON.stringify({ stock: "../../outside" }),
+    "facebook-marketplace-fields.json": JSON.stringify({ title: "Traversal Test", price: "CA$1" }),
+    "facebook-marketplace-description.txt": "Traversal Test",
+    "media/front.jpg": "fake-jpeg-front",
+    "media/second.jpg": "fake-jpeg-second",
+  });
+
+  const queueFile = path.join(root, "queue.json");
+  const coverFile = path.join(root, "covers.json");
+  writeJson(queueFile, [
+    {
+      stock: "../../outside",
+      albumId: "album-1",
+      title: "Traversal Test",
+      price: 1,
+      raw: { stock: "../../outside" },
+    },
+  ]);
+  writeJson(coverFile, [{ stock: "../../outside", chosenCover: "front.jpg" }]);
+
+  execNode(FAST_BATCH_SCRIPT, [
+    "prep-packages",
+    "--run-dir", runDir,
+    "--post-queue-file", queueFile,
+    "--packages-dir", packagesDir,
+    "--cover-order-file", coverFile,
+  ]);
+
+  const summary = readJson(path.join(runDir, "upload-ready-summary.json"));
+  assert.equal(summary.prepared.length, 1);
+  assert.equal(summary.blocked.length, 0);
+  assert.equal(fs.readFileSync(sentinel, "utf8"), "outside must survive\n");
+
+  const uploadRoot = path.join(runDir, "upload-ready");
+  const uploadPackageRoot = summary.prepared[0].uploadPackageRoot;
+  assert.ok(uploadPackageRoot.startsWith(`${uploadRoot}${path.sep}`));
+  assert.doesNotMatch(path.relative(uploadRoot, uploadPackageRoot), /(^|[\\/])\.\.($|[\\/])/);
+  assert.ok(fs.existsSync(path.join(uploadPackageRoot, "facebook-upload-photos", "01-front.jpg")));
+});
+
+test("package prep rejects ZIP entries that would escape extraction root", () => {
+  const root = freshTempRoot("unsafe-zip");
+  const runDir = path.join(root, "run");
+  const packagesDir = path.join(root, "packages");
+  fs.mkdirSync(packagesDir, { recursive: true });
+
+  const outsideDir = path.join(root, "outside");
+  const sentinel = path.join(outsideDir, "sentinel.jpg");
+  fs.mkdirSync(outsideDir, { recursive: true });
+  fs.writeFileSync(sentinel, "safe original\n");
+
+  writeStoredZip(path.join(packagesDir, "BAD.zip"), {
+    "../outside/sentinel.jpg": "bad overwrite",
+    "media/front.jpg": "fake-jpeg-front",
+  });
+
+  const queueFile = path.join(root, "queue.json");
+  writeJson(queueFile, [{ stock: "BAD", title: "Bad Zip", price: 1 }]);
+
+  execNode(FAST_BATCH_SCRIPT, [
+    "prep-packages",
+    "--run-dir", runDir,
+    "--post-queue-file", queueFile,
+    "--packages-dir", packagesDir,
+    "--allow-first-image-cover",
+  ]);
+
+  const summary = readJson(path.join(runDir, "upload-ready-summary.json"));
+  assert.equal(summary.prepared.length, 0);
+  assert.equal(summary.blocked.length, 1);
+  assert.match(summary.blocked[0].message, /Unsafe ZIP entry/);
+  assert.equal(fs.readFileSync(sentinel, "utf8"), "safe original\n");
+});
+
+test("exact title and price Facebook matches consume one listing row only once", () => {
+  const root = freshTempRoot("exact-consume");
+  const plan = runFastBatchPlan(root, {
+    inventory: [
+      eligibleInventory({ stock: "EXACT-1", vin: "VINEXACT1", price: 29990 }),
+      eligibleInventory({ stock: "EXACT-2", vin: "VINEXACT2", price: 29990 }),
+    ],
+    facebook: [
+      {
+        title: "2025 Kia Sorento",
+        price: 29990,
+        listingId: "fb-exact-1",
+        url: "https://facebook.test/marketplace/item/exact-1",
+      },
+    ],
+  });
+
+  assert.equal(plan.summary.alreadyLiveCount, 1);
+  assert.equal(plan.summary.manualReviewCount, 1);
+  assert.equal(plan.summary.readyToPostCount, 0);
+  assert.equal(plan.alreadyLive[0].match.type, "exact-title-price");
+  assert.equal(plan.alreadyLive[0].match.listingId, "fb-exact-1");
+  assert.equal(plan.manualReview[0].reason, "duplicate-inventory-title-without-live-exact-price");
+});
+
+test("duplicate inventory titles with near-price Facebook evidence go to manual review", () => {
+  const root = freshTempRoot("near-duplicate");
+  const plan = runFastBatchPlan(root, {
+    inventory: [
+      eligibleInventory({ stock: "NEAR-1", vin: "VINNEAR1", price: 30000 }),
+      eligibleInventory({ stock: "NEAR-2", vin: "VINNEAR2", price: 30200 }),
+    ],
+    facebook: [
+      {
+        title: "2025 Kia Sorento",
+        price: 30500,
+        listingId: "fb-near-1",
+        url: "https://facebook.test/marketplace/item/near-1",
+      },
+    ],
+  });
+
+  assert.equal(plan.summary.alreadyLiveButNeedsUpdateCount, 0);
+  assert.equal(plan.summary.readyToPostCount, 0);
+  assert.equal(plan.summary.manualReviewCount, 2);
+  assert.deepEqual(
+    plan.manualReview.map((vehicle) => vehicle.reason),
+    ["ambiguous-near-price-duplicate-title", "ambiguous-near-price-duplicate-title"],
+  );
+});
+
+test("Facebook evidence deduplicates stale published rows behind fresh live sweep rows", () => {
+  const root = freshTempRoot("dedupe-evidence");
+  const plan = runFastBatchPlan(root, {
+    inventory: [
+      eligibleInventory({
+        stock: "DEDUP-1",
+        vin: "VINDEDUP1",
+        year: 2025,
+        make: "Kia",
+        model: "K4",
+        price: 26000,
+      }),
+    ],
+    facebook: [
+      {
+        source: "facebook-live-sweep",
+        title: "2025 Kia K4",
+        price: 26000,
+        listingId: "fb-dedupe-1",
+        url: "https://facebook.test/marketplace/item/dedupe-1?ref=feed",
+      },
+      {
+        source: "facebook-live-sweep",
+        title: "2025 Kia K4",
+        price: 26000,
+        listingId: "fb-dedupe-1",
+        url: "https://facebook.test/marketplace/item/dedupe-1?ref=duplicate",
+      },
+    ],
+    published: [
+      {
+        published: true,
+        title: "2025 Kia K4",
+        price: 26000,
+        listingId: "fb-dedupe-1",
+        url: "https://facebook.test/marketplace/item/dedupe-1",
+      },
+    ],
+  });
+
+  assert.equal(plan.summary.facebookActiveCount, 1);
+  assert.equal(plan.summary.alreadyLiveCount, 1);
+  assert.equal(plan.alreadyLive[0].match.source, "facebook-live-sweep");
+});
+
+test("candidate eligibility fails closed for missing or disallowed readiness fields", () => {
+  const root = freshTempRoot("eligibility");
+  const plan = runFastBatchPlan(root, {
+    inventory: [
+      eligibleInventory({ stock: "READY-1", vin: "VINREADY1", model: "K4" }),
+      eligibleInventory({ stock: "MISS-SOURCE", vin: "VINMISSOURCE", model: "Sportage", sourceActive: undefined }),
+      eligibleInventory({ stock: "MISS-TYPE", vin: "VINMISSTYPE", model: "Telluride", inventoryTypeId: undefined }),
+      eligibleInventory({ stock: "MISS-DEALER", vin: "VINMISSDEALER", model: "Carnival", dealershipName: undefined }),
+      eligibleInventory({ stock: "BAD-DEALER", vin: "VINBADDEALER", model: "Seltos", dealershipName: "Other Dealer" }),
+      eligibleInventory({ stock: "MISS-MEDIA", vin: "VINMISSMEDIA", model: "Forte", mediaCount: undefined }),
+      eligibleInventory({ stock: "MISS-FB", vin: "VINMISSFB", model: "Niro", facebookReadyForPosting: undefined }),
+    ],
+    facebook: [],
+    extraArgs: ["--allowed-dealerships", "O'Regan's Kia Halifax"],
+  });
+
+  assert.equal(plan.summary.readyToPostCount, 1);
+  assert.equal(plan.summary.manualReviewCount, 6);
+  assert.deepEqual(plan.readyToPost.map((vehicle) => vehicle.stock), ["READY-1"]);
+
+  const reasonsByStock = new Map(plan.manualReview.map((vehicle) => [vehicle.stock, vehicle.eligibilityReasons]));
+  assert.ok(reasonsByStock.get("MISS-SOURCE").includes("source-active-uncertain"));
+  assert.ok(reasonsByStock.get("MISS-TYPE").includes("inventory-type-uncertain"));
+  assert.ok(reasonsByStock.get("MISS-DEALER").includes("dealership-uncertain"));
+  assert.ok(reasonsByStock.get("BAD-DEALER").includes("dealership-disallowed"));
+  assert.ok(reasonsByStock.get("MISS-MEDIA").includes("media-readiness-uncertain"));
+  assert.ok(reasonsByStock.get("MISS-FB").includes("facebook-readiness-uncertain"));
+});
+
 test("post-publish edit verification blocks Facebook numeric model ID leaks", () => {
   const snapshot = `
     - generic: About this vehicle
@@ -256,6 +468,48 @@ function freshRunDir(name) {
   return dir;
 }
 
+function freshTempRoot(name) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), `cpc2-${name}-`));
+}
+
+function eligibleInventory(overrides = {}) {
+  return {
+    stock: "STOCK-1",
+    vin: "VINSTOCK1",
+    year: 2025,
+    make: "Kia",
+    model: "Sorento",
+    price: 30000,
+    mediaCount: 6,
+    dealershipName: "O'Regan's Kia Halifax",
+    inventoryTypeId: "2",
+    sourceActive: true,
+    facebookReadyForPosting: true,
+    ...overrides,
+  };
+}
+
+function runFastBatchPlan(root, { inventory, facebook, published = [], extraArgs = [] }) {
+  const runDir = path.join(root, "run");
+  const inventoryFile = path.join(root, "inventory.json");
+  const facebookFile = path.join(root, "facebook.json");
+  const publishedFile = path.join(root, "published.json");
+  writeJson(inventoryFile, inventory);
+  writeJson(facebookFile, facebook);
+  writeJson(publishedFile, published);
+
+  const args = [
+    "plan",
+    "--run-dir", runDir,
+    "--inventory-file", inventoryFile,
+    "--facebook-file", facebookFile,
+    "--published-results-file", publishedFile,
+    ...extraArgs,
+  ];
+  execNode(FAST_BATCH_SCRIPT, args);
+  return readJson(path.join(runDir, "fast-batch-plan.json"));
+}
+
 function execNode(script, args) {
   return childProcess.execFileSync(process.execPath, [script, ...args], {
     cwd: ROOT,
@@ -267,3 +521,87 @@ function execNode(script, args) {
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
+
+function writeJson(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function writeStoredZip(zipPath, entries) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+
+  for (const [entryName, body] of Object.entries(entries)) {
+    const nameBuffer = Buffer.from(entryName);
+    const bodyBuffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body));
+    const crc = crc32(bodyBuffer);
+
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(0, 8);
+    localHeader.writeUInt16LE(0, 10);
+    localHeader.writeUInt16LE(0, 12);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(bodyBuffer.length, 18);
+    localHeader.writeUInt32LE(bodyBuffer.length, 22);
+    localHeader.writeUInt16LE(nameBuffer.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+
+    localParts.push(localHeader, nameBuffer, bodyBuffer);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0, 8);
+    centralHeader.writeUInt16LE(0, 10);
+    centralHeader.writeUInt16LE(0, 12);
+    centralHeader.writeUInt16LE(0, 14);
+    centralHeader.writeUInt32LE(crc, 16);
+    centralHeader.writeUInt32LE(bodyBuffer.length, 20);
+    centralHeader.writeUInt32LE(bodyBuffer.length, 24);
+    centralHeader.writeUInt16LE(nameBuffer.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+    centralParts.push(centralHeader, nameBuffer);
+
+    offset += localHeader.length + nameBuffer.length + bodyBuffer.length;
+  }
+
+  const centralDir = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(Object.keys(entries).length, 8);
+  end.writeUInt16LE(Object.keys(entries).length, 10);
+  end.writeUInt32LE(centralDir.length, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);
+
+  fs.mkdirSync(path.dirname(zipPath), { recursive: true });
+  fs.writeFileSync(zipPath, Buffer.concat([...localParts, centralDir, end]));
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+const CRC32_TABLE = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+  }
+  return value >>> 0;
+});
