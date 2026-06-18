@@ -97,6 +97,7 @@ const chatMessageLimit = positiveInteger(process.env.CHAT_MESSAGE_LIMIT, 500);
 const chatResponseLimit = Math.min(chatMessageLimit, positiveInteger(process.env.CHAT_RESPONSE_LIMIT, 100));
 const chatMessageMaxLength = positiveInteger(process.env.CHAT_MESSAGE_MAX_LENGTH, 1000);
 const chatAttachmentLimit = Math.min(maxUploadFiles, positiveInteger(process.env.CARPOSTCLUB_CHAT_ATTACHMENT_LIMIT || process.env.KONNER_CHAT_ATTACHMENT_LIMIT, 4));
+const chatReactionTypes = ["laugh", "heart", "thumbs_up", "thumbs_down"];
 const chatGifSearchLimit = Math.min(24, positiveInteger(process.env.CARPOSTCLUB_GIPHY_LIMIT || process.env.GIPHY_LIMIT, 12));
 const giphyApiKey = normalizeSpace(process.env.CARPOSTCLUB_GIPHY_API_KEY || process.env.GIPHY_API_KEY || "");
 const giphyRating = normalizeSpace(process.env.CARPOSTCLUB_GIPHY_RATING || process.env.GIPHY_RATING || "pg-13").slice(0, 12) || "pg-13";
@@ -162,6 +163,38 @@ const videoExtensions = new Set([
   ".mp4",
   ".ogv",
   ".webm",
+]);
+const audioExtensions = new Set([
+  ".3g2",
+  ".3ga",
+  ".3gp",
+  ".aac",
+  ".ac3",
+  ".aif",
+  ".aifc",
+  ".aiff",
+  ".amr",
+  ".ape",
+  ".au",
+  ".caf",
+  ".dts",
+  ".flac",
+  ".m4a",
+  ".m4b",
+  ".m4p",
+  ".mid",
+  ".midi",
+  ".mka",
+  ".mp2",
+  ".mp3",
+  ".oga",
+  ".ogg",
+  ".opus",
+  ".ra",
+  ".ram",
+  ".wav",
+  ".weba",
+  ".wma",
 ]);
 const sharpImageFormatsByExtension = new Map([
   [".avif", new Set(["avif"])],
@@ -321,6 +354,20 @@ const upload = multer({
       return;
     }
     callback(httpError(400, "Only image or video files can be uploaded."));
+  },
+});
+const chatUpload = multer({
+  storage,
+  limits: {
+    fileSize: maxFileBytes,
+    files: maxUploadFiles,
+  },
+  fileFilter: (_req, file, callback) => {
+    if (isChatAttachmentLike(file.originalname, file.mimetype)) {
+      callback(null, true);
+      return;
+    }
+    callback(httpError(400, "Only photos, GIFs, or audio files can be attached to chat."));
   },
 });
 
@@ -1653,6 +1700,22 @@ app.put("/api/chat/read-state", requireAuth, async (req, res, next) => {
   }
 });
 
+app.put("/api/chat/messages/:messageId/reaction", requireAuth, async (req, res, next) => {
+  try {
+    const messageId = cleanChatMessageId(req.params.messageId);
+    const reaction = normalizeChatReactionInput(req.body?.reaction ?? req.body?.type ?? req.body?.kind);
+    const message = await updateChatMessageReaction(messageId, reaction, req.authUser);
+    broadcastChatMessage(message, { event: "reaction" });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      ok: true,
+      message,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/chat/stream", requireAuth, (req, res) => {
   res.status(200);
   res.setHeader("Content-Type", "text/event-stream");
@@ -1708,7 +1771,7 @@ app.get("/api/gifs/search", requireAuth, async (req, res, next) => {
   }
 });
 
-app.post("/api/chat/messages", requireAuth, upload.array("attachments", chatAttachmentLimit), async (req, res, next) => {
+app.post("/api/chat/messages", requireAuth, chatUpload.array("attachments", chatAttachmentLimit), async (req, res, next) => {
   const files = Array.isArray(req.files) ? req.files : [];
   let savedAttachments = [];
   try {
@@ -7162,7 +7225,7 @@ async function appendChatMessage(input, user) {
   const text = sanitizeChatMessageText(draft.text, { truncate: true });
   const attachments = normalizeChatAttachments(draft.attachments);
   if (!text && !attachments.length) {
-    throw httpError(400, "Enter a message or attach a photo/GIF before sending.");
+    throw httpError(400, "Enter a message or attach a photo, GIF, or audio file before sending.");
   }
 
   const authorUsername = normalizeAuthUsername(user?.username || authUsername);
@@ -7174,6 +7237,7 @@ async function appendChatMessage(input, user) {
     authorUsername,
     text,
     attachments,
+    reactions: emptyChatReactions(),
     createdAt: new Date().toISOString(),
   };
 
@@ -7182,6 +7246,38 @@ async function appendChatMessage(input, user) {
     messages.push(message);
     await writeJson(chatMessagesPath, messages.slice(-chatMessageLimit));
     return message;
+  });
+
+  return chatWritePromise;
+}
+
+async function updateChatMessageReaction(messageId, reaction, user) {
+  const reactor = publicUploader(user);
+  if (!reactor?.username) throw httpError(401, "Authentication required.");
+
+  chatWritePromise = chatWritePromise.catch(() => {}).then(async () => {
+    const messages = await readChatMessages();
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0) throw httpError(404, "Chat message not found.");
+
+    const message = {
+      ...messages[index],
+      reactions: normalizeChatReactions(messages[index].reactions),
+    };
+    const alreadyReacted = reaction
+      ? message.reactions[reaction].some((candidate) => candidate.username === reactor.username)
+      : false;
+
+    for (const type of chatReactionTypes) {
+      message.reactions[type] = message.reactions[type]
+        .filter((candidate) => candidate.username !== reactor.username);
+    }
+    if (reaction && !alreadyReacted) message.reactions[reaction].push(reactor);
+
+    const normalized = normalizeStoredChatMessage(message);
+    messages[index] = normalized;
+    await writeJson(chatMessagesPath, messages.slice(-chatMessageLimit));
+    return normalized;
   });
 
   return chatWritePromise;
@@ -7205,7 +7301,7 @@ async function saveChatUploadedAttachments(files, user) {
   const selected = Array.isArray(files) ? files : [];
   if (!selected.length) return [];
   if (selected.length > chatAttachmentLimit) {
-    throw httpError(400, `Attach up to ${chatAttachmentLimit} ${chatAttachmentLimit === 1 ? "photo" : "photos"} at a time.`);
+    throw httpError(400, `Attach up to ${chatAttachmentLimit} ${chatAttachmentLimit === 1 ? "file" : "files"} at a time.`);
   }
 
   await fs.mkdir(chatMediaRoot, { recursive: true });
@@ -7218,17 +7314,18 @@ async function saveChatUploadedAttachments(files, user) {
 
 async function saveChatUploadedAttachment(file, user) {
   const mimetype = normalizeSpace(file?.mimetype).toLowerCase();
-  const originalName = path.basename(String(file?.originalname || "chat-photo"));
-  if (!file?.path || mimetype.startsWith("video/") || isVideoFilename(originalName)) {
-    throw httpError(400, "Only photos and GIFs can be attached to chat.");
-  }
-  if (!mimetype.startsWith("image/") && !isPhotoFilename(originalName)) {
-    throw httpError(400, "Only photos and GIFs can be attached to chat.");
-  }
+  const originalName = path.basename(String(file?.originalname || "chat-attachment"));
+  const isImageAttachment = mimetype.startsWith("image/") || isPhotoFilename(originalName);
+  const isAudioAttachment = mimetype.startsWith("audio/") || isAudioFilename(originalName);
 
   const extension = extensionFor(originalName, mimetype);
-  if (!imageExtensions.has(extension)) {
-    throw httpError(400, "Only photos and GIFs can be attached to chat.");
+  if (!file?.path
+    || mimetype.startsWith("video/")
+    || isVideoFilename(originalName)
+    || (!isImageAttachment && !isAudioAttachment)
+    || (isImageAttachment && !imageExtensions.has(extension))
+    || (isAudioAttachment && !audioExtensions.has(extension))) {
+    throw httpError(400, "Only photos, GIFs, or audio files can be attached to chat.");
   }
 
   const filename = cleanChatMediaFilename(`${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}${extension}`);
@@ -7238,7 +7335,7 @@ async function saveChatUploadedAttachment(file, user) {
     source: "upload",
     filename,
     originalName,
-    contentType: mimetype || contentTypeFor(filename),
+    contentType: uploadContentTypeFor(filename, mimetype),
     bytes: Number(file.size || 0),
     uploadedBy: publicUploader(user),
   });
@@ -7280,19 +7377,26 @@ function normalizeChatUploadedAttachment(value) {
   const filename = cleanChatMediaFilename(value.filename || value.id);
   const originalName = path.basename(String(value.originalName || value.name || filename)).slice(0, 160);
   const contentType = normalizeSpace(value.contentType || value.mimetype || contentTypeFor(filename)).toLowerCase();
-  const isGif = contentType === "image/gif" || path.extname(filename).toLowerCase() === ".gif";
+  const type = chatUploadedAttachmentType(filename, contentType);
   return {
     id: filename,
-    type: isGif ? "gif" : "image",
+    type,
     source: "upload",
     url: chatMediaUrl(filename),
-    downloadUrl: `${chatMediaUrl(filename)}?download=1`,
+    downloadUrl: `${chatMediaUrl(filename)}?download=1&name=${encodeURIComponent(originalName || filename)}`,
     filename,
     originalName: originalName || filename,
     contentType: contentType || contentTypeFor(filename),
     bytes: Math.max(0, Math.floor(Number(value.bytes || 0))),
     uploadedBy: publicUploader(value.uploadedBy),
   };
+}
+
+function chatUploadedAttachmentType(filename, contentType = "") {
+  const mime = String(contentType || "").toLowerCase();
+  if (mime === "image/gif" || path.extname(filename).toLowerCase() === ".gif") return "gif";
+  if (mime.startsWith("audio/") || isAudioFilename(filename)) return "audio";
+  return "image";
 }
 
 function normalizeChatGifAttachmentInput(value) {
@@ -7339,9 +7443,72 @@ function chatMediaUrl(filename) {
   return `/api/chat/media/${encodeURIComponent(cleanChatMediaFilename(filename))}`;
 }
 
+function emptyChatReactions() {
+  return Object.fromEntries(chatReactionTypes.map((type) => [type, []]));
+}
+
+function normalizeChatReactions(value) {
+  const reactions = emptyChatReactions();
+  if (!value || typeof value !== "object") return reactions;
+
+  for (const type of chatReactionTypes) {
+    const users = Array.isArray(value[type]) ? value[type] : [];
+    const seen = new Set();
+    for (const rawUser of users) {
+      const user = normalizeChatReactionUser(rawUser);
+      if (!user?.username || seen.has(user.username)) continue;
+      seen.add(user.username);
+      reactions[type].push(user);
+    }
+  }
+  return reactions;
+}
+
+function normalizeChatReactionUser(value) {
+  if (typeof value === "string") {
+    const username = normalizeAuthUsername(value);
+    return username ? { username, displayName: username } : null;
+  }
+  return publicUploader(value);
+}
+
+function normalizeChatReactionInput(value) {
+  const raw = normalizeSpace(value).toLowerCase();
+  if (!raw) return "";
+  const key = raw.replace(/[\s-]+/g, "_");
+  const aliases = new Map([
+    ["haha", "laugh"],
+    ["laughing", "laugh"],
+    ["lol", "laugh"],
+    ["love", "heart"],
+    ["like", "thumbs_up"],
+    ["thumb_up", "thumbs_up"],
+    ["thumbsup", "thumbs_up"],
+    ["up", "thumbs_up"],
+    ["dislike", "thumbs_down"],
+    ["thumb_down", "thumbs_down"],
+    ["thumbsdown", "thumbs_down"],
+    ["down", "thumbs_down"],
+  ]);
+  const reaction = chatReactionTypes.includes(key) ? key : aliases.get(key) || "";
+  if (!reaction) throw httpError(400, "Choose a valid chat reaction.");
+  return reaction;
+}
+
+function cleanChatMessageId(value) {
+  const id = normalizeSpace(value);
+  if (!id || id.length > 120 || !/^[a-z0-9._-]+$/i.test(id)) {
+    throw httpError(400, "Invalid chat message ID.");
+  }
+  return id;
+}
+
 function cleanChatMediaFilename(value) {
   const filename = path.basename(String(value || ""));
-  if (!filename || filename.length > 180 || !/^[a-z0-9][a-z0-9._-]*$/i.test(filename) || !isPhotoFilename(filename)) {
+  if (!filename
+    || filename.length > 180
+    || !/^[a-z0-9][a-z0-9._-]*$/i.test(filename)
+    || (!isPhotoFilename(filename) && !isAudioFilename(filename))) {
     throw httpError(400, "Invalid chat media filename.");
   }
   return filename;
@@ -7626,8 +7793,9 @@ function normalizePreferenceText(value, maxLength = 120) {
   return normalizeSpace(value).slice(0, maxLength);
 }
 
-function broadcastChatMessage(message) {
-  const payload = `data: ${JSON.stringify(message)}\n\n`;
+function broadcastChatMessage(message, { event = "message" } = {}) {
+  const eventName = normalizeSpace(event);
+  const payload = `${eventName && eventName !== "message" ? `event: ${eventName}\n` : ""}data: ${JSON.stringify(message)}\n\n`;
   for (const client of [...chatClients]) {
     if (!writeChatEvent(client, payload)) {
       chatClients.delete(client);
@@ -7674,6 +7842,7 @@ function normalizeStoredChatMessage(value) {
     authorUsername: normalizeAuthUsername(value.authorUsername || value.username),
     text,
     attachments,
+    reactions: normalizeChatReactions(value.reactions),
     createdAt,
   };
 }
@@ -8433,6 +8602,9 @@ function chatPushBody(message) {
   const attachments = normalizeChatAttachments(message?.attachments);
   const hasGif = attachments.some((attachment) => attachment.type === "gif");
   const hasImage = attachments.some((attachment) => attachment.type === "image");
+  const hasAudio = attachments.some((attachment) => attachment.type === "audio");
+  if (hasAudio && (hasGif || hasImage)) return "sent media";
+  if (hasAudio) return attachments.length === 1 ? "sent an audio file" : "sent audio files";
   if (hasGif && hasImage) return "sent photos and GIFs";
   if (hasGif) return "sent a GIF";
   if (hasImage) return attachments.length === 1 ? "sent a photo" : "sent photos";
@@ -9267,6 +9439,15 @@ function isMediaLike(filename, mimetype) {
   return mime.startsWith("image/") || mime.startsWith("video/") || isMediaFilename(filename);
 }
 
+function isChatAttachmentLike(filename, mimetype) {
+  const mime = String(mimetype || "").toLowerCase();
+  if (mime.startsWith("video/") || isVideoFilename(filename)) return false;
+  return mime.startsWith("image/")
+    || mime.startsWith("audio/")
+    || isPhotoFilename(filename)
+    || isAudioFilename(filename);
+}
+
 function isPhotoFilename(filename) {
   return imageExtensions.has(path.extname(String(filename || "")).toLowerCase());
 }
@@ -9278,6 +9459,10 @@ function isHeicFilename(filename) {
 
 function isVideoFilename(filename) {
   return videoExtensions.has(path.extname(String(filename || "")).toLowerCase());
+}
+
+function isAudioFilename(filename) {
+  return audioExtensions.has(path.extname(String(filename || "")).toLowerCase());
 }
 
 function isMediaFilename(filename) {
@@ -9296,8 +9481,8 @@ function extensionFor(filename, mimetype) {
   if (mime === "image/heic" || mime === "image/heic-sequence") return ".heic";
   if (mime === "image/heif" || mime === "image/heif-sequence") return ".heif";
   if (mime === "image/avif") return ".avif";
-  const mimeKind = mime.startsWith("video/") ? "video" : mime.startsWith("image/") ? "image" : "";
-  const extensionKind = isVideoFilename(filename) ? "video" : isPhotoFilename(filename) ? "image" : "";
+  const mimeKind = mime.startsWith("video/") ? "video" : mime.startsWith("image/") ? "image" : mime.startsWith("audio/") ? "audio" : "";
+  const extensionKind = isVideoFilename(filename) ? "video" : isPhotoFilename(filename) ? "image" : isAudioFilename(filename) ? "audio" : "";
   if (extensionKind && (!mimeKind || extensionKind === mimeKind)) return extension;
 
   if (mime === "image/jpeg") return ".jpg";
@@ -9310,7 +9495,35 @@ function extensionFor(filename, mimetype) {
   if (mime === "video/ogg") return ".ogv";
   if (mime === "video/x-m4v") return ".m4v";
   if (mime.startsWith("video/")) return ".mp4";
+  if (mime === "audio/aac" || mime === "audio/x-aac") return ".aac";
+  if (mime === "audio/ac3") return ".ac3";
+  if (mime === "audio/aiff" || mime === "audio/x-aiff") return ".aiff";
+  if (mime === "audio/amr") return ".amr";
+  if (mime === "audio/ape" || mime === "audio/x-ape") return ".ape";
+  if (mime === "audio/basic") return ".au";
+  if (mime === "audio/flac" || mime === "audio/x-flac") return ".flac";
+  if (mime === "audio/midi" || mime === "audio/x-midi") return ".mid";
+  if (mime === "audio/mp4" || mime === "audio/x-m4a") return ".m4a";
+  if (mime === "audio/mpeg" || mime === "audio/mp3" || mime === "audio/x-mp3" || mime === "audio/mpeg3") return ".mp3";
+  if (mime === "audio/ogg" || mime === "application/ogg") return ".ogg";
+  if (mime === "audio/opus") return ".opus";
+  if (mime === "audio/vnd.dts") return ".dts";
+  if (mime === "audio/vnd.rn-realaudio") return ".ra";
+  if (mime === "audio/wav" || mime === "audio/wave" || mime === "audio/x-wav") return ".wav";
+  if (mime === "audio/webm") return ".weba";
+  if (mime === "audio/x-caf") return ".caf";
+  if (mime === "audio/x-matroska") return ".mka";
+  if (mime === "audio/x-ms-wma") return ".wma";
+  if (mime === "audio/3gpp") return ".3gp";
+  if (mime === "audio/3gpp2") return ".3g2";
+  if (mime.startsWith("audio/")) return ".m4a";
   return ".jpg";
+}
+
+function uploadContentTypeFor(filename, mimetype) {
+  const mime = normalizeSpace(mimetype).toLowerCase();
+  if (mime && mime !== "application/octet-stream") return mime;
+  return contentTypeFor(filename);
 }
 
 function contentTypeFor(filename) {
@@ -9328,6 +9541,27 @@ function contentTypeFor(filename) {
   if (extension === ".webm") return "video/webm";
   if (extension === ".ogv") return "video/ogg";
   if (extension === ".m4v") return "video/x-m4v";
+  if (extension === ".aac") return "audio/aac";
+  if (extension === ".ac3") return "audio/ac3";
+  if (extension === ".aif" || extension === ".aifc" || extension === ".aiff") return "audio/aiff";
+  if (extension === ".amr") return "audio/amr";
+  if (extension === ".ape") return "audio/ape";
+  if (extension === ".au") return "audio/basic";
+  if (extension === ".caf") return "audio/x-caf";
+  if (extension === ".dts") return "audio/vnd.dts";
+  if (extension === ".flac") return "audio/flac";
+  if (extension === ".m4a" || extension === ".m4b" || extension === ".m4p") return "audio/mp4";
+  if (extension === ".mid" || extension === ".midi") return "audio/midi";
+  if (extension === ".mka") return "audio/x-matroska";
+  if (extension === ".mp2" || extension === ".mp3") return "audio/mpeg";
+  if (extension === ".oga" || extension === ".ogg") return "audio/ogg";
+  if (extension === ".opus") return "audio/opus";
+  if (extension === ".ra" || extension === ".ram") return "audio/vnd.rn-realaudio";
+  if (extension === ".wav") return "audio/wav";
+  if (extension === ".weba") return "audio/webm";
+  if (extension === ".wma") return "audio/x-ms-wma";
+  if (extension === ".3g2") return "audio/3gpp2";
+  if (extension === ".3ga" || extension === ".3gp") return "audio/3gpp";
   return "application/octet-stream";
 }
 
@@ -10486,7 +10720,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260616-chat-media-v68">
+  <link rel="stylesheet" href="/styles.css?v=20260618-chat-audio-button-v71">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">

@@ -73,6 +73,9 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="chatPanel"/);
   assert.match(html, /id="chatPanel"[^>]*aria-hidden="true"[^>]*hidden/);
   assert.match(html, /id="chatForm"/);
+  assert.match(html, /id="chatAudioInput"[^>]*accept="audio\/\*/);
+  assert.match(html, /id="chatAudioButton"[^>]*chat-audio-button[^>]*aria-label="Upload audio file"/);
+  assert.match(html, /<span>Audio<\/span>/);
   assert.match(html, /Back to dashboard/);
   assert.match(html, /O'Regan's inventory/);
   assert.match(html, /id="videoButton"/);
@@ -136,8 +139,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.doesNotMatch(html, /id="galleryModelFilter"/);
   assert.doesNotMatch(html, /id="galleryYearFilter"/);
   assert.doesNotMatch(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260616-chat-media-v68/);
-  assert.match(html, /\/styles\.css\?v=20260616-chat-media-v68/);
+  assert.match(html, /\/app\.js\?v=20260618-chat-audio-button-v71/);
+  assert.match(html, /\/styles\.css\?v=20260618-chat-audio-button-v71/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -519,7 +522,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v68/);
+  assert.match(serviceWorker, /carpostclub-pwa-v71/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -893,12 +896,26 @@ test("mobile chat view and chat messages have distinct author accents", async ()
   assert.match(styles, /justify-self: end/);
   assert.match(styles, /border-right: 6px solid var\(--chat-user-color\)/);
   assert.match(styles, /\.chat-message-meta strong::before/);
+  assert.match(styles, /\.chat-draft-item\.is-audio/);
+  assert.match(styles, /\.chat-attachment\.is-audio/);
+  assert.match(styles, /\.chat-attachment\.is-audio audio/);
+  assert.match(styles, /\.chat-tools \.chat-tool-button/);
+  assert.match(styles, /\.chat-audio-button/);
+  assert.match(styles, /\.chat-reactions/);
+  assert.match(styles, /\.chat-reaction-button/);
+  assert.match(styles, /\.chat-reaction-button\.is-selected/);
   assert.doesNotMatch(styles, /\.shortcut-/i);
   assert.doesNotMatch(styles, /body\.shortcut-view-active/i);
   assert.match(source, /palette = \[/);
   assert.match(source, /chatIdentityKey\(message\)/);
   assert.match(source, /message\?\.authorUsername/);
   assert.match(source, /username === normalizeChatIdentity\(state\.currentUser\.username\)/);
+  assert.match(source, /chatAudioButton/);
+  assert.match(source, /function isChatAudioFile/);
+  assert.match(source, /document\.createElement\("audio"\)/);
+  assert.match(source, /chatReactionOptions/);
+  assert.match(source, /function reactToChatMessage/);
+  assert.match(source, /source\.addEventListener\("reaction"/);
 });
 
 test("pwa haptics provide tactile feedback on mobile interaction paths", async () => {
@@ -1109,7 +1126,7 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260616-chat-media-v68/);
+  assert.match(source, /\/styles\.css\?v=20260618-chat-audio-button-v71/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });

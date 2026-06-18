@@ -464,7 +464,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260616-chat-media-v68/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260618-chat-audio-button-v71/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -1292,6 +1292,136 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertMarketplaceMessageLine(reuploaded.body.marketplaceDraft.description);
     assertSingleMarketplaceDescriptionPrice(reuploaded.body.marketplaceDraft.description);
   } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("chat accepts audio attachments and serves them with byte ranges", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const audioBody = mp3Bytes("voice-note");
+    const uploaded = await uploadChatAttachments(harness, {
+      text: "Audio note",
+      attachments: [
+        { filename: "voice-note.mp3", type: "audio/mpeg", body: audioBody },
+      ],
+    });
+
+    assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
+    assert.equal(uploaded.body.ok, true);
+    assert.equal(uploaded.body.message.text, "Audio note");
+    assert.equal(uploaded.body.message.attachments.length, 1);
+    const [attachment] = uploaded.body.message.attachments;
+    assert.equal(attachment.type, "audio");
+    assert.equal(attachment.source, "upload");
+    assert.equal(attachment.originalName, "voice-note.mp3");
+    assert.equal(attachment.contentType, "audio/mpeg");
+    assert.match(attachment.url, /^\/api\/chat\/media\/.+\.mp3$/);
+    assert.match(attachment.downloadUrl, /download=1/);
+    assert.match(attachment.downloadUrl, /voice-note\.mp3/);
+
+    const messages = await getJson(harness, "/api/chat/messages");
+    assert.equal(messages.messages.length, 1);
+    assert.equal(messages.messages[0].attachments[0].type, "audio");
+
+    const range = await fetch(`${harness.baseUrl}${attachment.url}`, {
+      headers: {
+        Cookie: harness.cookie,
+        Range: "bytes=0-5",
+      },
+    });
+    assert.equal(range.status, 206);
+    assert.equal(range.headers.get("accept-ranges"), "bytes");
+    assert.equal(range.headers.get("content-range"), `bytes 0-5/${audioBody.length}`);
+    assert.equal(range.headers.get("content-length"), "6");
+    assert.match(range.headers.get("content-type") || "", /^audio\/mpeg/);
+    assert.deepEqual(Buffer.from(await range.arrayBuffer()), audioBody.subarray(0, 6));
+
+    const download = await fetch(`${harness.baseUrl}${attachment.downloadUrl}`, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(download.status, 200);
+    assert.match(download.headers.get("content-disposition") || "", /attachment/);
+    assert.match(download.headers.get("content-disposition") || "", /voice-note\.mp3/);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("chat message reactions persist, toggle, and stream", async () => {
+  const harness = await startTestServer();
+  let collector = null;
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const firstViewer = await createApprovedAccount(harness, {
+      username: "first.reactor",
+      displayName: "First Reactor",
+      password: "first-reactor-123",
+    });
+    const secondViewer = await createApprovedAccount(harness, {
+      username: "second.reactor",
+      displayName: "Second Reactor",
+      password: "second-reactor-123",
+    });
+    const thirdViewer = await createApprovedAccount(harness, {
+      username: "third.reactor",
+      displayName: "Third Reactor",
+      password: "third-reactor-123",
+    });
+
+    const post = await postJson(harness, "/api/chat/messages", { text: "React to this" });
+    assert.equal(post.status, 201);
+    assert.deepEqual(post.body.message.reactions, {
+      laugh: [],
+      heart: [],
+      thumbs_up: [],
+      thumbs_down: [],
+    });
+
+    collector = await openChatCollector(harness, firstViewer.cookie);
+    const laugh = await putJsonWithCookie(harness, harness.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "laugh" });
+    assert.equal(laugh.status, 200, JSON.stringify(laugh.body));
+    assert.deepEqual(laugh.body.message.reactions.laugh.map((user) => user.username), [TEST_USERNAME]);
+
+    const [streamedReaction] = await collector.waitForMessages(1);
+    assert.equal(streamedReaction.id, post.body.message.id);
+    assert.deepEqual(streamedReaction.reactions.laugh.map((user) => user.username), [TEST_USERNAME]);
+
+    const heart = await putJsonWithCookie(harness, firstViewer.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "heart" });
+    assert.equal(heart.status, 200, JSON.stringify(heart.body));
+    const thumbsUp = await putJsonWithCookie(harness, secondViewer.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "thumbs_up" });
+    assert.equal(thumbsUp.status, 200, JSON.stringify(thumbsUp.body));
+    const thumbsDown = await putJsonWithCookie(harness, thirdViewer.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "thumbs_down" });
+    assert.equal(thumbsDown.status, 200, JSON.stringify(thumbsDown.body));
+
+    const withFourReactions = await getJson(harness, "/api/chat/messages");
+    const reactedMessage = withFourReactions.messages.find((message) => message.id === post.body.message.id);
+    assert.ok(reactedMessage);
+    assert.deepEqual(reactedMessage.reactions.laugh.map((user) => user.username), [TEST_USERNAME]);
+    assert.deepEqual(reactedMessage.reactions.heart.map((user) => user.username), [firstViewer.username]);
+    assert.deepEqual(reactedMessage.reactions.thumbs_up.map((user) => user.username), [secondViewer.username]);
+    assert.deepEqual(reactedMessage.reactions.thumbs_down.map((user) => user.username), [thirdViewer.username]);
+
+    const toggleHeart = await putJsonWithCookie(harness, firstViewer.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "heart" });
+    assert.equal(toggleHeart.status, 200, JSON.stringify(toggleHeart.body));
+    assert.deepEqual(toggleHeart.body.message.reactions.heart, []);
+
+    const moveToThumbsDown = await putJsonWithCookie(harness, firstViewer.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "thumbs_down" });
+    assert.equal(moveToThumbsDown.status, 200, JSON.stringify(moveToThumbsDown.body));
+    assert.deepEqual(moveToThumbsDown.body.message.reactions.heart, []);
+    assert.deepEqual(
+      moveToThumbsDown.body.message.reactions.thumbs_down.map((user) => user.username).sort(),
+      [firstViewer.username, thirdViewer.username].sort(),
+    );
+
+    const invalidReaction = await putJsonWithCookie(harness, secondViewer.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "confused" });
+    assert.equal(invalidReaction.status, 400);
+    assert.match(invalidReaction.body.error, /valid chat reaction/i);
+  } finally {
+    await collector?.close();
     await stopTestServer(harness);
   }
 });
@@ -3513,6 +3643,28 @@ async function uploadPhotos(harness, { dealershipId, inventoryTypeId, vin, inven
   return uploadPhotosWithCookie(harness, harness.cookie, { dealershipId, inventoryTypeId, vin, inventoryKey, photos });
 }
 
+async function uploadChatAttachments(harness, { text = "", attachments = [] }) {
+  const form = new FormData();
+  if (text) form.set("text", text);
+  for (const attachment of attachments) {
+    form.append("attachments", new Blob([attachment.body], { type: attachment.type }), attachment.filename);
+  }
+
+  const response = await fetch(`${harness.baseUrl}/api/chat/messages`, {
+    method: "POST",
+    headers: {
+      Cookie: harness.cookie,
+      Accept: "application/json",
+    },
+    body: form,
+  });
+
+  return {
+    status: response.status,
+    body: await response.json(),
+  };
+}
+
 async function uploadPhotosWithCookie(harness, cookie, { dealershipId, inventoryTypeId, vin, inventoryKey, photos }) {
   const form = new FormData();
   form.set("dealershipId", dealershipId);
@@ -3554,6 +3706,13 @@ function mp4Bytes(label) {
   return Buffer.concat([
     Buffer.from([0x00, 0x00, 0x00, 0x18]),
     Buffer.from("ftypmp42"),
+    Buffer.from(label),
+  ]);
+}
+
+function mp3Bytes(label) {
+  return Buffer.concat([
+    Buffer.from("ID3\x04\x00\x00\x00\x00\x00\x00", "binary"),
     Buffer.from(label),
   ]);
 }

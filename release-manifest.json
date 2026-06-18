@@ -1,0 +1,315 @@
+{
+  "schemaVersion": 1,
+  "releaseId": "20260618T195503Z-chat-audio-button-v71-80a791a",
+  "createdAt": "2026-06-18T19:59:29.037Z",
+  "source": "docker-build",
+  "root": ".",
+  "node": "v22.22.1",
+  "files": [
+    {
+      "path": ".dockerignore",
+      "bytes": 716,
+      "sha256": "4b30eabb12691ff5d5f32a017ff0ff012a58c271cb609593417ebcb11e470b5d"
+    },
+    {
+      "path": ".env.example",
+      "bytes": 1527,
+      "sha256": "92dda0011e9d5e1c6c02cd41c1947b5db9064492b0751ec796392ccba15893ab"
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 632,
+      "sha256": "888293476298d72816a10255fdaa282fe40c352778ec0a368cb062a48a51e6fa"
+    },
+    {
+      "path": "AGENTS.md",
+      "bytes": 2826,
+      "sha256": "9e97668772143748802080823079934c56bde685186bc52958624fcac0cb2089"
+    },
+    {
+      "path": "compose.yaml",
+      "bytes": 483,
+      "sha256": "e742270a4af1ac2d0b7554c7b2242b9357b7bac30529922f440476759928ab76"
+    },
+    {
+      "path": "Dockerfile",
+      "bytes": 404,
+      "sha256": "d3bca2a320947409ac8774902e5d0d410822624d0f53df0660c6920d6aba7f67"
+    },
+    {
+      "path": "docs/operations.md",
+      "bytes": 2668,
+      "sha256": "c9dfac07c9d1ec170de929372e82d3a84afd81a912cb6398d3ee49fabb9c70a4"
+    },
+    {
+      "path": "package-lock.json",
+      "bytes": 110930,
+      "sha256": "8f1b27b1297e59c441c7cc188c876f2214e47b46cc2645de348b293fd94328d0"
+    },
+    {
+      "path": "package.json",
+      "bytes": 1223,
+      "sha256": "322a8754795a3f26fa809612b3e8122bf651c2fa3f688d83741a7ce9ae3413b7"
+    },
+    {
+      "path": "public/app.js",
+      "bytes": 182503,
+      "sha256": "d501d8f2f7596bd0d364583b6a06c8287b8a41927e8265e739cb8dec1217a7cb"
+    },
+    {
+      "path": "public/brand-logos/gm.svg",
+      "bytes": 861,
+      "sha256": "ed4caaabeb000a19a6314a709cea6d8eabff914d60bb54e952986812336bdfc8"
+    },
+    {
+      "path": "public/brand-logos/kia.svg",
+      "bytes": 896,
+      "sha256": "af600886a46a9aa3a930fa7261163e090663b80f4a9c4237f9f64e4707b49515"
+    },
+    {
+      "path": "public/brand-logos/nissan.svg",
+      "bytes": 2179,
+      "sha256": "f234b301bd3c008861d70b80597e088272be2f0394ba4174c1feac75260bdc9d"
+    },
+    {
+      "path": "public/brand-logos/README.md",
+      "bytes": 511,
+      "sha256": "9d9fe1b7c269cda9951be61227d3911032dfc1e3431b720e5126db652e50f0bd"
+    },
+    {
+      "path": "public/brand-logos/volkswagen.svg",
+      "bytes": 1073,
+      "sha256": "5e9fb889f1ccc7776dd9305b235be41a256265d3fef19f26945ea414eb65edf5"
+    },
+    {
+      "path": "public/dealership-logos/15-kia.svg",
+      "bytes": 862,
+      "sha256": "2069a7676950fcec786b9f87fd794f3c4d3c3a6e4101fa066fb2a75f7c4715d0"
+    },
+    {
+      "path": "public/dealership-logos/15-kia.webp",
+      "bytes": 2706,
+      "sha256": "b12a9909946b1db211952dcfc8fbff16ab09c691abe90c69a50fb3ff93fac10f"
+    },
+    {
+      "path": "public/dealership-logos/18-gm.svg",
+      "bytes": 849,
+      "sha256": "ff4faff39212d6fd4d74f88bdf79738e4a6dee3456e4dd73fec6d7564b35bdd0"
+    },
+    {
+      "path": "public/dealership-logos/18-gm.webp",
+      "bytes": 1566,
+      "sha256": "0c157580e033ed98e15a54925ea1ca3c6c6e88069088420ed8d4686960c4b07c"
+    },
+    {
+      "path": "public/dealership-logos/2-greenlight.svg",
+      "bytes": 1093,
+      "sha256": "ba934a734b8937c8267f2b5e8e755fc82c7834c45873325807aef0c562e3f08e"
+    },
+    {
+      "path": "public/dealership-logos/2-greenlight.webp",
+      "bytes": 33462,
+      "sha256": "b861861e031686bfe2c711597f4efaa1d7b20fdccd53debad895e67bc0fed321"
+    },
+    {
+      "path": "public/dealership-logos/3-nissan.svg",
+      "bytes": 2137,
+      "sha256": "2abedbd03ae8ad02fa5c902fe641641cdb06fe4291d4babaf53600123061a186"
+    },
+    {
+      "path": "public/dealership-logos/3-nissan.webp",
+      "bytes": 3788,
+      "sha256": "07aaf1013d9104a4c154585b5243bff668628b7d72e189d7de8690ea0805fb69"
+    },
+    {
+      "path": "public/dealership-logos/31-volkswagen.svg",
+      "bytes": 824,
+      "sha256": "5c0a7a33b7fa08e40f8161c8b27761fbe9dd6ebb0e83386b25e5490c1e0763c5"
+    },
+    {
+      "path": "public/dealership-logos/31-volkswagen.webp",
+      "bytes": 5876,
+      "sha256": "0308244379bc6e74de5dc3289d05037f74e4808229cede83e21c121eaca3b34d"
+    },
+    {
+      "path": "public/dealership-logos/README.md",
+      "bytes": 650,
+      "sha256": "498f4f318c752dfc47cae3bfb1419727975e4cb54663725273fa8628e3ad924d"
+    },
+    {
+      "path": "public/favicon.png",
+      "bytes": 12880,
+      "sha256": "75ac34e1811bb339067a30302b825028e6e8d740a0bec7aef330e9b9491f94f3"
+    },
+    {
+      "path": "public/favicon.svg",
+      "bytes": 1007,
+      "sha256": "10dc3bb0825f718458e7625903cdb8107b1cb7f2b0b3a6b973deccbe8f686cf6"
+    },
+    {
+      "path": "public/file-list.js",
+      "bytes": 679,
+      "sha256": "01f7e93c45e57d2f932fbf3bfbf8e7ab49b93b09adef67b1c17ff837ed39be99"
+    },
+    {
+      "path": "public/icons/app-icon-ai.png",
+      "bytes": 913448,
+      "sha256": "1117e317d6d79c0c7e36c387676456df0b5d2b18ab66b6c82168bdfbd99f8851"
+    },
+    {
+      "path": "public/icons/app-icon-source.png",
+      "bytes": 660190,
+      "sha256": "e2a4ccea06d84e3f49ea10bf6c27e2981b75f64c3da9191578f5ebb1004551d8"
+    },
+    {
+      "path": "public/icons/app-icon.svg",
+      "bytes": 1182,
+      "sha256": "056e28904475cdccd83ef64a1ea160c7e3bed2ab019ceeea4ac97dacc6c42ecd"
+    },
+    {
+      "path": "public/icons/apple-touch-icon.png",
+      "bytes": 25028,
+      "sha256": "db27fdd7cebf5dfdc1eea3a59d40bb3b781c5497d2fad96181cd098e36695901"
+    },
+    {
+      "path": "public/icons/carpostclub-apple-touch-icon.png",
+      "bytes": 25028,
+      "sha256": "db27fdd7cebf5dfdc1eea3a59d40bb3b781c5497d2fad96181cd098e36695901"
+    },
+    {
+      "path": "public/icons/carpostclub-icon-1024.png",
+      "bytes": 660190,
+      "sha256": "e2a4ccea06d84e3f49ea10bf6c27e2981b75f64c3da9191578f5ebb1004551d8"
+    },
+    {
+      "path": "public/icons/carpostclub-icon-192.png",
+      "bytes": 28512,
+      "sha256": "23c91c951f023fce3c0d8b2e5d06e9d5a123b7c9f31c7a956feed178feed8255"
+    },
+    {
+      "path": "public/icons/carpostclub-icon-512.png",
+      "bytes": 190105,
+      "sha256": "01af335a467cbf14ab9cc5e6d402ced08ff49532e50200f59cfb8c38f3df0b95"
+    },
+    {
+      "path": "public/icons/icon-1024.png",
+      "bytes": 660190,
+      "sha256": "e2a4ccea06d84e3f49ea10bf6c27e2981b75f64c3da9191578f5ebb1004551d8"
+    },
+    {
+      "path": "public/icons/icon-192.png",
+      "bytes": 28512,
+      "sha256": "23c91c951f023fce3c0d8b2e5d06e9d5a123b7c9f31c7a956feed178feed8255"
+    },
+    {
+      "path": "public/icons/icon-512.png",
+      "bytes": 190105,
+      "sha256": "01af335a467cbf14ab9cc5e6d402ced08ff49532e50200f59cfb8c38f3df0b95"
+    },
+    {
+      "path": "public/index.html",
+      "bytes": 23598,
+      "sha256": "bdbb622296e0e7c05ed0beb162a5d7ec7a21e5e057962113aacd0bd48412f254"
+    },
+    {
+      "path": "public/manifest.webmanifest",
+      "bytes": 1228,
+      "sha256": "c057b7f493d389868ed7b7c6dee5d1232985902318367261b4841933ee9fcd1d"
+    },
+    {
+      "path": "public/offline.html",
+      "bytes": 1135,
+      "sha256": "62e13f77d014e374b7b3c68e99936bf786f0b4a6106308d031d9d049ac5c2c24"
+    },
+    {
+      "path": "public/share-card.png",
+      "bytes": 150928,
+      "sha256": "2b8bb225a450a1abbe5958ff54d8a968b0b9b7151985d52ca00d0d90a38afd5a"
+    },
+    {
+      "path": "public/share-card.svg",
+      "bytes": 2637,
+      "sha256": "7072c95c1b50becf0fc374265dbce27ca285145d90f5c2cb0eee742e9281013e"
+    },
+    {
+      "path": "public/styles.css",
+      "bytes": 63967,
+      "sha256": "a97f5fb04af5806cdc683eaf98493a6f22826ef757773d90c974d9399d9857ee"
+    },
+    {
+      "path": "public/sw.js",
+      "bytes": 12169,
+      "sha256": "f5d744f6b52fc054387ca017377564724b0ac3067d4e31b1e34d82a6084f73be"
+    },
+    {
+      "path": "public/upload-monkey.png",
+      "bytes": 168959,
+      "sha256": "311f11f8c775f37118dbc808f07e625eba1d795b899edef5339b28de4701f467"
+    },
+    {
+      "path": "public/upload-monkey.svg",
+      "bytes": 4456,
+      "sha256": "3fc76aa591d5f05ce5413e4d8b3a257f7df602a4774d3f822b0f163f7facb99e"
+    },
+    {
+      "path": "README.md",
+      "bytes": 6052,
+      "sha256": "4bafee577ae2173d846fb9a0ba7dd90b5ba29be67d7035057fcc7a9862cda7e3"
+    },
+    {
+      "path": "scripts/backfill_marketplace_descriptions.mjs",
+      "bytes": 6066,
+      "sha256": "38195b0a51eedb7480fd30e4111a4dd4b67f32379f85b59ce82ae9338c716429"
+    },
+    {
+      "path": "scripts/backup_state.mjs",
+      "bytes": 5028,
+      "sha256": "6fca25c523154195f0e6c37d11240c85ffd311c3fc1e2ee013915bfab1f9c5a2"
+    },
+    {
+      "path": "scripts/build_release_manifest.mjs",
+      "bytes": 3696,
+      "sha256": "f205ddd4519e5fa081bb8f7ffd192f54bdb5f4daafbd6a81695da6b379b0d7d1"
+    },
+    {
+      "path": "scripts/cleanup_automation_artifacts.py",
+      "bytes": 5836,
+      "sha256": "180a403ac401270a23382bf4ec41f37696b5f10a58e5a72a790804babba59517"
+    },
+    {
+      "path": "scripts/fb_inbox_fast_path.py",
+      "bytes": 7047,
+      "sha256": "9dba89ccf721bdd54af4a845286203f61945bf0a4a31b21fb030e72039e29f53"
+    },
+    {
+      "path": "scripts/gallery_visual_qa.mjs",
+      "bytes": 12908,
+      "sha256": "031ca3ccdd7217222e90c60d5437b3347095154ce110ed30d32b084deeb36e2e"
+    },
+    {
+      "path": "scripts/production_monitor.mjs",
+      "bytes": 7814,
+      "sha256": "e9a7ed0f7ee22f30cb32d0076853612edb511bab0abe8592b43ea1e7a9ef864e"
+    },
+    {
+      "path": "scripts/restore_state_check.mjs",
+      "bytes": 4190,
+      "sha256": "883f7e85ab36823727a3cbfc616dd69653ca99820a9afe5861a56a3fb315834a"
+    },
+    {
+      "path": "scripts/smoke_test.mjs",
+      "bytes": 11107,
+      "sha256": "64a9af886639af209ef98a8637a74fea21295e78bfa3c9b79125e2916f8b8555"
+    },
+    {
+      "path": "scripts/uca_schedule_tuner.py",
+      "bytes": 14133,
+      "sha256": "b5eee4e0d10510e974e8f7364ee0daa18df6b9fa445ef08647d6e3567fbfabef"
+    },
+    {
+      "path": "server.js",
+      "bytes": 408148,
+      "sha256": "c7baab10cc1f127216dfc0db7f808d6f34ffc7254ae901fc71a6fa59654a0e60"
+    }
+  ]
+}

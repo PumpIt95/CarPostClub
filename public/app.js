@@ -24,6 +24,7 @@ const state = {
   chatGifSearchTimer: 0,
   chatEventSource: null,
   chatReconnectTimer: null,
+  chatReactionPending: new Set(),
   albumEventSource: null,
   albumReconnectTimer: null,
   albumLiveRefreshPromise: null,
@@ -108,6 +109,29 @@ const hapticThrottleMs = 60;
 const hapticCssResetMs = 140;
 const uploadTimeoutMs = 20 * 60 * 1000;
 const chatAttachmentMax = 4;
+const chatAudioExtensionPattern = /\.(?:3g2|3ga|3gp|aac|ac3|aifc?|aiff|amr|ape|au|caf|dts|flac|m4a|m4b|m4p|mid|midi|mka|mp2|mp3|oga|ogg|opus|ra|ram|wav|weba|wma)$/i;
+const chatReactionOptions = [
+  {
+    type: "laugh",
+    label: "Laugh",
+    icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 10h.01"/><path d="M16 10h.01"/><path d="M8 15c1.2 1.3 2.5 2 4 2s2.8-.7 4-2"/></svg>',
+  },
+  {
+    type: "heart",
+    label: "Heart",
+    icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 5.8c-1.6-2-4.6-2.2-6.5-.4L12 7.6 9.7 5.4c-1.9-1.8-4.9-1.6-6.5.4-1.5 1.9-1.3 4.7.5 6.4L12 20l8.3-7.8c1.8-1.7 2-4.5.5-6.4z"/></svg>',
+  },
+  {
+    type: "thumbs_up",
+    label: "Thumbs up",
+    icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10v10"/><path d="M7 11l4-7h2l-1 6h6a2 2 0 0 1 2 2l-1 6a2 2 0 0 1-2 2H7"/><path d="M3 10h4v10H3z"/></svg>',
+  },
+  {
+    type: "thumbs_down",
+    label: "Thumbs down",
+    icon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14V4"/><path d="M7 13l4 7h2l-1-6h6a2 2 0 0 0 2-2l-1-6a2 2 0 0 0-2-2H7"/><path d="M3 4h4v10H3z"/></svg>',
+  },
+];
 let lastHapticAt = 0;
 let hapticCssTimer = 0;
 
@@ -126,6 +150,8 @@ const els = {
   carSearchInput: document.querySelector("#carSearchInput"),
   carSearchResults: document.querySelector("#carSearchResults"),
   carSelect: document.querySelector("#carSelect"),
+  chatAudioButton: document.querySelector("#chatAudioButton"),
+  chatAudioInput: document.querySelector("#chatAudioInput"),
   chatClose: document.querySelector("#chatClose"),
   chatDraftPreview: document.querySelector("#chatDraftPreview"),
   chatEmpty: document.querySelector("#chatEmpty"),
@@ -513,6 +539,7 @@ function bindEvents() {
 
   els.chatToggle.addEventListener("click", () => setChatOpen(!state.chatOpen, { feedback: true }));
   els.chatClose.addEventListener("click", () => setChatOpen(false, { feedback: true }));
+  els.chatMessages.addEventListener("click", handleChatMessagesClick);
   els.chatForm.addEventListener("submit", sendChatMessage);
   els.chatInput.addEventListener("input", updateChatSendState);
   els.chatInput.addEventListener("keydown", (event) => {
@@ -527,6 +554,14 @@ function bindEvents() {
   els.chatPhotoInput.addEventListener("change", () => {
     addChatDraftFiles(snapshotFiles(els.chatPhotoInput.files));
     clearFileInput(els.chatPhotoInput);
+  });
+  els.chatAudioButton.addEventListener("click", () => {
+    clearFileInput(els.chatAudioInput);
+    els.chatAudioInput.click();
+  });
+  els.chatAudioInput.addEventListener("change", () => {
+    addChatDraftFiles(snapshotFiles(els.chatAudioInput.files));
+    clearFileInput(els.chatAudioInput);
   });
   els.chatGifButton.addEventListener("click", () => setChatGifOpen(!state.chatGifOpen, { focus: true }));
   els.chatGifSearch.addEventListener("input", scheduleChatGifSearch);
@@ -1140,6 +1175,13 @@ function connectChatStream() {
       // Ignore malformed stream events and keep the live connection open.
     }
   });
+  source.addEventListener("reaction", (event) => {
+    try {
+      mergeChatReactionMessage(JSON.parse(event.data));
+    } catch {
+      // Ignore malformed stream events and keep the live connection open.
+    }
+  });
 
   source.addEventListener("error", () => {
     source.close();
@@ -1379,7 +1421,7 @@ function chatMessageRequestOptions(text) {
     const form = new FormData();
     if (text) form.set("text", text);
     for (const file of state.chatDraftFiles.slice(0, chatAttachmentMax)) {
-      form.append("attachments", file, file.name || "chat-photo.jpg");
+      form.append("attachments", file, file.name || (isChatAudioFile(file) ? "chat-audio.mp3" : "chat-photo.jpg"));
     }
     if (state.chatDraftGif) form.set("gif", JSON.stringify(state.chatDraftGif));
     return {
@@ -1394,6 +1436,37 @@ function chatMessageRequestOptions(text) {
   };
 }
 
+function handleChatMessagesClick(event) {
+  const button = event.target.closest("[data-chat-reaction]");
+  if (!button || !els.chatMessages.contains(button)) return;
+  event.preventDefault();
+  reactToChatMessage(button.dataset.messageId, button.dataset.chatReaction);
+}
+
+async function reactToChatMessage(messageId, reaction) {
+  const id = String(messageId || "").trim();
+  const type = String(reaction || "").trim();
+  if (!id || !type || state.chatReactionPending.has(id)) return;
+
+  state.chatReactionPending.add(id);
+  renderChatMessages();
+  try {
+    const response = await apiJson(`/api/chat/messages/${encodeURIComponent(id)}/reaction`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reaction: type }),
+    });
+    if (response.message) mergeChatReactionMessage(response.message);
+    haptic("select");
+  } catch (error) {
+    showError(error);
+    renderChatMessages();
+  } finally {
+    state.chatReactionPending.delete(id);
+    renderChatMessages();
+  }
+}
+
 function hasChatDraftContent(text = els.chatInput.value.trim()) {
   return Boolean(text || state.chatDraftFiles.length || state.chatDraftGif);
 }
@@ -1403,21 +1476,25 @@ function updateChatSendState() {
 }
 
 function addChatDraftFiles(files) {
-  const validFiles = files.filter(isChatImageFile);
+  const validFiles = files.filter(isChatAttachmentFile);
   if (validFiles.length !== files.length) {
-    showError(new Error("Only photos and GIFs can be attached to chat."));
+    showError(new Error("Only photos, GIFs, or audio files can be attached to chat."));
   }
   if (!validFiles.length) return;
 
   const openSlots = Math.max(0, chatAttachmentMax - state.chatDraftFiles.length);
   if (!openSlots) {
-    showError(new Error(`Attach up to ${chatAttachmentMax} photos at a time.`));
+    showError(new Error(`Attach up to ${chatAttachmentMax} files at a time.`));
     return;
   }
   state.chatDraftFiles = [...state.chatDraftFiles, ...validFiles.slice(0, openSlots)];
-  if (validFiles.length > openSlots) showError(new Error(`Attach up to ${chatAttachmentMax} photos at a time.`));
+  if (validFiles.length > openSlots) showError(new Error(`Attach up to ${chatAttachmentMax} files at a time.`));
   renderChatDraftPreview();
   updateChatSendState();
+}
+
+function isChatAttachmentFile(file) {
+  return isChatImageFile(file) || isChatAudioFile(file);
 }
 
 function isChatImageFile(file) {
@@ -1425,6 +1502,12 @@ function isChatImageFile(file) {
   const name = String(file?.name || "").toLowerCase();
   return type.startsWith("image/")
     || /\.(?:avif|gif|heic|heif|jpe?g|png|tiff?|webp)$/.test(name);
+}
+
+function isChatAudioFile(file) {
+  const type = String(file?.type || "").toLowerCase();
+  const name = String(file?.name || "").toLowerCase();
+  return type.startsWith("audio/") || chatAudioExtensionPattern.test(name);
 }
 
 function clearChatDraft() {
@@ -1448,6 +1531,7 @@ function renderChatDraftPreview() {
   state.chatDraftFiles.forEach((file, index) => {
     const item = document.createElement("div");
     item.className = "chat-draft-item";
+    item.classList.toggle("is-audio", isChatAudioFile(file));
 
     if (canPreviewChatFile(file)) {
       const image = document.createElement("img");
@@ -1459,11 +1543,11 @@ function renderChatDraftPreview() {
     } else {
       const label = document.createElement("span");
       label.className = "chat-draft-label";
-      label.textContent = chatFileExtension(file.name);
+      label.textContent = chatFileExtension(file.name, isChatAudioFile(file) ? "AUD" : "FILE");
       item.append(label);
     }
 
-    item.append(chatDraftRemoveButton(`Remove ${file.name || "photo"}`, () => {
+    item.append(chatDraftRemoveButton(`Remove ${file.name || "file"}`, () => {
       state.chatDraftFiles.splice(index, 1);
       renderChatDraftPreview();
       updateChatSendState();
@@ -1497,9 +1581,9 @@ function canPreviewChatFile(file) {
     && !/\.(?:heic|heif|tiff?)$/.test(name);
 }
 
-function chatFileExtension(name) {
+function chatFileExtension(name, fallback = "FILE") {
   const match = String(name || "").match(/\.([a-z0-9]{2,5})$/i);
-  return match ? match[1].toUpperCase() : "IMG";
+  return match ? match[1].toUpperCase() : fallback;
 }
 
 function chatDraftRemoveButton(label, onClick) {
@@ -1676,6 +1760,17 @@ function mergeChatMessage(message, { incoming = false } = {}) {
   updateChatChrome();
 }
 
+function mergeChatReactionMessage(message) {
+  const normalized = normalizeChatMessage(message);
+  if (!normalized) return;
+
+  const existingIndex = state.chatMessages.findIndex((candidate) => candidate.id === normalized.id);
+  if (existingIndex < 0) return;
+  state.chatMessages.splice(existingIndex, 1, normalized);
+  renderChatMessages();
+  updateChatChrome();
+}
+
 function updateChatUnreadFromMessages() {
   if (state.chatOpen) {
     state.chatUnread = 0;
@@ -1836,7 +1931,44 @@ function normalizeChatMessage(message) {
     authorUsername: normalizeChatIdentity(message.authorUsername || message.username),
     text,
     attachments,
+    reactions: normalizeChatMessageReactions(message.reactions),
     createdAt,
+  };
+}
+
+function emptyChatMessageReactions() {
+  return Object.fromEntries(chatReactionOptions.map((option) => [option.type, []]));
+}
+
+function normalizeChatMessageReactions(value) {
+  const reactions = emptyChatMessageReactions();
+  if (!value || typeof value !== "object") return reactions;
+
+  for (const option of chatReactionOptions) {
+    const users = Array.isArray(value[option.type]) ? value[option.type] : [];
+    const seen = new Set();
+    for (const rawUser of users) {
+      const user = normalizeChatReactionUser(rawUser);
+      if (!user?.username || seen.has(user.username)) continue;
+      seen.add(user.username);
+      reactions[option.type].push(user);
+    }
+  }
+  return reactions;
+}
+
+function normalizeChatReactionUser(value) {
+  if (typeof value === "string") {
+    const username = normalizeChatIdentity(value);
+    return username ? { username, displayName: username } : null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const username = normalizeChatIdentity(value.username);
+  const displayName = String(value.displayName || value.name || username).trim();
+  if (!username && !displayName) return null;
+  return {
+    username,
+    displayName: displayName || username,
   };
 }
 
@@ -1851,8 +1983,18 @@ function normalizeChatMessageAttachment(value) {
   const rawType = String(value.type || "").trim().toLowerCase();
   const url = normalizeChatAttachmentUrl(value.url);
   if (!url) return null;
-  const type = rawType === "gif" || source === "giphy" ? "gif" : "image";
-  const previewUrl = normalizeChatAttachmentUrl(value.previewUrl || value.thumbnailUrl) || url;
+  const contentType = String(value.contentType || "").trim().toLowerCase();
+  const originalName = String(value.originalName || value.filename || "").trim();
+  const isAudio = rawType === "audio"
+    || contentType.startsWith("audio/")
+    || chatAudioExtensionPattern.test(originalName)
+    || chatAudioExtensionPattern.test(url);
+  const type = rawType === "gif" || source === "giphy"
+    ? "gif"
+    : isAudio
+      ? "audio"
+      : "image";
+  const previewUrl = type === "audio" ? "" : normalizeChatAttachmentUrl(value.previewUrl || value.thumbnailUrl) || url;
   const attributionUrl = normalizeChatAttachmentUrl(value.attributionUrl || value.pageUrl);
   return {
     id: String(value.id || value.filename || url).trim(),
@@ -1861,8 +2003,9 @@ function normalizeChatMessageAttachment(value) {
     url,
     previewUrl,
     downloadUrl: normalizeChatAttachmentUrl(value.downloadUrl),
-    title: String(value.title || value.originalName || (type === "gif" ? "GIF" : "Photo")).trim(),
-    originalName: String(value.originalName || value.filename || "").trim(),
+    title: String(value.title || originalName || (type === "gif" ? "GIF" : type === "audio" ? "Audio" : "Photo")).trim(),
+    originalName,
+    contentType,
     attributionUrl,
   };
 }
@@ -1912,6 +2055,7 @@ function renderChatMessages({ scrollToEnd = false } = {}) {
     if (message.attachments.length) {
       item.append(renderChatAttachments(message.attachments));
     }
+    item.append(renderChatReactions(message));
     return item;
   }));
   els.chatEmpty.hidden = state.chatMessages.length > 0;
@@ -1929,6 +2073,8 @@ function renderChatAttachments(attachments) {
 }
 
 function renderChatAttachment(attachment) {
+  if (attachment.type === "audio") return renderChatAudioAttachment(attachment);
+
   const link = document.createElement("a");
   link.className = `chat-attachment is-${attachment.type}`;
   link.href = attachment.attributionUrl || attachment.url;
@@ -1950,6 +2096,78 @@ function renderChatAttachment(attachment) {
     link.append(badge);
   }
   return link;
+}
+
+function renderChatAudioAttachment(attachment) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "chat-attachment is-audio";
+
+  const title = attachment.title || attachment.originalName || "Audio";
+  const audio = document.createElement("audio");
+  audio.controls = true;
+  audio.preload = "metadata";
+  audio.src = attachment.url;
+  audio.setAttribute("aria-label", title);
+
+  const download = document.createElement("a");
+  download.className = "chat-attachment-title";
+  download.href = attachment.downloadUrl || attachment.url;
+  download.textContent = title;
+  download.title = title;
+  if (!isExternalChatAttachmentUrl(download.href)) {
+    download.download = attachment.originalName || title;
+  }
+
+  wrapper.append(audio, download);
+  return wrapper;
+}
+
+function renderChatReactions(message) {
+  const group = document.createElement("div");
+  group.className = "chat-reactions";
+  group.setAttribute("role", "group");
+  group.setAttribute("aria-label", `Reactions for message from ${message.authorDisplayName || message.author}`);
+
+  const pending = state.chatReactionPending.has(message.id);
+  for (const option of chatReactionOptions) {
+    const users = message.reactions?.[option.type] || [];
+    const own = chatReactionHasCurrentUser(users);
+    const button = document.createElement("button");
+    button.className = "chat-reaction-button";
+    button.classList.toggle("is-selected", own);
+    button.type = "button";
+    button.dataset.chatReaction = option.type;
+    button.dataset.messageId = message.id;
+    button.disabled = pending;
+    button.title = chatReactionTitle(option, users, own);
+    button.setAttribute("aria-label", button.title);
+    button.innerHTML = option.icon;
+
+    const count = document.createElement("span");
+    count.className = "chat-reaction-count";
+    count.textContent = users.length ? String(users.length) : "";
+    button.append(count);
+    group.append(button);
+  }
+
+  return group;
+}
+
+function chatReactionHasCurrentUser(users) {
+  const currentUsername = normalizeChatIdentity(state.currentUser?.username);
+  if (!currentUsername) return false;
+  return users.some((user) => normalizeChatIdentity(user.username) === currentUsername);
+}
+
+function chatReactionTitle(option, users, own) {
+  const names = users
+    .map((user) => user.displayName || user.username)
+    .filter(Boolean)
+    .slice(0, 3);
+  const summary = users.length
+    ? `${users.length} ${users.length === 1 ? "reaction" : "reactions"}${names.length ? ` from ${names.join(", ")}` : ""}`
+    : `React with ${option.label}`;
+  return own ? `Remove ${option.label} reaction. ${summary}` : `${option.label}. ${summary}`;
 }
 
 function isExternalChatAttachmentUrl(value) {
