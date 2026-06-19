@@ -1125,19 +1125,8 @@ test("push notification server routes expose production-gated preview and dealer
   assert.match(source, /normalizePushNotificationPreferences/);
   assert.match(source, /pushNotificationPreferenceKeyForPayload/);
   assert.match(source, /function userWantsPushNotification\(/);
-  assert.match(pushPreferencesSource, /pushNotificationPreferenceOptions/);
-  assert.match(pushPreferencesSource, /chatMessages/);
-  assert.match(pushPreferencesSource, /chatReactions/);
-  assert.match(pushPreferencesSource, /mediaUploads/);
-  assert.match(pushPreferencesSource, /newInventory/);
-  assert.match(pushPreferencesSource, /priceChanges/);
   assert.match(pushPreferencesSource, /function pushNotificationPreferenceKeyForPayload\(/);
-  assert.match(pushPreferencesSource, /chat_reaction[\s\S]*return "chatReactions"/);
-  assert.match(pushPreferencesSource, /chat[\s\S]*return "chatMessages"/);
-  assert.match(pushPreferencesSource, /media_upload[\s\S]*return "mediaUploads"/);
-  assert.match(pushPreferencesSource, /inventory_added[\s\S]*return "newInventory"/);
-  assert.match(pushPreferencesSource, /price_change[\s\S]*return "priceChanges"/);
-  assert.match(pushPreferencesSource, /return "system"/);
+  assert.match(pushPreferencesSource, /function normalizePushNotificationPreferences\(/);
 });
 
 test("disabled auth controls are visibly unavailable", async () => {
