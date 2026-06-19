@@ -89,6 +89,10 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.match(html, /id="notificationPanel"/);
   assert.match(html, /id="notificationList"/);
   assert.match(html, /id="notificationPrompt"/);
+  assert.match(html, /id="notificationSettingsForm"/);
+  assert.match(html, /id="notificationSettingsList"/);
+  assert.match(html, /id="notificationSettingsSave"/);
+  assert.match(html, /Push alert types/);
   assert.doesNotMatch(html, /id="notificationPreview"/);
   assert.doesNotMatch(html, /id="notificationPreviewKind"/);
   assert.doesNotMatch(html, /id="notificationPreviewSend"/);
@@ -166,6 +170,8 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /selectedAlbumTile/);
   assert.match(source, /pageModeFromPath/);
   assert.match(source, /state\.page === "gallery"/);
+  assert.match(source, /if \(state\.page === "gallery"\) \{\n    await loadAlbums\(\);\n    loadCars\(\{ keepSelectedCar: true \}\)\.catch\(reportBackgroundFetchError\);\n    return;\n  \}/);
+  assert.match(source, /if \(state\.page === "gallery"\) \{\n    await loadAlbums\(\);\n    loadCars\(\{ keepSelectedCar: true, forceAlbumRefresh: true \}\)\.catch\(reportBackgroundFetchError\);\n    showStatus\("Gallery refreshed\."\);\n    return;\n  \}/);
   assert.match(source, /renderGalleryAlbumList/);
   assert.match(source, /galleryDealershipFolders/);
   assert.match(source, /renderGalleryFolderCard/);
@@ -384,6 +390,15 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /function enablePushNotifications\(/);
   assert.match(source, /function setNotificationsOpen\(/);
   assert.match(source, /function renderNotificationPanel\(/);
+  assert.match(source, /pushNotificationSettingKeys/);
+  assert.match(source, /chatMessages/);
+  assert.match(source, /chatReactions/);
+  assert.match(source, /mediaUploads/);
+  assert.match(source, /newInventory/);
+  assert.match(source, /priceChanges/);
+  assert.match(source, /function renderPushNotificationSettings\(/);
+  assert.match(source, /function savePushNotificationSettings\(/);
+  assert.match(source, /pushNotifications: \{ \.\.\.state\.pushNotificationSettings \}/);
   assert.match(source, /openNotifications/);
   assert.match(source, /function renderPushPrompt\(/);
   assert.match(source, /function markNotificationsRead\(/);
@@ -1086,6 +1101,10 @@ test("gallery page is an authenticated app route separate from upload", async ()
   assert.match(source, /app\.get\("\/", requireAuth/);
   assert.match(source, /app\.get\("\/gallery", requireAuth/);
   assert.match(source, /res\.sendFile\(path\.join\(publicRoot, "index\.html"\)\)/);
+  assert.match(source, /const inventoryFetchPromises = new Map\(\)/);
+  assert.match(source, /inventoryFetchPromises\.has\(cacheKey\)/);
+  assert.match(source, /inventoryFetchPromises\.set\(cacheKey, fetchPromise\)/);
+  assert.match(source, /inventoryFetchPromises\.delete\(cacheKey\)/);
 });
 
 test("push notification server routes expose production-gated preview and dealership targeting helpers", async () => {
@@ -1103,6 +1122,16 @@ test("push notification server routes expose production-gated preview and dealer
   assert.match(source, /function queueInventoryAddedPushNotifications\(/);
   assert.match(source, /queuePushNotifications\(\{\s*excludeUsername: req\.authUser\.username,\s*payload: uploadPushPayload\(car, result\.photos\.length, uploadEvent\),\s*\}\)/);
   assert.match(source, /function pushDryRunUploadTargets\(/);
+  assert.match(source, /pushNotificationPreferenceKeys/);
+  assert.match(source, /defaultPushNotificationPreferences/);
+  assert.match(source, /function userWantsPushNotification\(/);
+  assert.match(source, /function pushNotificationPreferenceKeyForPayload\(/);
+  assert.match(source, /chat_reaction[\s\S]*return "chatReactions"/);
+  assert.match(source, /chat[\s\S]*return "chatMessages"/);
+  assert.match(source, /media_upload[\s\S]*return "mediaUploads"/);
+  assert.match(source, /inventory_added[\s\S]*return "newInventory"/);
+  assert.match(source, /price_change[\s\S]*return "priceChanges"/);
+  assert.match(source, /return "system"/);
 });
 
 test("disabled auth controls are visibly unavailable", async () => {

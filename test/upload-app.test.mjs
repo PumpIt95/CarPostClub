@@ -20,6 +20,14 @@ const NEW_PASSWORD = "new-password-123";
 const CHANGED_PASSWORD = "changed-password-456";
 const RESET_PASSWORD = "reset-password-789";
 const MARKETPLACE_PROMPT_VERSION = "facebook_marketplace_description_v3_simple";
+const DEFAULT_PUSH_NOTIFICATION_PREFERENCES = {
+  chatMessages: true,
+  chatReactions: true,
+  mediaUploads: true,
+  newInventory: true,
+  priceChanges: true,
+  system: true,
+};
 const TINY_HEIC_BASE64 = [
   "AAAAJGZ0eXBoZWljAAAAAG1pZjFNaVBybWlhZk1pSEJoZWljAAABw21ldGEAAAAAAAAAIWhkbHIA",
   "AAAAAAAAAHBpY3QAAAAAAAAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAAADnBpdG0AAAAAAAEAAAA4aWluZgAAAAAAAgAAABVpbmZlAgAAAAABAABodmMxAAAAABVpbmZlAgAAAQACAABFeGlmAAAAABppcmVmAAAAAAAAAA5jZHNjAAIAAQABAAAA5mlwcnAAAADFaXBjbwAAABNjb2xybmNseAACAAIABoAAAAAMY2xsaQDLAEAAAAAUaXNwZQAAAAAAAAAIAAAACAAAAAlpcm90AAAAABBwaXhpAAAAAAMICAgAAABxaHZjQwEDcAAAALAAAAAAAB7wAPz9+PgAAAsDoAABABdAAQwB//8DcAAAAwCwAAADAAADAB5wJKEAAQAjQgEBA3AAAAMAsAAAAwAAAwAeoBQgQcCbDuIe5FlU3AgIGAKiAAEACUQBwGFyyEBTJAAAABlpcG1hAAAAAAAAAAEAAQaBAgMFhoQAAAAsaWxvYwAAAABEAAACAAEAAAABAAACQwAAADsAAgAAAAEAAAH3AAAATAAAAAFtZGF0AAAAAAAAAJcAAAAGRXhpZgAATU0AKgAAAAgAAwEaAAUAAAABAAAAMgEbAAUAAAABAAAAOgEoAAMAAAABAAIAAAAAAAAAAAAZAAAAAQAAABkAAAABAAAANygBr6LyRoF8/8X//+Rr7L7dzfVf3nyPtAIv94VPdMsmf6Ag+cI1PkOyhr/JHgi9hX4RbWMmyK4=",
@@ -1390,8 +1398,34 @@ test("chat message reactions persist, toggle, and stream", async () => {
     assert.equal(streamedReaction.id, post.body.message.id);
     assert.deepEqual(streamedReaction.reactions.laugh.map((user) => user.username), [TEST_USERNAME]);
 
+    await postJson(harness, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("admin-reaction"),
+    });
+    await postJsonWithCookie(harness, firstViewer.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("first-reaction"),
+    });
+    await postJsonWithCookie(harness, secondViewer.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("second-reaction"),
+    });
+
     const heart = await putJsonWithCookie(harness, firstViewer.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "heart" });
     assert.equal(heart.status, 200, JSON.stringify(heart.body));
+    assert.equal(heart.body.pushDelivery.requested, 2);
+    assert.equal(heart.body.pushDelivery.skipped, 2);
+    assert.equal(heart.body.pushDelivery.logged, 2);
+    const adminReactionNotifications = await getJson(harness, "/api/notifications");
+    assert.equal(adminReactionNotifications.unreadCount, 1);
+    assert.equal(adminReactionNotifications.notifications[0].title, "First Reactor reacted with a heart");
+    assert.equal(adminReactionNotifications.notifications[0].body, "Message: React to this");
+    assert.equal(adminReactionNotifications.notifications[0].kind, "chat");
+    assert.equal(adminReactionNotifications.notifications[0].type, "chat_reaction");
+    assert.equal(adminReactionNotifications.notifications[0].notificationType, "chat_reaction");
+    assert.equal(adminReactionNotifications.notifications[0].messageId, post.body.message.id);
+    assert.equal(adminReactionNotifications.notifications[0].author, "First Reactor");
+    assert.equal(adminReactionNotifications.notifications[0].url, "/?openChat=1");
+    const firstViewerNotifications = await getJsonWithCookie(harness, firstViewer.cookie, "/api/notifications");
+    assert.deepEqual(firstViewerNotifications.notifications, []);
+
     const thumbsUp = await putJsonWithCookie(harness, secondViewer.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "thumbs_up" });
     assert.equal(thumbsUp.status, 200, JSON.stringify(thumbsUp.body));
     const thumbsDown = await putJsonWithCookie(harness, thirdViewer.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "thumbs_down" });
@@ -1407,10 +1441,12 @@ test("chat message reactions persist, toggle, and stream", async () => {
 
     const toggleHeart = await putJsonWithCookie(harness, firstViewer.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "heart" });
     assert.equal(toggleHeart.status, 200, JSON.stringify(toggleHeart.body));
+    assert.equal(toggleHeart.body.pushDelivery, undefined);
     assert.deepEqual(toggleHeart.body.message.reactions.heart, []);
 
     const moveToThumbsDown = await putJsonWithCookie(harness, firstViewer.cookie, `/api/chat/messages/${post.body.message.id}/reaction`, { reaction: "thumbs_down" });
     assert.equal(moveToThumbsDown.status, 200, JSON.stringify(moveToThumbsDown.body));
+    assert.equal(moveToThumbsDown.body.pushDelivery.requested, 2);
     assert.deepEqual(moveToThumbsDown.body.message.reactions.heart, []);
     assert.deepEqual(
       moveToThumbsDown.body.message.reactions.thumbs_down.map((user) => user.username).sort(),
@@ -1422,6 +1458,90 @@ test("chat message reactions persist, toggle, and stream", async () => {
     assert.match(invalidReaction.body.error, /valid chat reaction/i);
   } finally {
     await collector?.close();
+    await stopTestServer(harness);
+  }
+});
+
+test("push notification preferences filter delivery and notification history", async () => {
+  const harness = await startTestServer();
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const mutedViewer = await createApprovedAccount(harness, {
+      username: "muted.push.viewer",
+      displayName: "Muted Push Viewer",
+      password: "muted-push-viewer-123",
+    });
+    const defaultViewer = await createApprovedAccount(harness, {
+      username: "default.push.viewer",
+      displayName: "Default Push Viewer",
+      password: "default-push-viewer-123",
+    });
+
+    const mutedPreferences = await putJsonWithCookie(harness, mutedViewer.cookie, "/api/me/preferences", {
+      preferences: {
+        pushNotifications: {
+          ...DEFAULT_PUSH_NOTIFICATION_PREFERENCES,
+          chatMessages: false,
+          chatReactions: false,
+          mediaUploads: false,
+          system: false,
+        },
+      },
+    });
+    assert.equal(mutedPreferences.status, 200);
+    assert.equal(mutedPreferences.body.preferences.pushNotifications.chatMessages, false);
+    assert.equal(mutedPreferences.body.preferences.pushNotifications.chatReactions, false);
+    assert.equal(mutedPreferences.body.preferences.pushNotifications.mediaUploads, false);
+    assert.equal(mutedPreferences.body.preferences.pushNotifications.system, false);
+
+    await postJsonWithCookie(harness, mutedViewer.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("muted-push-preferences"),
+    });
+    await postJsonWithCookie(harness, defaultViewer.cookie, "/api/push/subscriptions", {
+      subscription: pushSubscriptionFor("default-push-preferences"),
+    });
+
+    const chat = await postJson(harness, "/api/chat/messages", { text: "Preference-filtered chat" });
+    assert.equal(chat.status, 201, JSON.stringify(chat.body));
+    assert.equal(chat.body.pushDelivery.requested, 1);
+    assert.equal(chat.body.pushDelivery.logged, 1);
+    assert.equal(chat.body.pushDelivery.skipped, 1);
+    let defaultNotifications = await waitForNotificationCount(harness, defaultViewer.cookie, 1);
+    assert.equal(defaultNotifications.notifications[0].kind, "chat");
+    assert.equal(defaultNotifications.notifications[0].title, "admin in chat");
+    let mutedNotifications = await getJsonWithCookie(harness, mutedViewer.cookie, "/api/notifications");
+    assert.deepEqual(mutedNotifications.notifications, []);
+
+    const uploaded = await uploadPhotosWithCookie(harness, harness.cookie, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [
+        { filename: "preferences-front.jpg", type: "image/jpeg", body: jpegBytes("preferences-front") },
+      ],
+    });
+    assert.equal(uploaded.status, 201);
+    defaultNotifications = await waitForNotificationCount(harness, defaultViewer.cookie, 2);
+    assert.equal(defaultNotifications.notifications[0].kind, "upload");
+    assert.equal(defaultNotifications.notifications[0].notificationType, "media_upload");
+    mutedNotifications = await getJsonWithCookie(harness, mutedViewer.cookie, "/api/notifications");
+    assert.deepEqual(mutedNotifications.notifications, []);
+
+    const reaction = await putJsonWithCookie(harness, harness.cookie, `/api/chat/messages/${chat.body.message.id}/reaction`, { reaction: "heart" });
+    assert.equal(reaction.status, 200, JSON.stringify(reaction.body));
+    assert.equal(reaction.body.pushDelivery.requested, 1);
+    assert.equal(reaction.body.pushDelivery.logged, 1);
+    defaultNotifications = await waitForNotificationCount(harness, defaultViewer.cookie, 3);
+    assert.equal(defaultNotifications.notifications[0].type, "chat_reaction");
+    mutedNotifications = await getJsonWithCookie(harness, mutedViewer.cookie, "/api/notifications");
+    assert.deepEqual(mutedNotifications.notifications, []);
+
+    const mutedTestPush = await postJsonWithCookie(harness, mutedViewer.cookie, "/api/push/test", {});
+    assert.equal(mutedTestPush.status, 200);
+    assert.equal(mutedTestPush.body.delivery.requested, 0);
+    assert.equal(mutedTestPush.body.delivery.logged, 0);
+  } finally {
     await stopTestServer(harness);
   }
 });
@@ -3036,6 +3156,11 @@ test("gallery and vehicle preferences are tracked per account across sessions", 
       galleryModelFilter: "Seltos",
       galleryYearFilter: "2026",
       galleryUploaderFilter: firstViewer.displayName,
+      pushNotifications: {
+        ...DEFAULT_PUSH_NOTIFICATION_PREFERENCES,
+        chatReactions: false,
+        priceChanges: false,
+      },
     };
 
     const saved = await putJsonWithCookie(harness, firstViewer.cookie, "/api/me/preferences", { preferences });

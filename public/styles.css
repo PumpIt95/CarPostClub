@@ -1920,7 +1920,7 @@ textarea:focus {
   right: max(var(--spacing-24), env(safe-area-inset-right));
   z-index: 70;
   display: none;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   width: min(430px, calc(100vw - 32px));
   max-height: min(620px, calc(100svh - 48px));
   border: 1px solid var(--color-midnight-graphite);
@@ -1970,6 +1970,76 @@ textarea:focus {
 }
 
 .notification-panel-opt-in .icon-text-button {
+  justify-self: start;
+}
+
+.notification-settings-form {
+  display: grid;
+  gap: var(--spacing-10);
+  border-bottom: 1px solid var(--color-stone-gray);
+  padding: var(--spacing-12) var(--spacing-16);
+  background: #f7fafc;
+}
+
+.notification-settings-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacing-12);
+}
+
+.notification-settings-heading h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.notification-settings-heading span {
+  color: var(--color-smoke-gray);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+}
+
+.notification-settings-list {
+  display: grid;
+  gap: 8px;
+}
+
+.notification-setting-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.notification-setting-row input {
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  accent-color: var(--color-kelly-green);
+}
+
+.notification-setting-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notification-setting-copy strong {
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.notification-setting-copy small {
+  color: var(--color-steel-gray);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.notification-settings-form .icon-text-button {
   justify-self: start;
 }
 

@@ -434,6 +434,21 @@
         <span>Enable notifications</span>
       </button>
     </div>
+    <form id="notificationSettingsForm" class="notification-settings-form">
+      <div class="notification-settings-heading">
+        <h3>Push alert types</h3>
+        <span id="notificationSettingsStatus">Saved</span>
+      </div>
+      <div id="notificationSettingsList" class="notification-settings-list"></div>
+      <button id="notificationSettingsSave" class="icon-text-button" type="submit" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+          <path d="M17 21v-8H7v8"/>
+          <path d="M7 3v5h8"/>
+        </svg>
+        <span>Save settings</span>
+      </button>
+    </form>
     <div id="notificationList" class="notification-list" role="list"></div>
     <div id="notificationEmpty" class="notification-empty">No notifications yet</div>
   </section>

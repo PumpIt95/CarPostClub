@@ -287,7 +287,19 @@ const authBootstrapDealershipId = normalizeAuthDealershipId(
     || process.env.AUTH_DEALERSHIP_ID
     || defaultAuthDealershipIdForUser({ username: authUsername }),
 );
+const pushNotificationPreferenceKeys = Object.freeze([
+  "chatMessages",
+  "chatReactions",
+  "mediaUploads",
+  "newInventory",
+  "priceChanges",
+  "system",
+]);
+const defaultPushNotificationPreferences = Object.freeze(Object.fromEntries(
+  pushNotificationPreferenceKeys.map((key) => [key, true]),
+));
 const inventoryCache = new Map();
+const inventoryFetchPromises = new Map();
 const failedLoginAttempts = new Map();
 const chatClients = new Set();
 const albumClients = new Set();
@@ -1704,12 +1716,26 @@ app.put("/api/chat/messages/:messageId/reaction", requireAuth, async (req, res, 
   try {
     const messageId = cleanChatMessageId(req.params.messageId);
     const reaction = normalizeChatReactionInput(req.body?.reaction ?? req.body?.type ?? req.body?.kind);
-    const message = await updateChatMessageReaction(messageId, reaction, req.authUser);
+    const result = await updateChatMessageReaction(messageId, reaction, req.authUser);
+    const message = result.message;
     broadcastChatMessage(message, { event: "reaction" });
+    const pushDeliveryPromise = result.added
+      ? queuePushNotifications({
+        excludeUsername: req.authUser.username,
+        payload: chatReactionPushPayload(message, {
+          reaction: result.reaction,
+          reactor: req.authUser,
+        }),
+      })
+      : null;
+    const pushDelivery = pushDeliveryPromise && pushAwaitDelivery
+      ? await pushDeliveryPromise
+      : null;
     res.setHeader("Cache-Control", "private, no-store");
     res.json({
       ok: true,
       message,
+      ...(pushDelivery ? { pushDelivery } : {}),
     });
   } catch (error) {
     next(error);
@@ -3160,6 +3186,7 @@ function cleanShortcutAlbumPart(value) {
 async function fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId, bypassCache = false }) {
   const dealership = cleanDealershipId(dealershipId);
   inventoryTypeId = cleanInventoryTypeId(inventoryTypeId || defaultInventoryTypeId);
+  const cacheKey = `${dealership.id}:${inventoryTypeId}`;
 
   if (inventoryMockFile) {
     const fetchedAt = Date.now();
@@ -3173,7 +3200,6 @@ async function fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId, bypas
     };
   }
 
-  const cacheKey = `${dealership.id}:${inventoryTypeId}`;
   const cached = inventoryCache.get(cacheKey);
   if (!bypassCache && cached && Date.now() - cached.fetchedAt < inventoryCacheTtlMs) {
     return {
@@ -3186,6 +3212,22 @@ async function fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId, bypas
     };
   }
 
+  if (!bypassCache && inventoryFetchPromises.has(cacheKey)) {
+    return inventoryFetchPromises.get(cacheKey);
+  }
+
+  const fetchPromise = fetchFreshInventoryCarsSnapshot({ dealership, inventoryTypeId, cacheKey });
+  if (!bypassCache) inventoryFetchPromises.set(cacheKey, fetchPromise);
+  try {
+    return await fetchPromise;
+  } finally {
+    if (inventoryFetchPromises.get(cacheKey) === fetchPromise) {
+      inventoryFetchPromises.delete(cacheKey);
+    }
+  }
+}
+
+async function fetchFreshInventoryCarsSnapshot({ dealership, inventoryTypeId, cacheKey }) {
   const maxResults = 500;
   const cars = await fetchOregansInventorySearchCars({ dealership, inventoryTypeId, maxResults });
   const enrichedCars = await enrichOregansInventoryCarsWithBodyStyles(cars, {
@@ -7267,17 +7309,25 @@ async function updateChatMessageReaction(messageId, reaction, user) {
     const alreadyReacted = reaction
       ? message.reactions[reaction].some((candidate) => candidate.username === reactor.username)
       : false;
+    let added = false;
 
     for (const type of chatReactionTypes) {
       message.reactions[type] = message.reactions[type]
         .filter((candidate) => candidate.username !== reactor.username);
     }
-    if (reaction && !alreadyReacted) message.reactions[reaction].push(reactor);
+    if (reaction && !alreadyReacted) {
+      message.reactions[reaction].push(reactor);
+      added = true;
+    }
 
     const normalized = normalizeStoredChatMessage(message);
     messages[index] = normalized;
     await writeJson(chatMessagesPath, messages.slice(-chatMessageLimit));
-    return normalized;
+    return {
+      message: normalized,
+      added,
+      reaction: added ? reaction : "",
+    };
   });
 
   return chatWritePromise;
@@ -7786,11 +7836,23 @@ function normalizeUserPreferences(value) {
     galleryModelFilter: normalizePreferenceText(source.galleryModelFilter, 80),
     galleryYearFilter: normalizePreferenceText(source.galleryYearFilter, 20),
     galleryUploaderFilter: normalizePreferenceText(source.galleryUploaderFilter, 80),
+    pushNotifications: normalizePushNotificationPreferences(source.pushNotifications),
   };
 }
 
 function normalizePreferenceText(value, maxLength = 120) {
   return normalizeSpace(value).slice(0, maxLength);
+}
+
+function normalizePushNotificationPreferences(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const normalized = {};
+  for (const key of pushNotificationPreferenceKeys) {
+    normalized[key] = Object.hasOwn(source, key)
+      ? source[key] !== false
+      : defaultPushNotificationPreferences[key];
+  }
+  return normalized;
 }
 
 function broadcastChatMessage(message, { event = "message" } = {}) {
@@ -8018,6 +8080,7 @@ async function sendPushNotifications({ payload, usernames = null, dealershipId =
     notificationId: pushNotificationId(payload),
   });
   const notificationPayload = JSON.stringify(cleanPayload);
+  const userPreferenceStore = await readUserPreferencesStore();
   const { subscriptions } = await readPushSubscriptions();
   const retiredEndpoints = new Set();
   const targets = subscriptions.filter((record) => {
@@ -8029,6 +8092,7 @@ async function sendPushNotifications({ payload, usernames = null, dealershipId =
     }
     if (excluded && record.username === excluded) return false;
     if (usernameSet && !usernameSet.has(record.username)) return false;
+    if (!userWantsPushNotification(record.username, cleanPayload, userPreferenceStore)) return false;
     return true;
   });
 
@@ -8070,6 +8134,31 @@ async function sendPushNotifications({ payload, usernames = null, dealershipId =
     retiredRemoved,
     logged,
   };
+}
+
+function userWantsPushNotification(usernameValue, payload, preferenceStore = null) {
+  const username = normalizeAuthUsername(usernameValue);
+  if (!username) return false;
+  const preferenceState = preferenceStore?.users?.[username] || null;
+  const preferences = normalizePushNotificationPreferences(preferenceState?.preferences?.pushNotifications);
+  const key = pushNotificationPreferenceKeyForPayload(payload);
+  return preferences[key] !== false;
+}
+
+function pushNotificationPreferenceKeyForPayload(payload = {}) {
+  const tokens = [
+    payload.notificationType,
+    payload.type,
+    payload.route,
+    payload.kind,
+  ].map((value) => normalizeNotificationToken(value));
+
+  if (tokens.includes("chat_reaction")) return "chatReactions";
+  if (tokens.includes("chat")) return "chatMessages";
+  if (tokens.includes("media_upload") || tokens.includes("media_gallery") || tokens.includes("upload")) return "mediaUploads";
+  if (tokens.includes("inventory_added")) return "newInventory";
+  if (tokens.includes("price_change")) return "priceChanges";
+  return "system";
 }
 
 function normalizePushTargetDealershipIds({ dealershipId = "", dealershipIds = null } = {}) {
@@ -8594,6 +8683,55 @@ function chatPushPayload(message) {
     tag: `carpostclub-chat-${messageId}`,
     url: "/?openChat=1",
   };
+}
+
+function chatReactionPushPayload(message, { reaction = "", reactor = {} } = {}) {
+  const messageId = normalizeSpace(message?.id) || `${Date.now()}`;
+  const reactorProfile = publicUploader(reactor) || {};
+  const reactorName = normalizeChatAuthor(reactorProfile.displayName || reactorProfile.username || "Someone");
+  const reactionLabel = chatReactionPushLabel(reaction);
+  const notificationId = [
+    "chat-reaction",
+    messageId,
+    normalizeAuthUsername(reactorProfile.username) || "user",
+    normalizeNotificationToken(reaction) || "reaction",
+    Date.now().toString(36),
+    crypto.randomUUID().slice(0, 8),
+  ].join("-");
+
+  return {
+    kind: "chat",
+    type: "chat_reaction",
+    notificationType: "chat_reaction",
+    messageId,
+    notificationId,
+    author: reactorName,
+    timestamp: new Date().toISOString(),
+    title: `${reactorName} reacted with ${reactionLabel}`,
+    body: chatReactionPushBody(message),
+    tag: `carpostclub-chat-reaction-${notificationId}`,
+    url: "/?openChat=1",
+  };
+}
+
+function chatReactionPushLabel(reaction) {
+  switch (reaction) {
+    case "laugh":
+      return "a laugh";
+    case "heart":
+      return "a heart";
+    case "thumbs_up":
+      return "thumbs up";
+    case "thumbs_down":
+      return "thumbs down";
+    default:
+      return "a reaction";
+  }
+}
+
+function chatReactionPushBody(message) {
+  const preview = chatPushBody(message);
+  return preview ? `Message: ${preview}` : "Message: sent an attachment";
 }
 
 function chatPushBody(message) {
