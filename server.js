@@ -23,6 +23,10 @@ import multer from "multer";
 import OpenAI from "openai";
 import sharp from "sharp";
 import webPush from "web-push";
+import {
+  normalizePushNotificationPreferences,
+  pushNotificationPreferenceKeyForPayload,
+} from "./public/push-notification-preferences.js";
 
 const appRoot = fileURLToPath(new URL("./", import.meta.url));
 const publicRoot = fileURLToPath(new URL("./public/", import.meta.url));
@@ -287,17 +291,6 @@ const authBootstrapDealershipId = normalizeAuthDealershipId(
     || process.env.AUTH_DEALERSHIP_ID
     || defaultAuthDealershipIdForUser({ username: authUsername }),
 );
-const pushNotificationPreferenceKeys = Object.freeze([
-  "chatMessages",
-  "chatReactions",
-  "mediaUploads",
-  "newInventory",
-  "priceChanges",
-  "system",
-]);
-const defaultPushNotificationPreferences = Object.freeze(Object.fromEntries(
-  pushNotificationPreferenceKeys.map((key) => [key, true]),
-));
 const inventoryCache = new Map();
 const inventoryFetchPromises = new Map();
 const failedLoginAttempts = new Map();
@@ -7844,17 +7837,6 @@ function normalizePreferenceText(value, maxLength = 120) {
   return normalizeSpace(value).slice(0, maxLength);
 }
 
-function normalizePushNotificationPreferences(value) {
-  const source = value && typeof value === "object" ? value : {};
-  const normalized = {};
-  for (const key of pushNotificationPreferenceKeys) {
-    normalized[key] = Object.hasOwn(source, key)
-      ? source[key] !== false
-      : defaultPushNotificationPreferences[key];
-  }
-  return normalized;
-}
-
 function broadcastChatMessage(message, { event = "message" } = {}) {
   const eventName = normalizeSpace(event);
   const payload = `${eventName && eventName !== "message" ? `event: ${eventName}\n` : ""}data: ${JSON.stringify(message)}\n\n`;
@@ -8143,22 +8125,6 @@ function userWantsPushNotification(usernameValue, payload, preferenceStore = nul
   const preferences = normalizePushNotificationPreferences(preferenceState?.preferences?.pushNotifications);
   const key = pushNotificationPreferenceKeyForPayload(payload);
   return preferences[key] !== false;
-}
-
-function pushNotificationPreferenceKeyForPayload(payload = {}) {
-  const tokens = [
-    payload.notificationType,
-    payload.type,
-    payload.route,
-    payload.kind,
-  ].map((value) => normalizeNotificationToken(value));
-
-  if (tokens.includes("chat_reaction")) return "chatReactions";
-  if (tokens.includes("chat")) return "chatMessages";
-  if (tokens.includes("media_upload") || tokens.includes("media_gallery") || tokens.includes("upload")) return "mediaUploads";
-  if (tokens.includes("inventory_added")) return "newInventory";
-  if (tokens.includes("price_change")) return "priceChanges";
-  return "system";
 }
 
 function normalizePushTargetDealershipIds({ dealershipId = "", dealershipIds = null } = {}) {

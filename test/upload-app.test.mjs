@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import zlib from "node:zlib";
 import sharp from "sharp";
+import { defaultPushNotificationPreferences } from "../public/push-notification-preferences.js";
 
 const appRoot = fileURLToPath(new URL("../", import.meta.url));
 const TEST_USERNAME = "admin";
@@ -20,14 +21,7 @@ const NEW_PASSWORD = "new-password-123";
 const CHANGED_PASSWORD = "changed-password-456";
 const RESET_PASSWORD = "reset-password-789";
 const MARKETPLACE_PROMPT_VERSION = "facebook_marketplace_description_v3_simple";
-const DEFAULT_PUSH_NOTIFICATION_PREFERENCES = {
-  chatMessages: true,
-  chatReactions: true,
-  mediaUploads: true,
-  newInventory: true,
-  priceChanges: true,
-  system: true,
-};
+const DEFAULT_PUSH_NOTIFICATION_PREFERENCES = defaultPushNotificationPreferences();
 const TINY_HEIC_BASE64 = [
   "AAAAJGZ0eXBoZWljAAAAAG1pZjFNaVBybWlhZk1pSEJoZWljAAABw21ldGEAAAAAAAAAIWhkbHIA",
   "AAAAAAAAAHBpY3QAAAAAAAAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAAADnBpdG0AAAAAAAEAAAA4aWluZgAAAAAAAgAAABVpbmZlAgAAAAABAABodmMxAAAAABVpbmZlAgAAAQACAABFeGlmAAAAABppcmVmAAAAAAAAAA5jZHNjAAIAAQABAAAA5mlwcnAAAADFaXBjbwAAABNjb2xybmNseAACAAIABoAAAAAMY2xsaQDLAEAAAAAUaXNwZQAAAAAAAAAIAAAACAAAAAlpcm90AAAAABBwaXhpAAAAAAMICAgAAABxaHZjQwEDcAAAALAAAAAAAB7wAPz9+PgAAAsDoAABABdAAQwB//8DcAAAAwCwAAADAAADAB5wJKEAAQAjQgEBA3AAAAMAsAAAAwAAAwAeoBQgQcCbDuIe5FlU3AgIGAKiAAEACUQBwGFyyEBTJAAAABlpcG1hAAAAAAAAAAEAAQaBAgMFhoQAAAAsaWxvYwAAAABEAAACAAEAAAABAAACQwAAADsAAgAAAAEAAAH3AAAATAAAAAFtZGF0AAAAAAAAAJcAAAAGRXhpZgAATU0AKgAAAAgAAwEaAAUAAAABAAAAMgEbAAUAAAABAAAAOgEoAAMAAAABAAIAAAAAAAAAAAAZAAAAAQAAABkAAAABAAAANygBr6LyRoF8/8X//+Rr7L7dzfVf3nyPtAIv94VPdMsmf6Ag+cI1PkOyhr/JHgi9hX4RbWMmyK4=",

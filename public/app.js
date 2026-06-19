@@ -1,44 +1,12 @@
+import {
+  defaultPushNotificationPreferences as defaultPushNotificationSettings,
+  isPushNotificationPreferenceKey,
+  normalizePushNotificationPreferences as normalizePushNotificationSettings,
+  pushNotificationPreferenceKeys as pushNotificationSettingKeys,
+  pushNotificationPreferenceOptions as pushNotificationSettingOptions,
+} from "./push-notification-preferences.js";
+
 const initialPageMode = pageModeFromPath(window.location.pathname);
-const pushNotificationSettingKeys = [
-  "chatMessages",
-  "chatReactions",
-  "mediaUploads",
-  "newInventory",
-  "priceChanges",
-  "system",
-];
-const pushNotificationSettingOptions = [
-  {
-    key: "chatMessages",
-    label: "Chat messages",
-    description: "Team chat messages and attachments.",
-  },
-  {
-    key: "chatReactions",
-    label: "Chat reactions",
-    description: "Reactions teammates add to chat messages.",
-  },
-  {
-    key: "mediaUploads",
-    label: "Media uploads",
-    description: "New vehicle photo and video packages.",
-  },
-  {
-    key: "newInventory",
-    label: "New inventory",
-    description: "New O'Regan's vehicles added to tracked lots.",
-  },
-  {
-    key: "priceChanges",
-    label: "Price changes",
-    description: "O'Regan's inventory price changes.",
-  },
-  {
-    key: "system",
-    label: "System alerts",
-    description: "Push test and account-level service alerts.",
-  },
-];
 
 const state = {
   page: initialPageMode,
@@ -1113,7 +1081,7 @@ function renderPushNotificationSettingRow(option) {
 
 function handleNotificationSettingsChange(event) {
   const input = event.target?.closest?.("[data-push-setting]");
-  if (!input || !pushNotificationSettingKeys.includes(input.dataset.pushSetting)) return;
+  if (!input || !isPushNotificationPreferenceKey(input.dataset.pushSetting)) return;
   haptic("select");
   state.pushNotificationDraft = {
     ...state.pushNotificationDraft,
@@ -5044,19 +5012,6 @@ function accountPreferencesPayload() {
     expandedAlbumId: state.expandedAlbumId,
     pushNotifications: { ...state.pushNotificationSettings },
   };
-}
-
-function defaultPushNotificationSettings() {
-  return Object.fromEntries(pushNotificationSettingKeys.map((key) => [key, true]));
-}
-
-function normalizePushNotificationSettings(value) {
-  const source = value && typeof value === "object" ? value : {};
-  const normalized = defaultPushNotificationSettings();
-  for (const key of pushNotificationSettingKeys) {
-    if (Object.prototype.hasOwnProperty.call(source, key)) normalized[key] = source[key] !== false;
-  }
-  return normalized;
 }
 
 function hasPreference(preferences, key) {

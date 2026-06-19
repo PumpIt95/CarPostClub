@@ -11,6 +11,7 @@ const iconsRoot = fileURLToPath(new URL("../public/icons/", import.meta.url));
 const indexHtmlPath = fileURLToPath(new URL("../public/index.html", import.meta.url));
 const manifestPath = fileURLToPath(new URL("../public/manifest.webmanifest", import.meta.url));
 const offlineHtmlPath = fileURLToPath(new URL("../public/offline.html", import.meta.url));
+const pushNotificationPreferencesPath = fileURLToPath(new URL("../public/push-notification-preferences.js", import.meta.url));
 const serverPath = fileURLToPath(new URL("../server.js", import.meta.url));
 const serviceWorkerPath = fileURLToPath(new URL("../public/sw.js", import.meta.url));
 const smokeTestPath = fileURLToPath(new URL("../scripts/smoke_test.mjs", import.meta.url));
@@ -390,12 +391,9 @@ test("frontend sends dealership, inventory filter, and vin with uploads", async 
   assert.match(source, /function enablePushNotifications\(/);
   assert.match(source, /function setNotificationsOpen\(/);
   assert.match(source, /function renderNotificationPanel\(/);
-  assert.match(source, /pushNotificationSettingKeys/);
-  assert.match(source, /chatMessages/);
-  assert.match(source, /chatReactions/);
-  assert.match(source, /mediaUploads/);
-  assert.match(source, /newInventory/);
-  assert.match(source, /priceChanges/);
+  assert.match(source, /from "\.\/push-notification-preferences\.js"/);
+  assert.match(source, /pushNotificationPreferenceOptions as pushNotificationSettingOptions/);
+  assert.match(source, /isPushNotificationPreferenceKey/);
   assert.match(source, /function renderPushNotificationSettings\(/);
   assert.match(source, /function savePushNotificationSettings\(/);
   assert.match(source, /pushNotifications: \{ \.\.\.state\.pushNotificationSettings \}/);
@@ -1109,6 +1107,7 @@ test("gallery page is an authenticated app route separate from upload", async ()
 
 test("push notification server routes expose production-gated preview and dealership targeting helpers", async () => {
   const source = await fs.readFile(serverPath, "utf8");
+  const pushPreferencesSource = await fs.readFile(pushNotificationPreferencesPath, "utf8");
 
   assert.match(source, /app\.post\("\/api\/push\/preview", requireAuth/);
   assert.match(source, /previewPushEnabled/);
@@ -1122,16 +1121,23 @@ test("push notification server routes expose production-gated preview and dealer
   assert.match(source, /function queueInventoryAddedPushNotifications\(/);
   assert.match(source, /queuePushNotifications\(\{\s*excludeUsername: req\.authUser\.username,\s*payload: uploadPushPayload\(car, result\.photos\.length, uploadEvent\),\s*\}\)/);
   assert.match(source, /function pushDryRunUploadTargets\(/);
-  assert.match(source, /pushNotificationPreferenceKeys/);
-  assert.match(source, /defaultPushNotificationPreferences/);
+  assert.match(source, /from "\.\/public\/push-notification-preferences\.js"/);
+  assert.match(source, /normalizePushNotificationPreferences/);
+  assert.match(source, /pushNotificationPreferenceKeyForPayload/);
   assert.match(source, /function userWantsPushNotification\(/);
-  assert.match(source, /function pushNotificationPreferenceKeyForPayload\(/);
-  assert.match(source, /chat_reaction[\s\S]*return "chatReactions"/);
-  assert.match(source, /chat[\s\S]*return "chatMessages"/);
-  assert.match(source, /media_upload[\s\S]*return "mediaUploads"/);
-  assert.match(source, /inventory_added[\s\S]*return "newInventory"/);
-  assert.match(source, /price_change[\s\S]*return "priceChanges"/);
-  assert.match(source, /return "system"/);
+  assert.match(pushPreferencesSource, /pushNotificationPreferenceOptions/);
+  assert.match(pushPreferencesSource, /chatMessages/);
+  assert.match(pushPreferencesSource, /chatReactions/);
+  assert.match(pushPreferencesSource, /mediaUploads/);
+  assert.match(pushPreferencesSource, /newInventory/);
+  assert.match(pushPreferencesSource, /priceChanges/);
+  assert.match(pushPreferencesSource, /function pushNotificationPreferenceKeyForPayload\(/);
+  assert.match(pushPreferencesSource, /chat_reaction[\s\S]*return "chatReactions"/);
+  assert.match(pushPreferencesSource, /chat[\s\S]*return "chatMessages"/);
+  assert.match(pushPreferencesSource, /media_upload[\s\S]*return "mediaUploads"/);
+  assert.match(pushPreferencesSource, /inventory_added[\s\S]*return "newInventory"/);
+  assert.match(pushPreferencesSource, /price_change[\s\S]*return "priceChanges"/);
+  assert.match(pushPreferencesSource, /return "system"/);
 });
 
 test("disabled auth controls are visibly unavailable", async () => {
