@@ -144,8 +144,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.doesNotMatch(html, /id="galleryModelFilter"/);
   assert.doesNotMatch(html, /id="galleryYearFilter"/);
   assert.doesNotMatch(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260619-chat-focus-v75/);
-  assert.match(html, /\/styles\.css\?v=20260619-chat-focus-v75/);
+  assert.match(html, /\/app\.js\?v=20260619-pwa-cache-v76/);
+  assert.match(html, /\/styles\.css\?v=20260619-pwa-cache-v76/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -536,7 +536,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v75/);
+  assert.match(serviceWorker, /carpostclub-pwa-v76/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -1172,7 +1172,7 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260619-chat-focus-v75/);
+  assert.match(source, /\/styles\.css\?v=20260619-pwa-cache-v76/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });
