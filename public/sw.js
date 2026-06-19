@@ -1,6 +1,6 @@
 const APP_ICON = "/icons/carpostclub-icon-192.png";
 const APP_BADGE = "/icons/carpostclub-apple-touch-icon.png";
-const CACHE_VERSION = "carpostclub-pwa-v72";
+const CACHE_VERSION = "carpostclub-pwa-v73";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const CORE_ASSETS = [
   "/offline.html",
@@ -150,6 +150,7 @@ function notificationActions(payload) {
 function notificationTargetPath(payload = {}) {
   const explicitPath = cleanNavigationPath(payload.url);
   const routePath = cleanNavigationPath(payload.route);
+  if (chatPath(explicitPath) || chatPath(routePath)) return "/chat";
   if (routePath) {
     if (routePath.startsWith("/gallery")) return mediaGalleryPath(payload, routePath);
     return routePath;
@@ -169,6 +170,9 @@ function notificationTargetPath(payload = {}) {
   const type = notificationToken(payload.notificationType || payload.type || payload.kind);
   if (type === "upload" || type === "media_upload" || type === "new_media_upload" || type === "inventory_removed") {
     return mediaGalleryPath(payload, explicitPath);
+  }
+  if (type === "chat" || type === "chat_reaction") {
+    return "/chat";
   }
   if (type === "price_change") {
     return notificationsPath(payload, explicitPath);
@@ -237,6 +241,17 @@ function cleanNavigationPath(value) {
   const text = String(value || "").trim();
   if (!text || !text.startsWith("/") || text.startsWith("//")) return "";
   return text.slice(0, 512);
+}
+
+function chatPath(path) {
+  const cleanPath = cleanNavigationPath(path);
+  if (!cleanPath) return "";
+  try {
+    const url = new URL(cleanPath, self.location.origin);
+    return url.pathname === "/chat" || url.searchParams.get("openChat") === "1" ? "/chat" : "";
+  } catch {
+    return "";
+  }
 }
 
 function notificationToken(value) {

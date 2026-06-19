@@ -185,7 +185,11 @@ const els = {
   chatPanel: document.querySelector("#chatPanel"),
   chatPhotoButton: document.querySelector("#chatPhotoButton"),
   chatPhotoInput: document.querySelector("#chatPhotoInput"),
+  chatRoomLatest: document.querySelector("#chatRoomLatest"),
+  chatRoomMessageCount: document.querySelector("#chatRoomMessageCount"),
+  chatRoomUnread: document.querySelector("#chatRoomUnread"),
   chatSend: document.querySelector("#chatSend"),
+  chatScreenMeta: document.querySelector("#chatScreenMeta"),
   chatToggle: document.querySelector("#chatToggle"),
   chatUnread: document.querySelector("#chatUnread"),
   dealershipSelect: document.querySelector("#dealershipSelect"),
@@ -271,6 +275,7 @@ async function init() {
   });
   openInitialPanel();
   applyInitialSelectionFromUrl();
+  if (state.page === "chat") return;
   await loadInventoryFilters();
   if (state.page === "gallery") {
     await loadAlbums();
@@ -282,7 +287,9 @@ async function init() {
 }
 
 function pageModeFromPath(pathname) {
-  return normalizePathname(pathname) === "/gallery" ? "gallery" : "upload";
+  const path = normalizePathname(pathname);
+  if (path === "/chat") return "chat";
+  return path === "/gallery" ? "gallery" : "upload";
 }
 
 function normalizePathname(pathname) {
@@ -292,22 +299,43 @@ function normalizePathname(pathname) {
 
 function applyPageMode() {
   const galleryPage = state.page === "gallery";
+  const chatPage = state.page === "chat";
+  const uploadPage = state.page === "upload";
   document.documentElement.classList.toggle("is-gallery-route", galleryPage);
-  document.documentElement.classList.toggle("is-upload-route", !galleryPage);
+  document.documentElement.classList.toggle("is-chat-route", chatPage);
+  document.documentElement.classList.toggle("is-upload-route", uploadPage);
   els.appShell.classList.toggle("is-gallery-page", galleryPage);
-  els.appShell.classList.toggle("is-upload-page", !galleryPage);
+  els.appShell.classList.toggle("is-chat-page", chatPage);
+  els.appShell.classList.toggle("is-upload-page", uploadPage);
   if (els.galleryPageLink) {
     els.galleryPageLink.hidden = false;
     if (galleryPage) els.galleryPageLink.setAttribute("aria-current", "page");
     else els.galleryPageLink.removeAttribute("aria-current");
   }
-  if (els.uploadPageLink) els.uploadPageLink.hidden = !galleryPage;
-  if (els.pageEyebrow) els.pageEyebrow.textContent = galleryPage ? "CarPostClub / Gallery" : "CarPostClub / Media";
-  if (els.pageTitle) els.pageTitle.textContent = galleryPage ? "Media gallery" : "Vehicle media intake";
+  if (els.chatToggle) {
+    if (chatPage) els.chatToggle.setAttribute("aria-current", "page");
+    else els.chatToggle.removeAttribute("aria-current");
+  }
+  if (els.uploadPageLink) els.uploadPageLink.hidden = uploadPage;
+  if (els.pageEyebrow) {
+    els.pageEyebrow.textContent = chatPage
+      ? "CarPostClub / Chat"
+      : galleryPage
+        ? "CarPostClub / Gallery"
+        : "CarPostClub / Media";
+  }
+  if (els.pageTitle) {
+    els.pageTitle.textContent = chatPage
+      ? "Team chat"
+      : galleryPage
+        ? "Media gallery"
+        : "Vehicle media intake";
+  }
   if (els.albumSectionTitle) els.albumSectionTitle.textContent = galleryPage ? "Shared albums" : "Album tiles";
   if (els.albumSectionSubhead) els.albumSectionSubhead.textContent = galleryPage ? "All user accounts" : "Saved packages";
-  document.title = galleryPage ? "Media Gallery | CarPostClub" : "CarPostClub";
+  document.title = chatPage ? "Team Chat | CarPostClub" : galleryPage ? "Media Gallery | CarPostClub" : "CarPostClub";
   updateGalleryChrome();
+  updateChatChrome();
 }
 
 async function loadCurrentUser() {
@@ -499,7 +527,11 @@ function bindEvents() {
   });
 
   window.addEventListener("popstate", () => {
-    const shouldOpenChat = new URLSearchParams(window.location.search).get("openChat") === "1";
+    if (pageModeFromPath(window.location.pathname) !== state.page) {
+      window.location.reload();
+      return;
+    }
+    const shouldOpenChat = state.page === "chat" || new URLSearchParams(window.location.search).get("openChat") === "1";
     if (shouldOpenChat !== state.chatOpen) setChatOpen(shouldOpenChat, { syncUrl: false });
   });
 
@@ -571,8 +603,15 @@ function bindEvents() {
     uploadFiles(snapshotFiles(event.dataTransfer?.files));
   });
 
-  els.chatToggle.addEventListener("click", () => setChatOpen(!state.chatOpen, { feedback: true }));
-  els.chatClose.addEventListener("click", () => setChatOpen(false, { feedback: true }));
+  els.chatToggle.addEventListener("click", () => {
+    haptic("select");
+  });
+  els.chatClose.addEventListener("click", (event) => {
+    haptic("select");
+    if (state.page === "chat") return;
+    event.preventDefault();
+    setChatOpen(false, { feedback: false });
+  });
   els.chatMessages.addEventListener("click", handleChatMessagesClick);
   els.chatPanel.addEventListener("touchstart", handleChatTouchStart, { passive: true });
   els.chatPanel.addEventListener("touchmove", handleChatTouchMove, { passive: false });
@@ -986,7 +1025,14 @@ function normalizeNotification(notification) {
 
 function cleanNotificationUrl(value) {
   const text = String(value || "").trim();
-  return text.startsWith("/") && !text.startsWith("//") ? text : "/";
+  if (!text.startsWith("/") || text.startsWith("//")) return "/";
+  try {
+    const url = new URL(text, window.location.origin);
+    if (url.pathname === "/chat" || url.searchParams.get("openChat") === "1") return "/chat";
+  } catch {
+    return "/";
+  }
+  return text;
 }
 
 function normalizeDateString(value) {
@@ -1218,7 +1264,12 @@ function handleNotificationListClick(event) {
 
 function openInitialPanel() {
   const params = new URLSearchParams(window.location.search);
-  if (params.get("openChat") === "1") setChatOpen(true, { syncUrl: false });
+  if (state.page === "chat") {
+    setChatOpen(true, { syncUrl: false });
+  } else if (params.get("openChat") === "1") {
+    window.location.replace("/chat");
+    return;
+  }
   if (params.get("openNotifications") === "1") setNotificationsOpen(true);
 }
 
@@ -1487,20 +1538,28 @@ async function refreshAlbumsAfterLiveUpload(event = null) {
 }
 
 function setChatOpen(isOpen, { syncUrl = true, feedback = false } = {}) {
-  if (feedback && Boolean(isOpen) !== state.chatOpen) haptic("select");
-  state.chatOpen = Boolean(isOpen);
+  const dedicatedChatPage = state.page === "chat";
+  const nextOpen = dedicatedChatPage || Boolean(isOpen);
+  if (feedback && nextOpen !== state.chatOpen) haptic("select");
+  state.chatOpen = nextOpen;
   syncViewportHeightVar();
   els.chatPanel.hidden = !state.chatOpen;
   els.chatPanel.classList.toggle("is-open", state.chatOpen);
   document.body.classList.toggle("chat-view-active", state.chatOpen);
+  document.body.classList.toggle("chat-screen-active", dedicatedChatPage && state.chatOpen);
+  els.chatPanel.classList.toggle("is-dedicated-screen", dedicatedChatPage);
   els.chatPanel.setAttribute("aria-hidden", String(!state.chatOpen));
   if (els.appShell) {
-    els.appShell.inert = state.chatOpen;
-    els.appShell.toggleAttribute("inert", state.chatOpen);
-    els.appShell.setAttribute("aria-hidden", String(state.chatOpen));
+    const lockMainShell = state.chatOpen && !dedicatedChatPage;
+    els.appShell.inert = lockMainShell;
+    els.appShell.toggleAttribute("inert", lockMainShell);
+    els.appShell.setAttribute("aria-hidden", String(lockMainShell));
   }
-  els.chatToggle.setAttribute("aria-expanded", String(state.chatOpen));
-  els.chatToggle.setAttribute("aria-label", state.chatOpen ? "Close chat" : "Open chat");
+  if (els.chatToggle?.tagName === "BUTTON") {
+    els.chatToggle.setAttribute("aria-expanded", String(state.chatOpen));
+  } else {
+    els.chatToggle?.removeAttribute("aria-expanded");
+  }
   if (syncUrl) syncChatUrl(state.chatOpen);
   if (state.chatOpen) {
     state.chatUnread = 0;
@@ -1521,12 +1580,11 @@ function syncViewportHeightVar() {
 }
 
 function syncChatUrl(isOpen) {
+  if (state.page === "chat") return;
   const url = new URL(window.location.href);
   const hasOpenChat = url.searchParams.get("openChat") === "1";
   if (isOpen) {
-    if (hasOpenChat) return;
-    url.searchParams.set("openChat", "1");
-    window.history.pushState({ chatOpen: true }, "", url);
+    window.location.assign("/chat");
     return;
   }
   if (!hasOpenChat) return;
@@ -2366,14 +2424,31 @@ function updateChatChrome() {
   const unread = normalizeUnreadCount(state.chatUnread);
   renderUnreadCountBadge(els.chatUnread, unread);
   if (els.chatToggle) {
-    const label = state.chatOpen
-      ? "Close chat"
+    const label = state.page === "chat"
+      ? unread > 0
+        ? `Team chat, ${unread} unread`
+        : "Team chat"
       : unread > 0
         ? `Open chat, ${unread} unread`
         : "Open chat";
     els.chatToggle.setAttribute("aria-label", label);
     els.chatToggle.title = label;
   }
+  renderChatScreenStats(unread);
+}
+
+function renderChatScreenStats(unread = normalizeUnreadCount(state.chatUnread)) {
+  const count = state.chatMessages.length;
+  const latest = count ? state.chatMessages[count - 1] : null;
+  const latestLabel = latest ? formatChatTime(latest.createdAt) : "No messages";
+  if (els.chatScreenMeta) {
+    els.chatScreenMeta.textContent = count
+      ? `${count} ${plural(count, "message")} - latest ${latestLabel}`
+      : "No messages yet";
+  }
+  if (els.chatRoomMessageCount) els.chatRoomMessageCount.textContent = String(count);
+  if (els.chatRoomUnread) els.chatRoomUnread.textContent = unread > 0 ? `${unread} unread` : "Caught up";
+  if (els.chatRoomLatest) els.chatRoomLatest.textContent = latestLabel;
 }
 
 function isChatScrolledToBottom() {

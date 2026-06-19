@@ -466,7 +466,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260618-chat-mobile-scroll-v72/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260619-chat-screen-v73/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -1416,7 +1416,7 @@ test("chat message reactions persist, toggle, and stream", async () => {
     assert.equal(adminReactionNotifications.notifications[0].notificationType, "chat_reaction");
     assert.equal(adminReactionNotifications.notifications[0].messageId, post.body.message.id);
     assert.equal(adminReactionNotifications.notifications[0].author, "First Reactor");
-    assert.equal(adminReactionNotifications.notifications[0].url, "/?openChat=1");
+    assert.equal(adminReactionNotifications.notifications[0].url, "/chat");
     const firstViewerNotifications = await getJsonWithCookie(harness, firstViewer.cookie, "/api/notifications");
     assert.deepEqual(firstViewerNotifications.notifications, []);
 

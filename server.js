@@ -779,6 +779,11 @@ app.get("/gallery", requireAuth, (_req, res) => {
   res.sendFile(path.join(publicRoot, "index.html"));
 });
 
+app.get("/chat", requireAuth, (_req, res) => {
+  setPrivateNoStore(res);
+  res.sendFile(path.join(publicRoot, "index.html"));
+});
+
 app.get("/inventory", requireAuth, (_req, res) => {
   res.redirect(302, "/");
 });
@@ -8647,7 +8652,7 @@ function chatPushPayload(message) {
     title: `${message.author} in chat`,
     body: chatPushBody(message),
     tag: `carpostclub-chat-${messageId}`,
-    url: "/?openChat=1",
+    url: "/chat",
   };
 }
 
@@ -8676,7 +8681,7 @@ function chatReactionPushPayload(message, { reaction = "", reactor = {} } = {}) 
     title: `${reactorName} reacted with ${reactionLabel}`,
     body: chatReactionPushBody(message),
     tag: `carpostclub-chat-reaction-${notificationId}`,
-    url: "/?openChat=1",
+    url: "/chat",
   };
 }
 
@@ -10824,7 +10829,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260618-chat-mobile-scroll-v72">
+  <link rel="stylesheet" href="/styles.css?v=20260619-chat-screen-v73">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">
