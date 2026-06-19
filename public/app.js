@@ -39,6 +39,8 @@ const state = {
     startX: 0,
     startY: 0,
   },
+  chatInputPointerFocus: false,
+  chatViewportStabilizeTimer: 0,
   albumEventSource: null,
   albumReconnectTimer: null,
   albumLiveRefreshPromise: null,
@@ -355,9 +357,9 @@ async function loadCurrentUser() {
 }
 
 function bindEvents() {
-  window.addEventListener("resize", syncViewportHeightVar);
-  window.visualViewport?.addEventListener("resize", syncViewportHeightVar);
-  window.visualViewport?.addEventListener("scroll", syncViewportHeightVar);
+  window.addEventListener("resize", handleViewportChange);
+  window.visualViewport?.addEventListener("resize", handleViewportChange);
+  window.visualViewport?.addEventListener("scroll", handleViewportChange);
 
   window.addEventListener("beforeunload", (event) => {
     if (!state.uploading) return;
@@ -618,6 +620,11 @@ function bindEvents() {
   els.chatPanel.addEventListener("touchend", resetChatTouchScroll, { passive: true });
   els.chatPanel.addEventListener("touchcancel", resetChatTouchScroll, { passive: true });
   els.chatForm.addEventListener("submit", sendChatMessage);
+  els.chatInput.addEventListener("pointerdown", handleChatInputPointerDown, { passive: false });
+  els.chatInput.addEventListener("pointerup", handleChatInputPointerUp, { passive: false });
+  els.chatInput.addEventListener("pointercancel", resetChatInputPointerFocus, { passive: true });
+  els.chatInput.addEventListener("focus", handleChatInputFocus);
+  els.chatInput.addEventListener("blur", resetChatInputPointerFocus);
   els.chatInput.addEventListener("input", updateChatSendState);
   els.chatInput.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.shiftKey) return;
@@ -1566,10 +1573,15 @@ function setChatOpen(isOpen, { syncUrl = true, feedback = false } = {}) {
     markChatReadThroughLatestMessage();
     window.setTimeout(() => {
       scrollChatToEnd();
-      els.chatInput.focus();
+      focusChatInput({ scrollToEnd: true });
     }, 0);
   }
   updateChatChrome();
+}
+
+function handleViewportChange() {
+  syncViewportHeightVar();
+  if (state.page === "chat") queueChatViewportStabilization();
 }
 
 function syncViewportHeightVar() {
@@ -1577,6 +1589,72 @@ function syncViewportHeightVar() {
   if (viewportHeight > 0) {
     document.documentElement.style.setProperty("--app-viewport-height", `${viewportHeight}px`);
   }
+}
+
+function handleChatInputPointerDown(event) {
+  if (!shouldStabilizeChatInputFocus(event)) return;
+  state.chatInputPointerFocus = true;
+  event.preventDefault();
+}
+
+function handleChatInputPointerUp(event) {
+  if (!state.chatInputPointerFocus) return;
+  state.chatInputPointerFocus = false;
+  event.preventDefault();
+  focusChatInput({ scrollToEnd: false });
+}
+
+function handleChatInputFocus() {
+  if (state.page !== "chat") return;
+  queueChatViewportStabilization({ scrollToEnd: true });
+}
+
+function resetChatInputPointerFocus() {
+  state.chatInputPointerFocus = false;
+}
+
+function shouldStabilizeChatInputFocus(event) {
+  return state.page === "chat"
+    && event.pointerType !== "mouse"
+    && event.cancelable;
+}
+
+function focusChatInput({ scrollToEnd = false } = {}) {
+  const scrollX = state.page === "chat" ? 0 : window.scrollX;
+  const scrollY = state.page === "chat" ? 0 : window.scrollY;
+  try {
+    els.chatInput.focus({ preventScroll: true });
+  } catch {
+    els.chatInput.focus();
+  }
+  stabilizeChatScreenViewport({ scrollX, scrollY, scrollToEnd });
+}
+
+function queueChatViewportStabilization({ scrollToEnd = false } = {}) {
+  if (state.page !== "chat") return;
+
+  window.requestAnimationFrame(() => {
+    stabilizeChatScreenViewport({ scrollToEnd });
+  });
+  window.clearTimeout(state.chatViewportStabilizeTimer);
+  state.chatViewportStabilizeTimer = window.setTimeout(() => {
+    stabilizeChatScreenViewport({ scrollToEnd });
+    state.chatViewportStabilizeTimer = window.setTimeout(() => {
+      stabilizeChatScreenViewport({ scrollToEnd });
+    }, 240);
+  }, 80);
+}
+
+function stabilizeChatScreenViewport({ scrollX = 0, scrollY = 0, scrollToEnd = false } = {}) {
+  if (state.page !== "chat") return;
+
+  syncViewportHeightVar();
+  if (window.scrollX !== scrollX || window.scrollY !== scrollY) {
+    window.scrollTo(scrollX, scrollY);
+  }
+  document.documentElement.scrollTop = scrollY;
+  document.body.scrollTop = scrollY;
+  if (scrollToEnd) scrollChatToEnd();
 }
 
 function syncChatUrl(isOpen) {
@@ -1611,7 +1689,7 @@ async function sendChatMessage(event) {
   } finally {
     state.chatSending = false;
     updateChatSendState();
-    if (state.chatOpen) els.chatInput.focus();
+    if (state.chatOpen) focusChatInput({ scrollToEnd: true });
   }
 }
 

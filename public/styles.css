@@ -3439,6 +3439,20 @@ html.is-chat-route .chat-form .icon-button {
     box-shadow: none;
   }
 
+  html.is-chat-route,
+  body.chat-screen-active {
+    height: var(--app-viewport-height, 100svh);
+    min-height: var(--app-viewport-height, 100svh);
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  body.chat-screen-active {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+  }
+
   html.is-chat-route .app-shell {
     padding: var(--spacing-8);
   }

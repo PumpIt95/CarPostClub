@@ -144,8 +144,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.doesNotMatch(html, /id="galleryModelFilter"/);
   assert.doesNotMatch(html, /id="galleryYearFilter"/);
   assert.doesNotMatch(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260619-chat-screen-v73/);
-  assert.match(html, /\/styles\.css\?v=20260619-chat-screen-v73/);
+  assert.match(html, /\/app\.js\?v=20260619-chat-focus-v74/);
+  assert.match(html, /\/styles\.css\?v=20260619-chat-focus-v74/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -536,7 +536,7 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v73/);
+  assert.match(serviceWorker, /carpostclub-pwa-v74/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -904,6 +904,8 @@ test("mobile chat view and chat messages have distinct author accents", async ()
   assert.match(styles, /@media \(max-width: 680px\)[\s\S]*\.brand-mark\s*\{[^}]*height: 56px;/);
   assert.match(styles, /--app-viewport-height: 100svh/);
   assert.match(styles, /height: var\(--app-viewport-height, 100svh\)/);
+  assert.match(styles, /body\.chat-screen-active\s*\{[^}]*position: fixed;/s);
+  assert.match(styles, /html\.is-chat-route,[\s\S]*body\.chat-screen-active\s*\{[^}]*overscroll-behavior: none;/);
   assert.match(styles, /width: 100vw/);
   assert.match(styles, /overscroll-behavior-y: contain/);
   assert.match(styles, /touch-action: pan-y/);
@@ -934,6 +936,12 @@ test("mobile chat view and chat messages have distinct author accents", async ()
   assert.match(source, /chatReactionOptions/);
   assert.match(source, /function reactToChatMessage/);
   assert.match(source, /function syncViewportHeightVar/);
+  assert.match(source, /function handleViewportChange/);
+  assert.match(source, /function focusChatInput/);
+  assert.match(source, /els\.chatInput\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(source, /function handleChatInputPointerDown/);
+  assert.match(source, /function queueChatViewportStabilization/);
+  assert.match(source, /window\.scrollTo\(scrollX, scrollY\)/);
   assert.match(source, /function handleChatTouchMove/);
   assert.match(source, /els\.chatMessages\.scrollTop = nextScrollTop/);
   assert.match(source, /source\.addEventListener\("reaction"/);
@@ -1158,7 +1166,7 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260619-chat-screen-v73/);
+  assert.match(source, /\/styles\.css\?v=20260619-chat-focus-v74/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });
