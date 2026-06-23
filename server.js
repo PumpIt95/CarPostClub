@@ -6316,21 +6316,27 @@ function inferMarketplaceCondition(car) {
 }
 
 function inferBodyStyle(car) {
-  const model = normalizeSearchToken(car.model);
-  const title = normalizeSearchToken([car.title, car.trim, car.tagline, car.bodyStyle].filter(Boolean).join(" "));
-  if (title.includes("hatch")) return "Hatchback";
-  if (["santa cruz", "silverado", "sierra", "f-150", "f150", "ram 1500", "tacoma", "tundra", "ranger", "frontier", "colorado", "canyon"].includes(model)) return "Truck";
-  if ([
+  const text = normalizeSearchToken([car.model, car.title, car.trim, car.tagline, car.bodyStyle].filter(Boolean).join(" "));
+  const hasModel = (...models) => models.some((model) => {
+    const normalized = normalizeSearchToken(model);
+    if (!normalized) return false;
+    const pattern = normalized.split(/\s+/).map(escapeRegExp).join("\\s+");
+    return new RegExp(`(?:^|[^a-z0-9])${pattern}(?:[^a-z0-9]|$)`, "i").test(text);
+  });
+  if (hasModel("hatchback") || /\bhatch\b/i.test(text)) return "Hatchback";
+  if (hasModel("niro", "niro ev", "niro hybrid")) return "Hatchback";
+  if (hasModel("santa cruz", "silverado", "sierra", "f-150", "f150", "ram 1500", "tacoma", "tundra", "ranger", "frontier", "colorado", "canyon")) return "Truck";
+  if (hasModel(
     "seltos", "kona", "venue", "sportage", "telluride", "countryman", "envista",
     "kicks", "qashqai", "sorento", "tucson", "rogue", "cr-v", "crv",
     "rav4", "rav 4", "highlander", "4runner", "cx-5", "cx5", "cx-30", "cx30",
     "escape", "edge", "explorer", "equinox", "trailblazer", "trax", "terrain",
     "compass", "cherokee", "grand cherokee", "wrangler", "forester", "outback",
     "ascent", "crosstrek", "pilot", "hr-v", "hrv", "passport", "pathfinder",
-    "murano", "armada", "palisade", "santa fe", "santafe", "elantra n-line suv",
-  ].includes(model)) return "SUV";
-  if (["sedona", "carnival", "sienna", "odyssey", "pacifica", "grand caravan", "caravan"].includes(model)) return "Minivan";
-  if (["corolla", "jetta", "forte", "elantra", "sentra", "civic", "k4", "k5", "rio", "optima", "camry", "accord", "altima", "malibu", "versa"].includes(model)) return "Sedan";
+    "murano", "armada", "palisade", "santa fe", "santafe", "ev5", "ev6", "ev9",
+  )) return "SUV";
+  if (hasModel("sedona", "carnival", "sienna", "odyssey", "pacifica", "grand caravan", "caravan")) return "Minivan";
+  if (hasModel("ev4", "corolla", "jetta", "forte", "elantra", "sentra", "civic", "k4", "k5", "rio", "optima", "camry", "accord", "altima", "malibu", "versa")) return "Sedan";
   return null;
 }
 
