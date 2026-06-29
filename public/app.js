@@ -1,9 +1,6 @@
 import {
   defaultPushNotificationPreferences as defaultPushNotificationSettings,
-  isPushNotificationPreferenceKey,
   normalizePushNotificationPreferences as normalizePushNotificationSettings,
-  pushNotificationPreferenceKeys as pushNotificationSettingKeys,
-  pushNotificationPreferenceOptions as pushNotificationSettingOptions,
 } from "./push-notification-preferences.js";
 
 const initialPageMode = pageModeFromPath(window.location.pathname);
@@ -54,9 +51,6 @@ const state = {
   pushSubscription: null,
   pushBusy: false,
   pushNotificationSettings: defaultPushNotificationSettings(),
-  pushNotificationDraft: defaultPushNotificationSettings(),
-  pushNotificationSettingsDirty: false,
-  pushNotificationSettingsSaving: false,
   notifications: [],
   notificationUnreadCount: 0,
   notificationsOpen: false,
@@ -230,10 +224,6 @@ const els = {
   notificationPrompt: document.querySelector("#notificationPrompt"),
   notificationPromptDismiss: document.querySelector("#notificationPromptDismiss"),
   notificationPromptEnable: document.querySelector("#notificationPromptEnable"),
-  notificationSettingsForm: document.querySelector("#notificationSettingsForm"),
-  notificationSettingsList: document.querySelector("#notificationSettingsList"),
-  notificationSettingsSave: document.querySelector("#notificationSettingsSave"),
-  notificationSettingsStatus: document.querySelector("#notificationSettingsStatus"),
   notificationUnread: document.querySelector("#notificationUnread"),
   oregansSourceButton: document.querySelector("#oregansSourceButton"),
   pickerPanel: document.querySelector(".picker-panel"),
@@ -515,8 +505,6 @@ function bindEvents() {
   els.notificationPanelEnable?.addEventListener("click", enablePushNotificationsFromPrompt);
   els.notificationPromptDismiss?.addEventListener("click", dismissPushPrompt);
   els.notificationList?.addEventListener("click", handleNotificationListClick);
-  els.notificationSettingsForm?.addEventListener("change", handleNotificationSettingsChange);
-  els.notificationSettingsForm?.addEventListener("submit", savePushNotificationSettings);
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && state.notificationsOpen) setNotificationsOpen(false, { feedback: true });
@@ -1087,102 +1075,7 @@ function renderNotificationPanel() {
   if (els.notificationPanelEnable) {
     els.notificationPanelEnable.disabled = state.pushBusy || !supported || subscribed || permission === "denied";
   }
-  renderPushNotificationSettings();
   renderNotificationList();
-}
-
-function renderPushNotificationSettings() {
-  if (!els.notificationSettingsList) return;
-  els.notificationSettingsList.replaceChildren(...pushNotificationSettingOptions.map(renderPushNotificationSettingRow));
-  if (els.notificationSettingsSave) {
-    els.notificationSettingsSave.disabled = state.pushNotificationSettingsSaving || !state.pushNotificationSettingsDirty;
-    const label = els.notificationSettingsSave.querySelector("span");
-    if (label) label.textContent = state.pushNotificationSettingsSaving ? "Saving" : "Save settings";
-  }
-  if (els.notificationSettingsStatus) {
-    els.notificationSettingsStatus.textContent = state.pushNotificationSettingsSaving
-      ? "Saving notification choices..."
-      : state.pushNotificationSettingsDirty
-        ? "Unsaved changes"
-        : "Saved";
-  }
-}
-
-function renderPushNotificationSettingRow(option) {
-  const label = document.createElement("label");
-  label.className = "notification-setting-row";
-  label.htmlFor = `notificationSetting-${option.key}`;
-
-  const input = document.createElement("input");
-  input.id = `notificationSetting-${option.key}`;
-  input.type = "checkbox";
-  input.dataset.pushSetting = option.key;
-  input.checked = state.pushNotificationDraft[option.key] !== false;
-  input.disabled = state.pushNotificationSettingsSaving;
-
-  const copy = document.createElement("span");
-  copy.className = "notification-setting-copy";
-  const title = document.createElement("strong");
-  title.textContent = option.label;
-  const description = document.createElement("small");
-  description.textContent = option.description;
-  copy.append(title, description);
-
-  label.append(input, copy);
-  return label;
-}
-
-function handleNotificationSettingsChange(event) {
-  const input = event.target?.closest?.("[data-push-setting]");
-  if (!input || !isPushNotificationPreferenceKey(input.dataset.pushSetting)) return;
-  haptic("select");
-  state.pushNotificationDraft = {
-    ...state.pushNotificationDraft,
-    [input.dataset.pushSetting]: input.checked,
-  };
-  state.pushNotificationSettingsDirty = !pushNotificationSettingsEqual(
-    state.pushNotificationDraft,
-    state.pushNotificationSettings,
-  );
-  renderPushNotificationSettings();
-}
-
-async function savePushNotificationSettings(event) {
-  event?.preventDefault?.();
-  if (state.pushNotificationSettingsSaving || !state.pushNotificationSettingsDirty) return;
-  haptic("start");
-  state.pushNotificationSettingsSaving = true;
-  renderPushNotificationSettings();
-  const nextSettings = normalizePushNotificationSettings(state.pushNotificationDraft);
-  const preferences = {
-    ...accountPreferencesPayload(),
-    pushNotifications: nextSettings,
-  };
-
-  try {
-    state.accountPreferencesSavePromise = (state.accountPreferencesSavePromise || Promise.resolve())
-      .catch(() => {})
-      .then(() => apiJson("/api/me/preferences", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ preferences }),
-      }));
-    const response = await state.accountPreferencesSavePromise;
-    state.pushNotificationSettings = normalizePushNotificationSettings(response.preferences?.pushNotifications || nextSettings);
-    state.pushNotificationDraft = { ...state.pushNotificationSettings };
-    state.pushNotificationSettingsDirty = false;
-    haptic("success");
-    showStatus("Notification settings saved.");
-  } catch (error) {
-    showError(error);
-  } finally {
-    state.pushNotificationSettingsSaving = false;
-    renderPushNotificationSettings();
-  }
-}
-
-function pushNotificationSettingsEqual(left, right) {
-  return pushNotificationSettingKeys.every((key) => Boolean(left?.[key]) === Boolean(right?.[key]));
 }
 
 function renderPushPrompt() {
@@ -5108,8 +5001,6 @@ function applyAccountPreferences(preferences) {
   if (hasPreference(preferences, "expandedAlbumId")) state.expandedAlbumId = cleanPreferenceValue(preferences.expandedAlbumId);
   if (hasPreference(preferences, "pushNotifications")) {
     state.pushNotificationSettings = normalizePushNotificationSettings(preferences.pushNotifications);
-    state.pushNotificationDraft = { ...state.pushNotificationSettings };
-    state.pushNotificationSettingsDirty = false;
   }
   persistAccountPreferenceFallback();
 }

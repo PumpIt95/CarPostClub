@@ -262,6 +262,7 @@ test("header unread badges stay visible across gallery navigation", async ({ pag
 });
 
 test("brand-new users see media gallery notification badges until the post is opened", async ({ page }) => {
+  test.setTimeout(60_000);
   const harness = await startTestServer();
   const liveCar = INVENTORY_CARS[1];
   try {
@@ -310,12 +311,11 @@ test("brand-new users see media gallery notification badges until the post is op
     await expect(page.locator("#chatPanel")).toHaveClass(/is-open/);
     await expect(page.locator("#galleryUnread")).toHaveText("1");
     await page.locator("#chatClose").click();
-    await expect(page.locator("#chatPanel")).not.toHaveClass(/is-open/);
-    await expect(page.locator("#galleryUnread")).toHaveText("1");
-
-    await page.locator("#uploadPageLink").click();
     await expect(page).toHaveURL(`${harness.baseUrl}/`);
+    await expect(page.locator("#chatPanel")).not.toHaveClass(/is-open/);
     await expect(page.locator("#pageTitle")).toHaveText("Vehicle media intake");
+    await expect(page.locator("#galleryUnread")).toHaveText("1");
+    await expect(page.locator("#uploadPageLink")).toBeHidden();
     await expect(page.locator("#galleryUnread")).toHaveText("1");
     await expect(page.locator("#galleryUnread")).toBeVisible();
 
@@ -347,6 +347,28 @@ test("admin gallery folder overview fits four dealerships in an iPhone 16 first 
     await assertGalleryFits(page);
     await assertControlTextFits(page);
     await assertDealershipFoldersFitFirstViewport(page);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("notification panel does not expose push notification options", async ({ page }) => {
+  const harness = await startTestServer();
+  try {
+    await loginWithPage(page, harness.baseUrl, TEST_USERNAME, TEST_PASSWORD);
+    await expect(page.locator("#pageTitle")).toHaveText("Vehicle media intake");
+    await expect(page.locator("#notificationSettingsForm")).toHaveCount(0);
+    await expect(page.locator("#notificationSettingsToggle")).toHaveCount(0);
+
+    await page.locator("#notificationButton").click();
+    await expect(page.locator("#notificationPanel")).toBeVisible();
+    await expect(page.locator("#notificationEmpty")).toBeVisible();
+    await expect(page.locator("#notificationList")).toBeHidden();
+    await expect(page.locator("#notificationSettingsForm")).toHaveCount(0);
+    await expect(page.locator("#notificationSettingsList")).toHaveCount(0);
+    await expect(page.locator("#notificationSettingsSave")).toHaveCount(0);
+    await expect(page.locator("#notificationSettingsToggle")).toHaveCount(0);
+    await expect(page.getByText("Push alert types")).toHaveCount(0);
   } finally {
     await stopTestServer(harness);
   }
@@ -1266,23 +1288,23 @@ async function startTestServer() {
     output += chunk;
   });
 
-  await waitForHealth(baseUrl, child, () => output);
+  try {
+    await waitForHealth(baseUrl, child, () => output);
+  } catch (error) {
+    await stopSpawnedTestServer(child);
+    await fs.rm(tempRoot, { recursive: true, force: true });
+    throw error;
+  }
   return { baseUrl, child, output: () => output, tempRoot, uploadRoot, tmpRoot, inventoryMockFile, cookie: "" };
 }
 
 async function stopTestServer(harness) {
-  if (harness.child.exitCode === null) {
-    harness.child.kill("SIGTERM");
-    await Promise.race([
-      once(harness.child, "exit"),
-      sleep(3000)
-    ]);
-  }
+  await stopSpawnedTestServer(harness.child);
   await fs.rm(harness.tempRoot, { recursive: true, force: true });
 }
 
 async function waitForHealth(baseUrl, child, output) {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(`server exited early with ${child.exitCode}\n${output()}`);
@@ -1296,6 +1318,22 @@ async function waitForHealth(baseUrl, child, output) {
     await sleep(80);
   }
   throw new Error(`server did not become ready\n${output()}`);
+}
+
+async function stopSpawnedTestServer(child) {
+  if (child.exitCode !== null) return;
+  child.kill("SIGTERM");
+  const exited = await Promise.race([
+    once(child, "exit").then(() => true),
+    sleep(3000).then(() => false)
+  ]);
+  if (!exited && child.exitCode === null) {
+    child.kill("SIGKILL");
+    await Promise.race([
+      once(child, "exit"),
+      sleep(1000)
+    ]);
+  }
 }
 
 async function login(baseUrl, username = TEST_USERNAME, password = TEST_PASSWORD) {

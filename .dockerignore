@@ -16,11 +16,15 @@ playwright-report
 playwright.config.mjs
 
 # Local Codex automation state
+.codex
+.playwright-cli
 CHROME_TABS.md
 automation-runs
 chrome-tab-registry.sqlite
 facebook-marketplace-messages*.sqlite
 .automation-locks
+.automation-artifacts
+.listing-disclosure-current-run-dir
 tmp
 scripts/__pycache__
 
@@ -29,7 +33,9 @@ facebook-*.json
 facebook-*.md
 facebook-marketplace-*/
 facebook-post-packages-current
+listing-disclosure-audit-and-fix-*.json
 pre-close-appointment-digest-*.md
+outputs
 
 # Local operation reports and repair backups
 AUTOMATION_*.md

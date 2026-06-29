@@ -31,7 +31,8 @@ Use `.env.example` as the starting point. Do not commit real secrets.
 `OPENAI_API_KEY` is optional for local testing. Without it, Marketplace copy falls back to local template variants.
 
 Set `CARPOSTCLUB_PUBLIC_ORIGIN=https://carpostclub.com` in production so generated invite links do not depend on
-the request `Host` header. Production also fails closed if no app password/hash is configured; only set
+the request `Host` header. Production also fails closed if no app password/hash is configured or if placeholder
+auth/session values are still present. Prefer `CARPOSTCLUB_AUTH_PASSWORD_HASH` over a plaintext password, and only set
 `CARPOSTCLUB_AUTH_DISABLED=true` for an intentionally unauthenticated deployment.
 
 The macOS/iOS Shortcut inventory endpoint can be protected with `CARPOSTCLUB_SHORTCUTS_BEARER_TOKEN`. When set,

@@ -132,6 +132,12 @@ const authDisabledAllowed = parseBooleanEnv("CARPOSTCLUB_AUTH_DISABLED", parseBo
 if (authDisabled && nodeEnv === "production" && !authDisabledAllowed) {
   throw new Error("Authentication is not configured. Set CARPOSTCLUB_AUTH_PASSWORD_HASH or explicitly set CARPOSTCLUB_AUTH_DISABLED=true.");
 }
+if (nodeEnv === "production" && authPassword && !authPasswordHash && isPlaceholderSecret(authPassword)) {
+  throw new Error("Production authentication password is still a placeholder. Set CARPOSTCLUB_AUTH_PASSWORD_HASH before deploying.");
+}
+if (nodeEnv === "production" && isPlaceholderSecret(configuredAuthSessionSecret())) {
+  throw new Error("Production session secret is still a placeholder. Set CARPOSTCLUB_AUTH_SESSION_SECRET before deploying.");
+}
 const authUsersPath = path.resolve(process.env.CARPOSTCLUB_AUTH_USERS_PATH || process.env.KONNER_AUTH_USERS_PATH || process.env.AUTH_USERS_PATH || path.join(path.dirname(uploadRoot), "auth-users.json"));
 const authInvitesPath = path.resolve(process.env.CARPOSTCLUB_AUTH_INVITES_PATH || process.env.KONNER_AUTH_INVITES_PATH || process.env.AUTH_INVITES_PATH || path.join(path.dirname(uploadRoot), "auth-invites.json"));
 const authCookieName = process.env.CARPOSTCLUB_AUTH_COOKIE_NAME || process.env.KONNER_AUTH_COOKIE_NAME || "carpostclub_session";
@@ -6334,9 +6340,10 @@ function inferBodyStyle(car) {
     "compass", "cherokee", "grand cherokee", "wrangler", "forester", "outback",
     "ascent", "crosstrek", "pilot", "hr-v", "hrv", "passport", "pathfinder",
     "murano", "armada", "palisade", "santa fe", "santafe", "ev5", "ev6", "ev9",
+    "rx 350", "rx350",
   )) return "SUV";
   if (hasModel("sedona", "carnival", "sienna", "odyssey", "pacifica", "grand caravan", "caravan")) return "Minivan";
-  if (hasModel("ev4", "corolla", "jetta", "forte", "elantra", "sentra", "civic", "k4", "k5", "rio", "optima", "camry", "accord", "altima", "malibu", "versa")) return "Sedan";
+  if (hasModel("ev4", "corolla", "crown", "jetta", "forte", "elantra", "sentra", "civic", "k4", "k5", "rio", "optima", "camry", "accord", "altima", "malibu", "versa")) return "Sedan";
   return null;
 }
 
@@ -10450,9 +10457,22 @@ function timingSafeEqual(left, right) {
 }
 
 function sessionSecret() {
-  const configured = process.env.CARPOSTCLUB_AUTH_SESSION_SECRET || process.env.KONNER_AUTH_SESSION_SECRET || process.env.AUTH_SESSION_SECRET;
+  const configured = configuredAuthSessionSecret();
   if (configured) return configured;
   return crypto.createHash("sha256").update(authPasswordHash || authPassword || "carpostclub").digest("hex");
+}
+
+function configuredAuthSessionSecret() {
+  return process.env.CARPOSTCLUB_AUTH_SESSION_SECRET || process.env.KONNER_AUTH_SESSION_SECRET || process.env.AUTH_SESSION_SECRET || "";
+}
+
+function isPlaceholderSecret(value) {
+  const normalized = normalizeSpace(value).toLowerCase();
+  return normalized === "change-me-before-deploying"
+    || normalized === "replace-with-a-long-random-string"
+    || normalized === "changeme"
+    || normalized === "password"
+    || normalized === "admin";
 }
 
 function sendLoginPage(res, options = {}) {
@@ -10835,7 +10855,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260619-pwa-cache-v76">
+  <link rel="stylesheet" href="/styles.css?v=20260625-hide-notification-settings-v79">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">

@@ -78,3 +78,22 @@ with `CARPOSTCLUB_AUDIT_LOG_PATH` and retention with `CARPOSTCLUB_AUDIT_LOG_LIMI
 Audited events currently include invite generation, user password changes, admin password resets, manual inventory
 snapshot runs, single media deletion, and album-wide media deletion. Invite tokens, passwords, cookies, and auth
 headers are intentionally not stored in audit details.
+
+## Local Automation Artifacts
+
+Codex and Facebook Marketplace automations should keep run evidence, browser state, SQLite memory, screenshots, and
+ad-hoc comparison exports out of the tracked source tree. Use `automation-runs/`, `.automation-artifacts/`, `tmp/`,
+`output/`, or `outputs/` for rebuildable local artifacts, and commit only the scripts, tests, docs, and app code that
+make those artifacts reproducible.
+
+Run the dry-run cleanup before deleting anything:
+
+```bash
+npm run cleanup:automation-artifacts
+```
+
+Apply it only after checking the JSON plan:
+
+```bash
+npm run cleanup:automation-artifacts -- --apply
+```

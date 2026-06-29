@@ -33,6 +33,10 @@ DATE_LABEL_RE = re.compile(
 )
 
 WAITING_RE = re.compile(r"\bis waiting for your response\.?$", re.IGNORECASE)
+CONTROL_ROW_RE = re.compile(
+    r"^(?:Mark as pending|Mark as sold|Mark as available|Delete listing|View listing|Boost listing)$",
+    re.IGNORECASE,
+)
 
 
 def load_json(path: Path) -> Any:
@@ -45,10 +49,10 @@ def rows_from_payload(payload: Any) -> list[str]:
         return [str(row) for row in payload if str(row).strip()]
     if not isinstance(payload, dict):
         raise ValueError("rows payload must be a JSON list or capture object")
-    if isinstance(payload.get("rows"), list):
-        return [str(row) for row in payload["rows"] if str(row).strip()]
     if isinstance(payload.get("row_strings"), list):
         return [str(row) for row in payload["row_strings"] if str(row).strip()]
+    if isinstance(payload.get("rows"), list):
+        return [str(row) for row in payload["rows"] if str(row).strip()]
     threads = payload.get("threads")
     if isinstance(threads, list):
         ordered = sorted(
@@ -85,11 +89,33 @@ def normalize_row(row: str) -> str:
     text = text.replace("2024 Buick Buick Envista", "2024 Buick Envista")
     text = re.sub(r"\s+", " ", text).strip()
     text = DATE_LABEL_RE.sub("", text).strip()
+    if CONTROL_ROW_RE.fullmatch(text):
+        return ""
     return text
+
+
+def is_ordered_subsequence(needles: list[str], haystack: list[str]) -> bool:
+    cursor = 0
+    for candidate in haystack:
+        if cursor < len(needles) and needles[cursor] == candidate:
+            cursor += 1
+    return cursor == len(needles)
 
 
 def response_needed_signatures(rows: list[str]) -> set[str]:
     return {normalize_row(row) for row in rows if WAITING_RE.search(DATE_LABEL_RE.sub("", row).strip())}
+
+
+def row_equivalent(current: str, prior: str) -> bool:
+    if current == prior:
+        return True
+    current_parts = current.split(" ", 1)
+    prior_parts = prior.split(" ", 1)
+    if not current_parts or not prior_parts or current_parts[0] != prior_parts[0]:
+        return False
+    current_rest = current_parts[1] if len(current_parts) > 1 else ""
+    prior_rest = prior_parts[1] if len(prior_parts) > 1 else ""
+    return bool(current_rest and prior_rest and (current_rest.endswith(prior_rest) or prior_rest.endswith(current_rest)))
 
 
 def capture_age_hours(payload: dict[str, Any], now: datetime) -> float | None:
@@ -125,7 +151,22 @@ def decide(
         reasons.append("missing_baseline")
 
     compare_len = min(len(current_sig), len(prior_sig), top_n)
-    top_changed = current_sig[:compare_len] != prior_sig[:compare_len] or len(current_sig) < min(8, top_n)
+    top_changed = len(current_sig) < min(8, top_n)
+    if not top_changed:
+        top_changed = any(
+            not row_equivalent(current, prior)
+            for current, prior in zip(current_sig[:compare_len], prior_sig[:compare_len])
+        )
+    if top_changed and current_sig and prior_sig:
+        stable_prefix_len = min(8, len(current_sig), len(prior_sig), top_n)
+        stable_prefix = all(
+            row_equivalent(current, prior)
+            for current, prior in zip(current_sig[:stable_prefix_len], prior_sig[:stable_prefix_len])
+        )
+        ordered_subset = is_ordered_subsequence(current_sig, prior_sig) or is_ordered_subsequence(prior_sig, current_sig)
+        small_virtualization_delta = abs(len(current_sig) - len(prior_sig)) <= 2
+        if stable_prefix and ordered_subset and small_virtualization_delta:
+            top_changed = False
     if top_changed and current_sig and prior_sig:
         reasons.append("top_fingerprint_changed")
 

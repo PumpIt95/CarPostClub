@@ -101,22 +101,28 @@ function shouldSkip(name, isDirectory) {
     name === ".DS_Store"
     || name.startsWith("._")
     || name === ".env"
+    || name === ".listing-disclosure-current-run-dir"
     || name === "CHROME_TABS.md"
     || name === "chrome-tab-registry.sqlite"
     || name.startsWith("facebook-marketplace-messages") && name.endsWith(".sqlite")
     || name.startsWith("facebook-")
+    || name.startsWith("listing-disclosure-audit-and-fix-") && name.endsWith(".json")
     || name === "playwright.config.mjs"
     || name === "production-inventory-current.json"
     || name === "release-manifest.json"
   ) return true;
   if (!isDirectory) return false;
   return name === ".git"
+    || name === ".codex"
+    || name === ".playwright-cli"
+    || name === ".automation-artifacts"
     || name === "node_modules"
     || name === ".automation-locks"
     || name === "automation-runs"
     || name === "backups"
     || name === "facebook-post-packages-current"
     || name === "output"
+    || name === "outputs"
     || name === "releases"
     || name === "test"
     || name === "test-results"

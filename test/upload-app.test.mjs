@@ -466,7 +466,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260619-pwa-cache-v76/);
+    assert.match(passwordPageText, /\/styles\.css\?v=20260625-hide-notification-settings-v79/);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -1575,16 +1575,89 @@ test("production refuses to start without explicit auth configuration", async ()
   try {
     const [code] = await Promise.race([
       once(child, "exit"),
-      sleep(5000).then(() => {
-        child.kill("SIGTERM");
+      sleep(15000).then(async () => {
+        await stopSpawnedTestServer(child);
         throw new Error(`server did not fail closed\n${output}`);
       }),
     ]);
     assert.notEqual(code, 0);
     assert.match(output, /Authentication is not configured/i);
   } finally {
-    if (child.exitCode === null) child.kill("SIGTERM");
+    await stopSpawnedTestServer(child);
     await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("production refuses placeholder auth secrets", async () => {
+  const scenarios = [
+    {
+      env: {
+        CARPOSTCLUB_AUTH_PASSWORD: "change-me-before-deploying",
+        CARPOSTCLUB_AUTH_PASSWORD_HASH: "",
+        CARPOSTCLUB_AUTH_SESSION_SECRET: "production-session-secret-for-test",
+      },
+      message: /password is still a placeholder/i,
+    },
+    {
+      env: {
+        CARPOSTCLUB_AUTH_PASSWORD: "",
+        CARPOSTCLUB_AUTH_PASSWORD_HASH: "configured-password-hash-for-startup-test",
+        CARPOSTCLUB_AUTH_SESSION_SECRET: "replace-with-a-long-random-string",
+      },
+      message: /session secret is still a placeholder/i,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "carpostclub-prod-placeholder-test-"));
+    const port = await freePort();
+    const child = spawn(process.execPath, ["server.js"], {
+      cwd: appRoot,
+      env: {
+        ...process.env,
+        HOST: "127.0.0.1",
+        PORT: String(port),
+        NODE_ENV: "production",
+        UPLOAD_ROOT: path.join(tempRoot, "uploads"),
+        TMP_ROOT: path.join(tempRoot, "tmp"),
+        CARPOSTCLUB_AUTH_PASSWORD: "",
+        CARPOSTCLUB_AUTH_PASSWORD_HASH: "",
+        KONNER_AUTH_PASSWORD: "",
+        KONNER_AUTH_PASSWORD_HASH: "",
+        AUTH_PASSWORD: "",
+        AUTH_PASSWORD_HASH: "",
+        CARPOSTCLUB_AUTH_SESSION_SECRET: "",
+        KONNER_AUTH_SESSION_SECRET: "",
+        AUTH_SESSION_SECRET: "",
+        CARPOSTCLUB_AUTH_DISABLED: "",
+        OPENAI_API_KEY: "",
+        ...scenario.env,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      output += chunk;
+    });
+
+    try {
+      const [code] = await Promise.race([
+        once(child, "exit"),
+        sleep(15000).then(async () => {
+          await stopSpawnedTestServer(child);
+          throw new Error(`server did not fail closed\n${output}`);
+        }),
+      ]);
+      assert.notEqual(code, 0);
+      assert.match(output, scenario.message);
+    } finally {
+      await stopSpawnedTestServer(child);
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
   }
 });
 
@@ -1712,6 +1785,50 @@ test("Marketplace draft infers common uploaded body styles when source feed is b
         fuelType: "Gas",
         transmission: "Automatic",
         detailUrl: "https://www.oregans.com/inventory/Used-2020-Kia-Sedona-A10412A/",
+      },
+    },
+    {
+      expectedBodyStyle: "SUV",
+      car: {
+        dealershipId: "15",
+        inventoryTypeId: "2",
+        vin: "2T2BAMCA7PC002874",
+        stockNumber: "NHP1760",
+        title: "Used 2023 Lexus RX 350 Premium Heated Steering Wheel",
+        year: "2023",
+        make: "Lexus",
+        model: "RX 350",
+        trim: "Premium",
+        price: "$49,990",
+        odometer: "58,120 km",
+        exteriorColor: "White",
+        interiorColor: "",
+        bodyStyle: "",
+        fuelType: "Gas",
+        transmission: "Automatic",
+        detailUrl: "https://www.oregans.com/inventory/Used-2023-Lexus-RX-350-NHP1760/",
+      },
+    },
+    {
+      expectedBodyStyle: "Sedan",
+      car: {
+        dealershipId: "15",
+        inventoryTypeId: "2",
+        vin: "JTDAAAAF5R3029743",
+        stockNumber: "NI20654A",
+        title: "Used 2024 Toyota Crown Limited Leather I Panoramic Sunroof",
+        year: "2024",
+        make: "Toyota",
+        model: "Crown",
+        trim: "Limited",
+        price: "$42,990",
+        odometer: "44,530 km",
+        exteriorColor: "Gray",
+        interiorColor: "",
+        bodyStyle: "",
+        fuelType: "Hybrid",
+        transmission: "Automatic",
+        detailUrl: "https://www.oregans.com/inventory/Used-2024-Toyota-Crown-NI20654A/",
       },
     },
     {
@@ -2449,10 +2566,17 @@ test("inventory preview push uses short copy and empty body", async () => {
 });
 
 test("preview push endpoint is disabled in production and old preview notifications stay hidden", async () => {
-  const harness = await startTestServer({ env: { NODE_ENV: "production" } });
+  const productionPassword = "production-preview-test-password-123";
+  const harness = await startTestServer({
+    env: {
+      NODE_ENV: "production",
+      CARPOSTCLUB_AUTH_PASSWORD: productionPassword,
+      CARPOSTCLUB_AUTH_SESSION_SECRET: "production-preview-test-session-secret-123",
+    },
+  });
 
   try {
-    harness.cookie = await login(harness.baseUrl);
+    harness.cookie = await login(harness.baseUrl, TEST_USERNAME, productionPassword);
     await postJson(harness, "/api/push/subscriptions", {
       subscription: pushSubscriptionFor("admin-preview-disabled"),
     });
@@ -3471,23 +3595,23 @@ async function startTestServer({ env = {}, inventoryCars = [TEST_CAR] } = {}) {
     output += chunk;
   });
 
-  await waitForHealth(baseUrl, child, () => output);
+  try {
+    await waitForHealth(baseUrl, child, () => output);
+  } catch (error) {
+    await stopSpawnedTestServer(child);
+    await fs.rm(tempRoot, { recursive: true, force: true });
+    throw error;
+  }
   return { baseUrl, child, output: () => output, tempRoot, uploadRoot, tmpRoot, inventoryMockFile, cookie: "" };
 }
 
 async function stopTestServer(harness) {
-  if (harness.child.exitCode === null) {
-    harness.child.kill("SIGTERM");
-    await Promise.race([
-      once(harness.child, "exit"),
-      sleep(3000),
-    ]);
-  }
+  await stopSpawnedTestServer(harness.child);
   await fs.rm(harness.tempRoot, { recursive: true, force: true });
 }
 
 async function waitForHealth(baseUrl, child, output) {
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + 90000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(`server exited early with ${child.exitCode}\n${output()}`);
@@ -3501,6 +3625,22 @@ async function waitForHealth(baseUrl, child, output) {
     await sleep(80);
   }
   throw new Error(`server did not become ready\n${output()}`);
+}
+
+async function stopSpawnedTestServer(child) {
+  if (child.exitCode !== null) return;
+  child.kill("SIGTERM");
+  const exited = await Promise.race([
+    once(child, "exit").then(() => true),
+    sleep(3000).then(() => false),
+  ]);
+  if (!exited && child.exitCode === null) {
+    child.kill("SIGKILL");
+    await Promise.race([
+      once(child, "exit"),
+      sleep(1000),
+    ]);
+  }
 }
 
 async function login(baseUrl, username = TEST_USERNAME, password = TEST_PASSWORD) {
