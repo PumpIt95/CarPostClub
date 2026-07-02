@@ -120,6 +120,16 @@ const pushSubject = process.env.CARPOSTCLUB_PUSH_SUBJECT || process.env.KONNER_P
 const pushTtlSeconds = positiveInteger(process.env.CARPOSTCLUB_PUSH_TTL_SECONDS || process.env.KONNER_PUSH_TTL_SECONDS, 60 * 60);
 const pushDeliveryDisabled = parseBooleanEnv("CARPOSTCLUB_PUSH_DELIVERY_DISABLED", parseBooleanEnv("KONNER_PUSH_DELIVERY_DISABLED", false));
 const pushAwaitDelivery = parseBooleanEnv("CARPOSTCLUB_PUSH_AWAIT_DELIVERY", parseBooleanEnv("KONNER_PUSH_AWAIT_DELIVERY", process.env.NODE_ENV === "test"));
+const inventoryAddedPushSpacingMs = Math.min(10_000, nonNegativeInteger(
+  process.env.CARPOSTCLUB_INVENTORY_ADDED_PUSH_SPACING_MS
+    || process.env.KONNER_INVENTORY_ADDED_PUSH_SPACING_MS,
+  process.env.NODE_ENV === "test" ? 0 : 1500,
+));
+const inventoryReappearPushCooldownMs = nonNegativeInteger(
+  process.env.CARPOSTCLUB_INVENTORY_REAPPEAR_PUSH_COOLDOWN_MS
+    || process.env.KONNER_INVENTORY_REAPPEAR_PUSH_COOLDOWN_MS,
+  24 * 60 * 60 * 1000,
+);
 const previewPushEnabled = nodeEnv !== "production" || parseBooleanEnv("CARPOSTCLUB_INTERNAL_PREVIEW_PUSH_ENABLED", false);
 const notificationLogLimitPerUser = positiveInteger(process.env.CARPOSTCLUB_NOTIFICATION_LOG_LIMIT_PER_USER || process.env.KONNER_NOTIFICATION_LOG_LIMIT_PER_USER, 200);
 const auditLogLimit = positiveInteger(process.env.CARPOSTCLUB_AUDIT_LOG_LIMIT || process.env.KONNER_AUDIT_LOG_LIMIT || process.env.AUDIT_LOG_LIMIT, 1000);
@@ -4504,7 +4514,15 @@ function writeOregansInventorySnapshotRun({
     ORDER BY stock_number, title
   `);
   const selectVehicle = oregansInventorySnapshotsDb.prepare(`
-    SELECT vehicle_key, present, price, price_value
+    SELECT
+      vehicle_key,
+      present,
+      price,
+      price_value,
+      first_seen_at,
+      current_seen_at,
+      last_seen_at,
+      removed_at
     FROM oregans_inventory_vehicles
     WHERE vehicle_key = ?
   `);
@@ -4566,7 +4584,7 @@ function writeOregansInventorySnapshotRun({
     for (const { car, scope } of observations) {
       const record = oregansInventorySnapshotVehicleRecord(car, scope, finishedAt, runId);
       const previous = selectVehicle.get(record.vehicleKey);
-      if (scopeHasBaseline.get(inventorySnapshotScopeKey(scope)) && (!previous || !Number(previous.present))) {
+      if (shouldNotifyNewlyObservedInventory(scopeHasBaseline.get(inventorySnapshotScopeKey(scope)), previous, finishedAt)) {
         newlyObserved.push(publicOregansInventorySnapshotVehicleFromCar(car, scope, finishedAt, record.vehicleKey));
       } else if (
         scopeHasBaseline.get(inventorySnapshotScopeKey(scope))
@@ -4614,6 +4632,29 @@ function writeOregansInventorySnapshotRun({
   }
 
   return { newlyObserved, priceChanges, removedInventory, removedInventoryCount };
+}
+
+function shouldNotifyNewlyObservedInventory(scopeHasBaseline, previous, observedAt) {
+  if (!scopeHasBaseline) return false;
+  if (!previous) return true;
+  if (Number(previous.present)) return false;
+  return !inventoryReappearedWithinPushCooldown(previous, observedAt);
+}
+
+function inventoryReappearedWithinPushCooldown(previous, observedAt) {
+  if (!inventoryReappearPushCooldownMs) return false;
+  const observedTime = Date.parse(observedAt);
+  if (!Number.isFinite(observedTime)) return false;
+  const referenceTimes = [
+    previous.removed_at,
+    previous.last_seen_at,
+    previous.current_seen_at,
+    previous.first_seen_at,
+  ].map((value) => Date.parse(value)).filter(Number.isFinite);
+  if (!referenceTimes.length) return false;
+  const latestKnownTime = Math.max(...referenceTimes);
+  return observedTime - latestKnownTime >= 0
+    && observedTime - latestKnownTime < inventoryReappearPushCooldownMs;
 }
 
 function oregansInventorySnapshotVehicleRecord(car, scope, observedAt, runId) {
@@ -4998,7 +5039,8 @@ async function queueInventoryAddedPushNotifications(vehicles, timestamp) {
   for (const [dealershipId, dealershipVehicles] of groups) {
     const targeting = await pushTargetingForDealership(dealershipId);
     const delivery = emptyPushDeliveryTotals();
-    for (const vehicle of dealershipVehicles) {
+    for (const [index, vehicle] of dealershipVehicles.entries()) {
+      if (index > 0) await delay(inventoryAddedPushSpacingMs);
       addPushDeliveryTotals(delivery, await queuePushNotifications({
         dealershipId,
         payload: oregansInventoryAddedPushPayload([vehicle], timestamp),
@@ -5116,6 +5158,7 @@ function oregansInventoryAddedPushPayload(vehicles, timestamp) {
   const dealership = publicAuthDealership(first.dealershipId || first.dealership?.id || first.dealershipName);
   const dealershipLabel = dealership?.label || normalizeSpace(first.dealershipName) || "O'Regan's";
   const title = inventoryAddedPushText(first, dealershipLabel);
+  const body = inventoryAddedPushBody(first);
   const timestampMs = Date.parse(timestamp) || Date.now();
   const tagVehicleKey = inventoryAddedPushTagVehicleKey(first);
   return {
@@ -5125,7 +5168,7 @@ function oregansInventoryAddedPushPayload(vehicles, timestamp) {
     route: "vehicle_media_intake",
     messageId: `inventory-added-${timestampMs}-${tagVehicleKey}-${crypto.randomUUID().slice(0, 8)}`,
     title,
-    body: "",
+    body,
     tag: `carpostclub-inventory-added-${dealership?.id || "unknown"}-${tagVehicleKey}-${timestampMs}`,
     url: vehicleDeepLink({
       dealershipId: dealership?.id || first.dealershipId,
@@ -8948,6 +8991,15 @@ function inventoryAddedPushText(vehicle, dealershipLabel = "") {
   return normalizeSpace(`new ${make} Inventory ${details}`);
 }
 
+function inventoryAddedPushBody(vehicle) {
+  const stock = normalizeSpace(vehicle?.stockNumber || vehicle?.inventoryKey);
+  const price = normalizeSpace(vehicle?.price || vehicle?.currentPrice);
+  const parts = [];
+  if (stock) parts.push(`Stock ${stock}`);
+  if (price) parts.push(price);
+  return parts.join(" - ");
+}
+
 function inventoryPriceChangePushTitle(vehicle) {
   const stock = normalizeSpace(vehicle?.stockNumber || vehicle?.inventoryKey);
   const year = normalizeSpace(vehicle?.year).replace(/[^0-9]/g, "");
@@ -10936,9 +10988,20 @@ function parseBooleanValue(value, fallback = false) {
   return /^(1|true|yes|on)$/i.test(String(value).trim());
 }
 
+function nonNegativeInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function delay(ms) {
+  const duration = Math.max(0, Number(ms) || 0);
+  if (!duration) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, duration));
 }
 
 function uploadLimitHttpError(error) {

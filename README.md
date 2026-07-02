@@ -47,8 +47,9 @@ Push notifications work on HTTPS deployments and localhost. If `CARPOSTCLUB_PUSH
 The app periodically snapshots O'Regan's inventory for the four Halifax stores into
 `oregans-inventory-snapshots.sqlite` in the app data directory. It tracks every snapshot run plus each vehicle's
 first seen, current seen, last seen, and removed timestamps, so "added today" checks can come from local history.
-After the first quiet baseline snapshot, newly seen or reappearing vehicles send dealership-targeted push notifications,
-and O'Regan's price changes send all-user price-change push notifications.
+After the first quiet baseline snapshot, newly seen vehicles send dealership-targeted push notifications. Vehicles that
+briefly disappear and reappear inside the reappear cooldown do not send duplicate "new inventory" alerts. O'Regan's
+price changes send all-user price-change push notifications.
 Tune this with `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INTERVAL_MS`; set
 `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_ENABLED=false` to disable the scheduler.
 

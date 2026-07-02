@@ -2221,7 +2221,7 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     const notifications = await getJson(harness, "/api/notifications");
     assert.equal(notifications.unreadCount, 1);
     assert.equal(notifications.notifications[0].title, "new Kia Inventory a10412a 2020 Kia Sedona");
-    assert.equal(notifications.notifications[0].body, "");
+    assert.equal(notifications.notifications[0].body, "Stock a10412a - $34,990");
     assert.doesNotMatch(notifications.notifications[0].title, /from carpostclub|fully certified|added/i);
     assert.doesNotMatch(notifications.notifications[0].body, /UG9999|Chevrolet|GM/);
     assert.equal(notifications.notifications[0].kind, "inventory_added");
@@ -2231,7 +2231,7 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     const michaelNotifications = await getJsonWithCookie(harness, michael.cookie, "/api/notifications");
     assert.equal(michaelNotifications.unreadCount, 1);
     assert.equal(michaelNotifications.notifications[0].title, "new Chevrolet Inventory UG9999 2024 Chevrolet Silverado");
-    assert.equal(michaelNotifications.notifications[0].body, "");
+    assert.equal(michaelNotifications.notifications[0].body, "Stock UG9999 - $42,990");
     assert.doesNotMatch(michaelNotifications.notifications[0].title, /from carpostclub|Custom|added/i);
     assert.doesNotMatch(michaelNotifications.notifications[0].body, /a10412a|Kia/);
     assert.equal(michaelNotifications.notifications[0].kind, "inventory_added");
@@ -2251,10 +2251,27 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     assert.equal(thirdRun.status, 201);
     assert.equal(thirdRun.body.snapshot.newInventory.count, 0);
 
+    const removedStatus = await getJson(harness, "/api/inventory/snapshots/status");
+    const removedKiaUsed = removedStatus.presentCounts.find((count) => count.dealershipId === "15" && count.inventoryTypeId === "2");
+    const removedGmUsed = removedStatus.presentCounts.find((count) => count.dealershipId === "18" && count.inventoryTypeId === "2");
+    assert.equal(removedKiaUsed, undefined);
+    assert.equal(removedGmUsed.count, 1);
+
+    await sleep(20);
+    await writeInventoryMock(harness, [SNAPSHOT_NEW_CAR, SNAPSHOT_NEW_KIA_CAR]);
+    const fourthRun = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(fourthRun.status, 201);
+    assert.equal(fourthRun.body.snapshot.newInventory.count, 0);
+    assert.equal(fourthRun.body.snapshot.pushDelivery, undefined);
+
+    const afterReappearNotifications = await getJson(harness, "/api/notifications");
+    assert.equal(afterReappearNotifications.unreadCount, 1);
+    assert.equal(afterReappearNotifications.notifications.length, 1);
+
     const finalStatus = await getJson(harness, "/api/inventory/snapshots/status");
     const kiaUsed = finalStatus.presentCounts.find((count) => count.dealershipId === "15" && count.inventoryTypeId === "2");
     const gmUsed = finalStatus.presentCounts.find((count) => count.dealershipId === "18" && count.inventoryTypeId === "2");
-    assert.equal(kiaUsed, undefined);
+    assert.equal(kiaUsed.count, 1);
     assert.equal(gmUsed.count, 1);
   } finally {
     await stopTestServer(harness);
@@ -2328,7 +2345,7 @@ test("inventory-added batch sends one separate notification per vehicle", async 
       ["new Toyota Inventory c30999c 2022 Toyota Corolla", "c30999c"],
     ]) {
       const notification = notificationsByTitle.get(title);
-      assert.equal(notification.body, "");
+      assert.match(notification.body, new RegExp(`^Stock ${stockNumber} - \\$`));
       assert.equal(notification.stockNumber, stockNumber);
       assert.match(notification.messageId, /^inventory-added-/);
       assert.match(notification.tag, new RegExp(stockNumber.toLowerCase()));
@@ -2344,7 +2361,14 @@ test("inventory-added batch sends one separate notification per vehicle", async 
     assert.equal(new Set(notifications.notifications.map((notification) => notification.notificationId)).size, 3);
     assert.equal(new Set(notifications.notifications.map((notification) => notification.messageId)).size, 3);
     assert.equal(new Set(notifications.notifications.map((notification) => notification.tag)).size, 3);
-    assert.ok(notifications.notifications.every((notification) => notification.body === ""));
+    assert.deepEqual(
+      notifications.notifications.map((notification) => notification.body).sort(),
+      [
+        "Stock a10412a - $34,990",
+        "Stock b20555b - $25,990",
+        "Stock c30999c - $27,490",
+      ],
+    );
   } finally {
     await stopTestServer(harness);
   }
