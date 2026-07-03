@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260629T002034Z-project-audit-v80",
-  "createdAt": "2026-06-29T00:20:34.000Z",
+  "releaseId": "20260703T134402Z",
+  "createdAt": "2026-07-03T13:44:02.290Z",
   "source": "codex-project-audit",
   "root": ".",
   "node": "v22.22.1",
@@ -258,8 +258,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 6179,
-      "sha256": "22acfe6ae07f6238f36e0523a51e1f943967fa572554d91442c1368277cc0ea0"
+      "bytes": 6280,
+      "sha256": "98fa8b138e05c9b0978632036cbd7702ad1698ffe7f20a0d58f4c563cd7a9f03"
     },
     {
       "path": "scripts/backfill_marketplace_descriptions.mjs",
@@ -313,8 +313,8 @@
     },
     {
       "path": "server.js",
-      "bytes": 413043,
-      "sha256": "c31f68669662e8886fb36cda1a8e0832c060367d45ef16471634b6196811ebf9"
+      "bytes": 415312,
+      "sha256": "47d44721f32146e28e01b8e5d78858a176422347b4c2dbc386aacfd401ca8df2"
     }
   ]
 }
