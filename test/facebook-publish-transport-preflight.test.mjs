@@ -5,6 +5,7 @@ import {
   decidePreflight,
   extractSection,
   parseKeyValueOutput,
+  preflightExitCodeForStatus,
   safeStateFromGate,
 } from "../scripts/facebook_publish_transport_preflight.mjs";
 
@@ -130,4 +131,17 @@ test("passes when safe state and direct transport probes are healthy", () => {
 
   assert.equal(decision.ok, true);
   assert.equal(decision.status, "ready");
+});
+
+test("treats a recovered ready state as a successful preflight", () => {
+  const decision = decidePreflight({
+    finalGate: SAFE_GATE,
+    nodeProbe: { ok: true },
+    computerUseProbe: { ok: true },
+    recoverySummary: { recoveryStatus: "recovered" },
+  });
+
+  assert.equal(decision.ok, true);
+  assert.equal(decision.status, "ready_after_recovery");
+  assert.equal(preflightExitCodeForStatus(decision.status), 0);
 });

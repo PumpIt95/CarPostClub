@@ -788,6 +788,21 @@ app.post("/api/admin/push/dry-run", requireAdmin, async (req, res, next) => {
   }
 });
 
+app.get("/api/admin/operations-summary", requireAdmin, async (req, res, next) => {
+  try {
+    const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
+    const summary = operationsSummaryFromAlbums(gallery.albums);
+    setPrivateNoStore(res);
+    res.json({
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      ...summary,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/", requireAuth, (_req, res) => {
   setPrivateNoStore(res);
   res.sendFile(path.join(publicRoot, "index.html"));
@@ -2537,6 +2552,45 @@ function sourceActiveFacebookLifecycleOverride(facebookListing, { hasPackagePhot
 function trustedFacebookListingStatus(facebookListing) {
   if (!facebookListing || facebookListing.stale) return null;
   return facebookListing;
+}
+
+function operationsSummaryFromAlbums(albums = []) {
+  const counts = {
+    totalCpcAlbums: albums.length,
+    sourceActiveCpcAlbums: 0,
+    sourceRemovedCpcAlbums: 0,
+    facebookLive: 0,
+    readyToPublish: 0,
+    staleFacebookVerification: 0,
+    awaitingKonnerUpload: 0,
+    needsReview: 0,
+  };
+
+  for (const album of albums) {
+    const status = album?.inventoryStatus || {};
+    const lifecycle = status.lifecycle || {};
+    const facebookState = lifecycle.facebookState || status.facebookListing?.state || "";
+    const action = lifecycle.facebookAction || "";
+    const sourceStatus = lifecycle.sourceStatus || "";
+
+    if (sourceStatus === "source_active" || status.active === true || status.status === "active") {
+      counts.sourceActiveCpcAlbums += 1;
+    }
+    if (sourceStatus === "source_removed" || status.active === false || status.status === "missing") {
+      counts.sourceRemovedCpcAlbums += 1;
+    }
+    if (["live", "live_on_facebook"].includes(facebookState)) counts.facebookLive += 1;
+    if (action === "post_if_not_live" && lifecycle.canPostToFacebook === true) counts.readyToPublish += 1;
+    if (facebookState === "stale_facebook_evidence" || action === "recheck_facebook_before_post") {
+      counts.staleFacebookVerification += 1;
+    }
+    if (["capture_photos", "wait_for_upload"].includes(action)) counts.awaitingKonnerUpload += 1;
+    if (action === "manual_review" || action === "review" || action === "verify_facebook_before_mark_sold") {
+      counts.needsReview += 1;
+    }
+  }
+
+  return counts;
 }
 
 async function recordAlbumInventoryLifecycle(album, inventoryStatus) {

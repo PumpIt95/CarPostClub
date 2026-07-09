@@ -15,6 +15,7 @@ const TRANSPORT_MARKER = path.join(WORKSPACE, ".browser_transport_recovery_last.
 const OK_GATE_CODES = new Set([0, 10, 20]);
 const EXIT_CODES = {
   ready: 0,
+  ready_after_recovery: 0,
   ready_devtools_fallback: 0,
   blocked_protected_state: 20,
   blocked_pressure: 21,
@@ -22,6 +23,10 @@ const EXIT_CODES = {
   blocked_computer_use_transport: 23,
   preflight_error: 24,
 };
+
+export function preflightExitCodeForStatus(status) {
+  return EXIT_CODES[status] ?? 1;
+}
 
 export function parseKeyValueOutput(text) {
   const values = {};
@@ -477,7 +482,7 @@ async function main(argv = process.argv.slice(2)) {
     console.log(`next_action=${decision.nextAction}`);
   }
 
-  return EXIT_CODES[decision.status] ?? 1;
+  return preflightExitCodeForStatus(decision.status);
 }
 
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : "";

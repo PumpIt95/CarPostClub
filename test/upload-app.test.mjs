@@ -1072,6 +1072,15 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(savedManualAlbum.createdBy.username, TEST_USERNAME);
     assert.equal(savedManualAlbum.descriptionPreview, MANUAL_CAR.descriptionPreview);
 
+    const operationsSummary = await getJson(harness, "/api/admin/operations-summary");
+    assert.ok(operationsSummary.totalCpcAlbums >= 2);
+    assert.ok(operationsSummary.sourceActiveCpcAlbums >= 1);
+    assert.ok(operationsSummary.readyToPublish >= 1);
+    assert.ok(operationsSummary.needsReview >= 1);
+    assert.equal(typeof operationsSummary.facebookLive, "number");
+    assert.equal(typeof operationsSummary.staleFacebookVerification, "number");
+    assert.equal(typeof operationsSummary.awaitingKonnerUpload, "number");
+
     const albumMarketplaceDraft = await getJson(harness, `/api/albums/${afterUpload.album.id}/marketplace-draft`);
     assert.equal(albumMarketplaceDraft.draft.descriptionSource, "template-upload");
     assert.equal(albumMarketplaceDraft.draft.descriptionOwner.username, TEST_USERNAME);
