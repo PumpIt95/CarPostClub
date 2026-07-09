@@ -24,6 +24,9 @@ Any time a package, dependency, language, library, repository, web search, tool,
 - If a source-removed vehicle is live on Facebook, the expected action is to mark the Marketplace listing as sold. Do not delete it by default, even when CarPostClub/O'Regan's did not directly sell it.
 - Delete Facebook listings only when explicitly requested, or for verified duplicates/incorrect listings/privacy issues.
 - Match vehicles across O'Regan's, CarPostClub, and Facebook by VIN first, then stock number, then strong year/make/model/trim/price evidence. Do not mutate Facebook when the match is weak.
+- Stock numbers like `TRANSFER-*` can mean the dealership bought or traded for another O'Regan's dealership's vehicle through the internal auction before assigning the final local stock number. Treat that as a temporary/internal stock-number state, not a posting blocker, when VIN/source-active inventory, dealership/source, package photos, and generated Facebook fields strongly identify the vehicle. Post with the current production stock/VIN evidence, record that the stock may need a later edit, and update the live listing/backend marker when the final stock number appears.
+- If a Facebook publish run gets `Transport closed` while a Marketplace composer is protected, preserve the draft and lock rather than opening a second composer. A later run should first reconnect to the same protected tab, verify seller, photo count, cover, and form state, then resume. This avoids losing a nearly finished post or creating a duplicate.
+- When resuming a preserved Facebook composer, do a short read-only Chrome control burn-in before continuing. If the current Codex session still returns `Transport closed` after the recovery pack, treat that session's browser route as poisoned and resume from a fresh session instead of repeatedly retrying the same tool path.
 
 ## Code Expectations
 
