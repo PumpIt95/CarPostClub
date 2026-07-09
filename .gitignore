@@ -16,6 +16,8 @@ facebook-marketplace-messages*.sqlite
 .automation-locks/
 .automation-artifacts/
 .listing-disclosure-current-run-dir
+.current-*-run-dir
+.browser_transport_recovery_last.json
 tmp/
 scripts/__pycache__/
 
@@ -37,3 +39,5 @@ WATCHDOG_*.md
 automation-skills-backup/
 *-backups/
 production-inventory-*.json
+production-facebook-ready-*.json
+cpc-albums-current.json

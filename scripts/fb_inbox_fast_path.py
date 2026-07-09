@@ -85,7 +85,7 @@ def baseline_rows(path: Path) -> tuple[list[str], dict[str, Any]]:
 def normalize_row(row: str) -> str:
     text = row.replace("Label and manage the chat thread", " ")
     text = text.translate(str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"'}))
-    text = text.replace(" · ", " ")
+    text = re.sub(r"\s+·\s+", " ", text)
     text = text.replace("2024 Buick Buick Envista", "2024 Buick Envista")
     text = re.sub(r"\s+", " ", text).strip()
     text = DATE_LABEL_RE.sub("", text).strip()

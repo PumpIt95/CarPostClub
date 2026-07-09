@@ -102,6 +102,8 @@ function shouldSkip(name, isDirectory) {
     || name.startsWith("._")
     || name === ".env"
     || name === ".listing-disclosure-current-run-dir"
+    || name === ".browser_transport_recovery_last.json"
+    || name.startsWith(".current-") && name.endsWith("-run-dir")
     || name === "CHROME_TABS.md"
     || name === "chrome-tab-registry.sqlite"
     || name.startsWith("facebook-marketplace-messages") && name.endsWith(".sqlite")
@@ -109,6 +111,8 @@ function shouldSkip(name, isDirectory) {
     || name.startsWith("listing-disclosure-audit-and-fix-") && name.endsWith(".json")
     || name === "playwright.config.mjs"
     || name === "production-inventory-current.json"
+    || name.startsWith("production-facebook-ready-") && name.endsWith(".json")
+    || name === "cpc-albums-current.json"
     || name === "release-manifest.json"
   ) return true;
   if (!isDirectory) return false;

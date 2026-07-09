@@ -108,10 +108,10 @@ const giphyRating = normalizeSpace(process.env.CARPOSTCLUB_GIPHY_RATING || proce
 const marketplaceDescriptionModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_MODEL || "gpt-5-nano";
 const marketplaceDescriptionFallbackModel = process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_FALLBACK_MODEL || "gpt-4.1-nano";
 const marketplaceDescriptionVariantCount = positiveInteger(process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_VARIANT_COUNT, 6);
-const marketplaceDescriptionPromptVersion = "facebook_marketplace_description_v3_simple";
+const marketplaceDescriptionPromptVersion = "facebook_marketplace_description_v4_fee_699";
 const marketplaceLocation = process.env.FACEBOOK_MARKETPLACE_LOCATION || "Halifax, Nova Scotia";
 const marketplaceCleanTitleDefault = parseBooleanEnv("FACEBOOK_MARKETPLACE_CLEAN_TITLE_DEFAULT", true);
-const marketplacePriceDisclosureFee = 499.95;
+const marketplacePriceDisclosureFee = 699.95;
 const marketplacePriceDisclosureHst = 14;
 const marketplaceContactPerson = normalizeSpace(process.env.FACEBOOK_MARKETPLACE_CONTACT_NAME || "Konner") || "Konner";
 const marketplaceLeadControlClosingPhrase = "(please message for more details)";
@@ -141,6 +141,9 @@ const authDisabled = !authEnabled;
 const authDisabledAllowed = parseBooleanEnv("CARPOSTCLUB_AUTH_DISABLED", parseBooleanEnv("KONNER_AUTH_DISABLED", false));
 if (authDisabled && nodeEnv === "production" && !authDisabledAllowed) {
   throw new Error("Authentication is not configured. Set CARPOSTCLUB_AUTH_PASSWORD_HASH or explicitly set CARPOSTCLUB_AUTH_DISABLED=true.");
+}
+if (nodeEnv === "production" && authEnabled && !configuredAuthSessionSecret()) {
+  throw new Error("Production session secret is not configured. Set CARPOSTCLUB_AUTH_SESSION_SECRET before deploying.");
 }
 if (nodeEnv === "production" && authPassword && !authPasswordHash && isPlaceholderSecret(authPassword)) {
   throw new Error("Production authentication password is still a placeholder. Set CARPOSTCLUB_AUTH_PASSWORD_HASH before deploying.");
@@ -6018,7 +6021,7 @@ function buildMarketplacePriceDisclosure(fields, car = null) {
   return `Price: ${price} plus $${marketplacePriceDisclosureFee.toLocaleString("en-CA", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  })} Tire Road Hazard, Documentation Fee, Security Etch, and ${marketplacePriceDisclosureHst}% HST.`;
+  })} Documentation Fee, Security Etch, and ${marketplacePriceDisclosureHst}% HST.`;
 }
 
 function appendMarketplaceContactLine(description, fields = {}, car = null, user = null) {
@@ -6236,7 +6239,7 @@ function hasMarketplaceContactLine(description) {
 }
 
 function hasMarketplacePriceDisclosure(description) {
-  return /\bTire Road Hazard\b/i.test(description)
+  return /\bPrice\s*:/i.test(description)
     && /\bDocumentation fee\b/i.test(description)
     && /\bSecurity Etch\b/i.test(description)
     && /\b14%\s*HST\b/i.test(description);

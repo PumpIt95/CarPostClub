@@ -2,6 +2,10 @@
 
 ## Production Smoke And Monitor
 
+Production currently runs through the Dokploy compose stack on `ssh konner` with app state under
+`/var/lib/konner-upload` and container env mounted from `/etc/konner-upload.docker.env`. The repository
+`compose.yaml` is a local/single-container reference, not the live production compose file.
+
 Run a health/restart-loop check from the production checkout:
 
 ```bash

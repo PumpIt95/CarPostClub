@@ -32,7 +32,8 @@ Use `.env.example` as the starting point. Do not commit real secrets.
 
 Set `CARPOSTCLUB_PUBLIC_ORIGIN=https://carpostclub.com` in production so generated invite links do not depend on
 the request `Host` header. Production also fails closed if no app password/hash is configured or if placeholder
-auth/session values are still present. Prefer `CARPOSTCLUB_AUTH_PASSWORD_HASH` over a plaintext password, and only set
+auth/session values are still present. Set an explicit `CARPOSTCLUB_AUTH_SESSION_SECRET` in production; the app does
+not derive one there. Prefer `CARPOSTCLUB_AUTH_PASSWORD_HASH` over a plaintext password, and only set
 `CARPOSTCLUB_AUTH_DISABLED=true` for an intentionally unauthenticated deployment.
 
 The macOS/iOS Shortcut inventory endpoint can be protected with `CARPOSTCLUB_SHORTCUTS_BEARER_TOKEN`. When set,
@@ -62,7 +63,9 @@ set `CARPOSTCLUB_MEDIA_STORAGE_DRIVER=s3` plus `CARPOSTCLUB_S3_BUCKET`, `CARPOST
 `CARPOSTCLUB_S3_REGION`, `CARPOSTCLUB_S3_ACCESS_KEY_ID`, and `CARPOSTCLUB_S3_SECRET_ACCESS_KEY`.
 Each inventory album stores files under its own object-key prefix, for example `car-.../photo.jpg`.
 
-The Docker Compose file runs one app container against the writable state volume. Do not add a second writer
+The repository Docker Compose file is a local/single-container reference. Production currently runs through the
+Dokploy compose stack on `ssh konner` with `/etc/konner-upload.docker.env` mounted into the container. Do not add a
+second writer
 against the same `UPLOAD_ROOT`/app data directory unless shared JSON state and schedulers are moved behind a
 cross-process lock or database-backed coordination.
 

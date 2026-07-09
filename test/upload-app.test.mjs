@@ -20,7 +20,7 @@ const NEW_DISPLAY_NAME = "Photo Tech";
 const NEW_PASSWORD = "new-password-123";
 const CHANGED_PASSWORD = "changed-password-456";
 const RESET_PASSWORD = "reset-password-789";
-const MARKETPLACE_PROMPT_VERSION = "facebook_marketplace_description_v3_simple";
+const MARKETPLACE_PROMPT_VERSION = "facebook_marketplace_description_v4_fee_699";
 const DEFAULT_PUSH_NOTIFICATION_PREFERENCES = defaultPushNotificationPreferences();
 const TINY_HEIC_BASE64 = [
   "AAAAJGZ0eXBoZWljAAAAAG1pZjFNaVBybWlhZk1pSEJoZWljAAABw21ldGEAAAAAAAAAIWhkbHIA",
@@ -216,6 +216,8 @@ function assertSingleMarketplaceDescriptionPrice(description, price = "$30,990")
   assert.equal((String(description).match(new RegExp(escapedPrice, "g")) || []).length, 1);
   assert.equal((String(description).match(/\bPrice:/gi) || []).length, 1);
   assert.match(description, new RegExp(`Price:\\s*${escapedPrice}\\s+plus`, "i"));
+  assert.match(description, /\$699\.95\s+Documentation Fee,\s*Security Etch,\s*and\s*14%\s*HST\./i);
+  assert.doesNotMatch(description, /Tire Road Hazard/i);
 }
 
 function assertMarketplaceMessageLine(description) {
@@ -830,7 +832,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertSingleMarketplaceDescriptionPrice(uploaded.body.marketplaceDraft.description);
     assert.match(uploaded.body.marketplaceDraft.description, /VIN:\s*KNDETCA76T7828611/);
     assert.match(uploaded.body.marketplaceDraft.description, /Mileage:\s*1,234 km/);
-    assert.match(uploaded.body.marketplaceDraft.description, /Tire Road Hazard/);
+    assert.match(uploaded.body.marketplaceDraft.description, /Documentation Fee,\s*Security Etch/i);
     assertCleanMarketplaceDescription(uploaded.body.marketplaceDraft.description);
     assert.doesNotMatch(uploaded.body.marketplaceDraft.description, new RegExp(TEST_CAR.stockNumber));
 	    assert.match(uploaded.body.marketplaceDraft.copyText, /Mileage: 1234 km/);
@@ -1588,8 +1590,16 @@ test("production refuses to start without explicit auth configuration", async ()
   }
 });
 
-test("production refuses placeholder auth secrets", async () => {
+test("production refuses missing or placeholder auth secrets", async () => {
   const scenarios = [
+    {
+      env: {
+        CARPOSTCLUB_AUTH_PASSWORD: "",
+        CARPOSTCLUB_AUTH_PASSWORD_HASH: "configured-password-hash-for-startup-test",
+        CARPOSTCLUB_AUTH_SESSION_SECRET: "",
+      },
+      message: /session secret is not configured/i,
+    },
     {
       env: {
         CARPOSTCLUB_AUTH_PASSWORD: "change-me-before-deploying",
