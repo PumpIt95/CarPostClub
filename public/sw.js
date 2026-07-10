@@ -1,13 +1,17 @@
 const APP_ICON = "/icons/carpostclub-icon-192.png";
 const APP_BADGE = "/icons/carpostclub-apple-touch-icon.png";
-const CACHE_VERSION = "carpostclub-pwa-v79";
+const PWA_ASSET_VERSION = "__CARPOSTCLUB_ASSET_VERSION__";
+const CACHE_VERSION = `carpostclub-pwa-${PWA_ASSET_VERSION}`;
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
+const versionedAsset = (pathname) => `${pathname}?v=${encodeURIComponent(PWA_ASSET_VERSION)}`;
+const OFFLINE_DOCUMENT = versionedAsset("/offline.html");
 const CORE_ASSETS = [
-  "/offline.html",
-  "/styles.css",
-  "/app.js",
-  "/file-list.js",
-  "/manifest.webmanifest",
+  OFFLINE_DOCUMENT,
+  versionedAsset("/styles.css"),
+  versionedAsset("/app.js"),
+  versionedAsset("/file-list.js"),
+  versionedAsset("/push-notification-preferences.js"),
+  versionedAsset("/manifest.webmanifest"),
   "/favicon.png",
   "/icons/carpostclub-icon-192.png",
   "/icons/carpostclub-icon-512.png",
@@ -334,7 +338,7 @@ async function networkFirstNavigation(request) {
   try {
     return await fetch(request);
   } catch {
-    return await caches.match("/offline.html") || Response.error();
+    return await caches.match(OFFLINE_DOCUMENT) || Response.error();
   }
 }
 

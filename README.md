@@ -53,6 +53,9 @@ briefly disappear and reappear inside the reappear cooldown do not send duplicat
 price changes send all-user price-change push notifications.
 Tune this with `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INTERVAL_MS`; set
 `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_ENABLED=false` to disable the scheduler.
+Detailed per-run snapshot rows are retained for 30 days by default, while the current vehicle lifecycle history is
+kept separately. Set `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DETAIL_RETENTION_DAYS` to adjust this, or `0` only
+when intentionally retaining unlimited detail history.
 
 Failed login attempts are throttled per username/IP in the app process. Tune this with
 `CARPOSTCLUB_LOGIN_RATE_LIMIT_MAX_ATTEMPTS` and `CARPOSTCLUB_LOGIN_RATE_LIMIT_WINDOW_MS`; keep an edge
