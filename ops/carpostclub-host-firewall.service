@@ -1,0 +1,15 @@
+[Unit]
+Description=CarPostClub host management-port firewall
+Wants=network-online.target
+Requires=docker.service
+After=network-online.target docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/carpostclub-host-firewall apply
+ExecReload=/usr/local/sbin/carpostclub-host-firewall apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

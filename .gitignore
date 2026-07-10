@@ -1,6 +1,7 @@
 node_modules/
 .env
 npm-debug.log*
+release-manifest.json
 production-inventory-current.json
 output/
 test-results/

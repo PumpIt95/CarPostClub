@@ -11,10 +11,14 @@ const PRESSURE_RELIEF = path.join(CHROME_LOAD_GUARD_SCRIPTS, "pressure_relief.sh
 const TAB_REGISTRY = path.join(CHROME_LOAD_GUARD_SCRIPTS, "tab_registry.sh");
 const TRANSPORT_RECOVERY = path.join(CHROME_LOAD_GUARD_SCRIPTS, "codex_browser_transport_recovery.sh");
 const TRANSPORT_MARKER = path.join(WORKSPACE, ".browser_transport_recovery_last.json");
+const PUBLISH_LOCK_NAME = "facebook-publish.lock";
+const PUBLISHER_HANDOFF_OWNERS = new Set(["facebook-ready-publisher", "facebook-ready-publisher-saturday"]);
 
 const OK_GATE_CODES = new Set([0, 10, 20]);
 const EXIT_CODES = {
   ready: 0,
+  ready_after_recovery: 0,
+  ready_to_resume_protected_composer: 0,
   ready_devtools_fallback: 0,
   blocked_protected_state: 20,
   blocked_pressure: 21,
@@ -22,6 +26,10 @@ const EXIT_CODES = {
   blocked_computer_use_transport: 23,
   preflight_error: 24,
 };
+
+export function preflightExitCodeForStatus(status) {
+  return EXIT_CODES[status] ?? 1;
+}
 
 export function parseKeyValueOutput(text) {
   const values = {};
@@ -72,6 +80,58 @@ export function hasProtectedWorkflowState(gate = {}) {
   );
 }
 
+function lockNames(value) {
+  return String(value || "none")
+    .split(/[\s,;]+/)
+    .map((name) => name.trim())
+    .filter((name) => name && name !== "none");
+}
+
+function isFacebookMarketplaceComposerUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return (
+      url.protocol === "https:"
+      && (url.hostname === "www.facebook.com" || url.hostname === "facebook.com")
+      && url.pathname === "/marketplace/create/vehicle"
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function validatePublisherHandoff({ handoff, gate } = {}) {
+  const metadata = handoff && typeof handoff === "object" ? handoff : null;
+  const issues = [];
+  const activeLocks = lockNames(gate?.active_locks);
+  const owner = String(metadata?.owner || "");
+  const stock = String(metadata?.stock || "");
+  const albumId = String(metadata?.albumId || "");
+  const protectedComposerUrl = String(metadata?.protectedComposerUrl || "");
+
+  if (!metadata) issues.push("missing_handoff_metadata");
+  if (!PUBLISHER_HANDOFF_OWNERS.has(owner)) issues.push("handoff_owner_not_publisher");
+  if (metadata?.handoff !== true) issues.push("handoff_not_intentional");
+  if (metadata?.publishClicked === true) issues.push("publish_already_clicked");
+  if (metadata?.backendLiveStatusWritten === true) issues.push("backend_live_status_already_written");
+  if (!stock || !albumId) issues.push("handoff_target_missing");
+  if (!isFacebookMarketplaceComposerUrl(protectedComposerUrl)) issues.push("handoff_composer_url_invalid");
+  if (gate?.protected_state !== "1") issues.push("protected_state_not_present");
+  if (activeLocks.length !== 1 || activeLocks[0] !== PUBLISH_LOCK_NAME) issues.push("other_workflow_lock_present");
+  if (numberValue(gate?.registry_active_claims) > 0) issues.push("active_registry_claim_present");
+
+  return {
+    ok: issues.length === 0,
+    reason: issues.length ? issues.join(",") : "verified_publisher_handoff",
+    handoff: {
+      owner,
+      stock,
+      albumId,
+      protectedComposerUrl,
+    },
+  };
+}
+
 function pressureRank(pressure) {
   if (pressure === "severe") return 2;
   if (pressure === "high") return 1;
@@ -91,12 +151,17 @@ export function decidePreflight({
   computerUseProbe,
   requireComputerUse = true,
   allowDevToolsFallback = false,
+  resumeOwnPublisherHandoff = false,
+  publisherHandoff = null,
   recoverySummary,
 } = {}) {
   const gate = finalGate || {};
   const chromeProbeOk = probeOk(nodeProbe);
   const computerProbeOk = probeOk(computerUseProbe);
   const protectedWorkflow = hasProtectedWorkflowState(gate);
+  const handoffValidation = resumeOwnPublisherHandoff
+    ? validatePublisherHandoff({ handoff: publisherHandoff, gate })
+    : null;
 
   if (!OK_GATE_CODES.has(gateExitCode)) {
     return {
@@ -109,7 +174,20 @@ export function decidePreflight({
     };
   }
 
-  if (protectedWorkflow) {
+  if (resumeOwnPublisherHandoff && !handoffValidation?.ok) {
+    return {
+      ok: false,
+      status: "blocked_protected_state",
+      reason: `publisher_handoff_not_resumable:${handoffValidation?.reason || "unknown"}`,
+      nextAction:
+        "Preserve the protected Facebook state. Resume only a verified publisher-owned composer, or deliberately release it after confirming no draft needs to survive.",
+      resumeRequired: true,
+      chromeProbeOk,
+      computerProbeOk,
+    };
+  }
+
+  if (protectedWorkflow && !handoffValidation?.ok) {
     return {
       ok: false,
       status: "blocked_protected_state",
@@ -176,13 +254,18 @@ export function decidePreflight({
   return {
     ok: true,
     status:
-      recoverySummary?.recoveryStatus && recoverySummary.recoveryStatus !== "diagnosed"
+      handoffValidation?.ok
+        ? "ready_to_resume_protected_composer"
+        : recoverySummary?.recoveryStatus && recoverySummary.recoveryStatus !== "diagnosed"
         ? "ready_after_recovery"
         : "ready",
-    reason: "transport_preflight_passed",
-    nextAction: "Safe to continue to the read-only Facebook burn-in before acquiring facebook-publish.lock.",
+    reason: handoffValidation?.ok ? "verified_publisher_handoff" : "transport_preflight_passed",
+    nextAction: handoffValidation?.ok
+      ? "Reconnect to the exact protected publisher composer, complete a read-only burn-in, re-verify the handoff vehicle and final duplicate check, then continue without opening another composer or replacing facebook-publish.lock."
+      : "Safe to continue to the read-only Facebook burn-in before acquiring facebook-publish.lock.",
     chromeProbeOk,
     computerProbeOk,
+    ...(handoffValidation?.ok ? { resumeHandoff: handoffValidation.handoff } : {}),
   };
 }
 
@@ -197,6 +280,7 @@ function parseArgs(argv) {
     requireComputerUse: true,
     applyRecovery: true,
     allowDevToolsFallback: false,
+    resumeOwnPublisherHandoff: false,
     jsonOnly: false,
     timeoutMs: 150000,
   };
@@ -213,6 +297,8 @@ function parseArgs(argv) {
       options.applyRecovery = false;
     } else if (arg === "--allow-devtools-fallback") {
       options.allowDevToolsFallback = true;
+    } else if (arg === "--resume-own-publisher-handoff") {
+      options.resumeOwnPublisherHandoff = true;
     } else if (arg === "--json") {
       options.jsonOnly = true;
     } else if (arg === "--timeout-ms") {
@@ -235,7 +321,7 @@ function usage() {
   return `Usage:
   node scripts/facebook_publish_transport_preflight.mjs [--run-dir DIR] [--json]
       [--no-computer-use-required] [--no-apply-recovery]
-      [--allow-devtools-fallback]
+      [--allow-devtools-fallback] [--resume-own-publisher-handoff]
 
 Runs the non-destructive Chrome/Facebook publish preflight before acquiring
 facebook-publish.lock or opening a Marketplace composer. It writes a summary
@@ -243,7 +329,10 @@ and exits non-zero when protected Facebook state, unsafe pressure, or transport
 probe failures would make publishing unsafe. With --allow-devtools-fallback,
 managed Chrome/Computer Use probe failures from an otherwise safe state return
 ready_devtools_fallback so the caller can switch to an explicitly authorized
-DevTools MCP route instead of retrying the poisoned managed route.`;
+DevTools MCP route instead of retrying the poisoned managed route. With
+--resume-own-publisher-handoff, a verified publisher-owned protected composer
+can be resumed without opening a duplicate composer; all other protected state
+still blocks the preflight.`;
 }
 
 async function pathExists(filePath) {
@@ -412,6 +501,10 @@ async function main(argv = process.argv.slice(2)) {
   const nodeProbe = await readJsonIfExists(path.join(recoveryRunDir, "direct-node-repl-probe.json"));
   const computerUseProbe = await readJsonIfExists(path.join(recoveryRunDir, "direct-computer-use-probe.json"));
   const previousMarker = await readJsonIfExists(TRANSPORT_MARKER);
+  const publisherHandoffPath = path.join(options.workspace, ".automation-locks", PUBLISH_LOCK_NAME, "owner.json");
+  const publisherHandoff = options.resumeOwnPublisherHandoff
+    ? await readJsonIfExists(publisherHandoffPath)
+    : null;
 
   const decision = decidePreflight({
     finalGate,
@@ -420,6 +513,8 @@ async function main(argv = process.argv.slice(2)) {
     computerUseProbe,
     requireComputerUse: options.requireComputerUse,
     allowDevToolsFallback: options.allowDevToolsFallback,
+    resumeOwnPublisherHandoff: options.resumeOwnPublisherHandoff,
+    publisherHandoff,
     recoverySummary,
   });
 
@@ -431,6 +526,7 @@ async function main(argv = process.argv.slice(2)) {
       requireComputerUse: options.requireComputerUse,
       applyRecovery: options.applyRecovery,
       allowDevToolsFallback: options.allowDevToolsFallback,
+      resumeOwnPublisherHandoff: options.resumeOwnPublisherHandoff,
     },
     decision,
     beforeGate,
@@ -452,6 +548,12 @@ async function main(argv = process.argv.slice(2)) {
       computerUse: computerUseProbe,
     },
     previousTransportMarker: previousMarker,
+    publisherHandoff: options.resumeOwnPublisherHandoff
+      ? {
+          path: publisherHandoffPath,
+          validation: validatePublisherHandoff({ handoff: publisherHandoff, gate: finalGate }),
+        }
+      : null,
   };
 
   await writeFile(path.join(options.runDir, "facebook-publish-transport-preflight.json"), JSON.stringify(summary, null, 2) + "\n");
@@ -477,7 +579,7 @@ async function main(argv = process.argv.slice(2)) {
     console.log(`next_action=${decision.nextAction}`);
   }
 
-  return EXIT_CODES[decision.status] ?? 1;
+  return preflightExitCodeForStatus(decision.status);
 }
 
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : "";

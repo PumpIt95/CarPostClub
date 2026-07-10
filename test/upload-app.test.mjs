@@ -198,7 +198,6 @@ function assertCleanMarketplaceDescription(description) {
   assert.doesNotMatch(description, /\b(?:I(?:'|’)m listing|I am listing|Listing this|Posting this|Sharing the details)\b/i);
   assert.doesNotMatch(description, /\b(?:body style not specified|interior colou?r is Other|Other interior)\b/i);
   assert.doesNotMatch(description, /#|[\u{1F300}-\u{1FAFF}]|(?:\b(?:look no further|turn heads|dream ride|beast|loaded to the max|priced to sell|priced to move|won't last long|don't miss out)\b)/iu);
-  assert.doesNotMatch(description, /\b(?:Message me|Send me a message)\b/i);
   assert.ok((description.match(/automatic transmission/gi) || []).length <= 1);
   assert.ok((description.match(/gasoline/gi) || []).length <= 1);
 }
@@ -208,7 +207,7 @@ function assertLocationFreeMarketplaceDescription(description) {
   assert.doesNotMatch(description, /O'Regan's Kia Halifax/i);
   assert.doesNotMatch(description, /\b(?:Halifax|Nova Scotia)\b/i);
   assert.doesNotMatch(description, /\b(?:located at|located in|available at|available through|come in|come see|visit us|stop by|walk in)\b/i);
-  assert.doesNotMatch(description, /\b(?:source listing|source location|inventory source|lot location|store|branch|dealership)\b/i);
+  assert.doesNotMatch(description, /\b(?:source listing|source location|inventory source|lot location|store|branch)\b/i);
 }
 
 function assertSingleMarketplaceDescriptionPrice(description, price = "$30,990") {
@@ -220,9 +219,13 @@ function assertSingleMarketplaceDescriptionPrice(description, price = "$30,990")
   assert.doesNotMatch(description, /Tire Road Hazard/i);
 }
 
-function assertMarketplaceMessageLine(description) {
-  assert.equal((String(description).match(/^Message for more details!$/gmi) || []).length, 1);
-  assert.doesNotMatch(description, /\bask for\s+[A-Z0-9][A-Z0-9 .'-]{0,60}\b/i);
+function assertMarketplaceMessageLine(description, { leadControl = false } = {}) {
+  if (leadControl) {
+    assert.equal((String(description).match(/^Message for more details!$/gmi) || []).length, 1);
+    assert.doesNotMatch(description, /\bask for\s+[A-Z0-9][A-Z0-9 .'-]{0,60}\b/i);
+    return;
+  }
+  assert.equal((String(description).match(/^Message me for more details\. If you're coming into the dealership, ask for Konner\.$/gmi) || []).length, 1);
 }
 
 function assertLeadControlSafeMarketplaceDescription(description) {
@@ -248,6 +251,9 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(health.body.ok, true);
     assert.equal(health.body.storage.mediaDriver, "local");
     assert.equal(health.body.storage.objectStorageEnabled, false);
+    assert.equal(health.body.shuttingDown, false);
+    assert.equal(health.body.criticalOperationCount, 0);
+    assert.deepEqual(health.body.criticalOperations, []);
     assert.equal(Object.hasOwn(health.body.storage, "uploadRoot"), false);
     assert.equal(Object.hasOwn(health.body.storage, "objectStorage"), false);
     assertSecurityHeaders(health.response);
@@ -791,6 +797,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
         { filename: "front.jpg", type: "image/jpeg", body: jpegBytes("front") },
         { filename: "interior.png", type: "image/png", body: pngBytes("interior") },
         { filename: "lot-tag.jpg", type: "image/heic", body: heicBytes() },
+        { filename: "rear.jpg", type: "image/jpeg", body: jpegBytes("rear") },
+        { filename: "side.jpg", type: "image/jpeg", body: jpegBytes("side") },
         { filename: "walkaround.mp4", type: "video/mp4", body: mp4Bytes("walkaround") },
       ],
     });
@@ -800,15 +808,15 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(uploaded.body.album.inventoryNumber, TEST_CAR.stockNumber);
     assert.equal(Object.hasOwn(uploaded.body.album, "storage"), false);
     assert.equal(Object.hasOwn(uploaded.body.album, "objectStoragePrefix"), false);
-    assert.equal(uploaded.body.count, 4);
-    assert.equal(uploaded.body.album.photoCount, 3);
+    assert.equal(uploaded.body.count, 6);
+    assert.equal(uploaded.body.album.photoCount, 5);
     assert.equal(uploaded.body.album.videoCount, 1);
-    assert.equal(uploaded.body.album.mediaCount, 4);
+    assert.equal(uploaded.body.album.mediaCount, 6);
     const carsAfterUpload = await getJson(harness, "/api/inventory/cars?dealershipId=15&inventoryTypeId=2");
     const uploadedInventoryCar = carsAfterUpload.cars.find((car) => car.vin === TEST_CAR.vin);
     assert.equal(uploadedInventoryCar.posted.posted, true);
     assert.equal(uploadedInventoryCar.posted.albumId, uploaded.body.album.id);
-    assert.equal(uploadedInventoryCar.posted.mediaCount, 4);
+    assert.equal(uploadedInventoryCar.posted.mediaCount, 6);
     assert.ok(uploaded.body.photos.every((photo) => photo.uploadedBy?.username === TEST_USERNAME));
     assert.ok(uploaded.body.photos.every((photo) => photo.uploadedBy?.displayName === TEST_USERNAME));
     assert.equal(uploaded.body.marketplaceGeneration.source, "template-upload");
@@ -835,7 +843,8 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.match(uploaded.body.marketplaceDraft.description, /Documentation Fee,\s*Security Etch/i);
     assertCleanMarketplaceDescription(uploaded.body.marketplaceDraft.description);
     assert.doesNotMatch(uploaded.body.marketplaceDraft.description, new RegExp(TEST_CAR.stockNumber));
-	    assert.match(uploaded.body.marketplaceDraft.copyText, /Mileage: 1234 km/);
+    assert.match(uploaded.body.marketplaceDraft.copyText, /Mileage: 1234 km/);
+	    assert.match(uploaded.body.marketplaceDraft.copyText, /Postal code: B3K4P9/);
 	    assert.match(uploaded.body.marketplaceDraft.copyText, /Dealership: O'Regan's Kia Halifax/);
 	    assert.match(uploaded.body.marketplaceDraft.copyText, /Ask for: Konner/);
 
@@ -887,7 +896,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(uploadedMarketplaceDraft.draft.descriptionSource, "template-upload");
     assert.equal(photoTechMarketplaceDraft.body.draft.descriptionSource, "template-upload");
     assert.match(photoTechMarketplaceDraft.body.draft.description, /2026 Kia Seltos/);
-    assertMarketplaceMessageLine(photoTechMarketplaceDraft.body.draft.description);
+    assertMarketplaceMessageLine(photoTechMarketplaceDraft.body.draft.description, { leadControl: true });
     assertSingleMarketplaceDescriptionPrice(photoTechMarketplaceDraft.body.draft.description);
     assertLeadControlSafeMarketplaceDescription(photoTechMarketplaceDraft.body.draft.description);
     assert.doesNotMatch(photoTechMarketplaceDraft.body.draft.copyText, /Dealership: O'Regan's Kia Halifax/i);
@@ -910,7 +919,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       { headers: { Cookie: approvedCookie } },
     );
     assert.match(poisonedPhotoTechMarketplaceDraft.body.draft.description, /2026 Kia Seltos/);
-    assertMarketplaceMessageLine(poisonedPhotoTechMarketplaceDraft.body.draft.description);
+    assertMarketplaceMessageLine(poisonedPhotoTechMarketplaceDraft.body.draft.description, { leadControl: true });
     assertSingleMarketplaceDescriptionPrice(poisonedPhotoTechMarketplaceDraft.body.draft.description);
     assertLeadControlSafeMarketplaceDescription(poisonedPhotoTechMarketplaceDraft.body.draft.description);
     assertCleanMarketplaceDescription(poisonedPhotoTechMarketplaceDraft.body.draft.description);
@@ -954,13 +963,15 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       harness,
       `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
     );
-    assert.equal(afterUpload.photos.length, 4);
+    assert.equal(afterUpload.photos.length, 6);
     assert.equal(afterUpload.album.coverPhoto.originalName, "front.jpg");
     assert.equal(afterUpload.photos[0].originalName, "front.jpg");
     assert.deepEqual(afterUpload.photos.map((photo) => photo.originalName), [
       "front.jpg",
       "interior.png",
       "lot-tag.jpg",
+      "rear.jpg",
+      "side.jpg",
       "walkaround.mp4",
     ]);
 
@@ -1051,9 +1062,9 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.ok(savedManualAlbum);
     assert.equal(Object.hasOwn(testAlbum, "storage"), false);
     assert.equal(Object.hasOwn(testAlbum, "objectStoragePrefix"), false);
-    assert.equal(testAlbum.photoCount, 3);
+    assert.equal(testAlbum.photoCount, 5);
     assert.equal(testAlbum.videoCount, 1);
-    assert.equal(testAlbum.mediaCount, 4);
+    assert.equal(testAlbum.mediaCount, 6);
     assert.equal(testAlbum.coverPhoto.originalName, "front.jpg");
     assert.match(testAlbum.coverUrl, /\/api\/albums\/[^/]+\/media\//);
     assert.match(testAlbum.coverThumbnailUrl, /\/api\/albums\/[^/]+\/media\/[^/]+\/thumbnail$/);
@@ -1071,6 +1082,15 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(savedManualAlbum.inventoryStatus.lifecycle.facebookAction, "manual_review");
     assert.equal(savedManualAlbum.createdBy.username, TEST_USERNAME);
     assert.equal(savedManualAlbum.descriptionPreview, MANUAL_CAR.descriptionPreview);
+
+    const operationsSummary = await getJson(harness, "/api/admin/operations-summary");
+    assert.ok(operationsSummary.totalCpcAlbums >= 2);
+    assert.ok(operationsSummary.sourceActiveCpcAlbums >= 1);
+    assert.ok(operationsSummary.readyToPublish >= 1);
+    assert.ok(operationsSummary.needsReview >= 1);
+    assert.equal(typeof operationsSummary.facebookLive, "number");
+    assert.equal(typeof operationsSummary.staleFacebookVerification, "number");
+    assert.equal(typeof operationsSummary.awaitingKonnerUpload, "number");
 
     const albumMarketplaceDraft = await getJson(harness, `/api/albums/${afterUpload.album.id}/marketplace-draft`);
     assert.equal(albumMarketplaceDraft.draft.descriptionSource, "template-upload");
@@ -1100,7 +1120,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.doesNotMatch(photoTechDescriptionText, /Ask for: Photo Tech/i);
     const photoTechDescriptionBody = marketplaceDocumentDescriptionBody(photoTechDescriptionText);
     assert.match(photoTechDescriptionBody, /2026 Kia Seltos/);
-    assertMarketplaceMessageLine(photoTechDescriptionBody);
+    assertMarketplaceMessageLine(photoTechDescriptionBody, { leadControl: true });
     assertSingleMarketplaceDescriptionPrice(photoTechDescriptionBody);
     assertLeadControlSafeMarketplaceDescription(photoTechDescriptionBody);
     assert.doesNotMatch(photoTechDescriptionText, /Ask for: Konner/);
@@ -1127,7 +1147,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       assert.doesNotMatch(lateDescriptionText, new RegExp(`Ask for: ${lateUser.displayName}`));
       const lateDescriptionBody = marketplaceDocumentDescriptionBody(lateDescriptionText);
       assert.match(lateDescriptionBody, /2026 Kia Seltos/);
-      assertMarketplaceMessageLine(lateDescriptionBody);
+      assertMarketplaceMessageLine(lateDescriptionBody, { leadControl: true });
       assertSingleMarketplaceDescriptionPrice(lateDescriptionBody);
       assertLeadControlSafeMarketplaceDescription(lateDescriptionBody);
       assert.doesNotMatch(lateDescriptionText, /Ask for: Konner/);
@@ -1167,7 +1187,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.doesNotMatch(regularPackageDescriptionText, /Dealership: O'Regan's Kia Halifax/i);
     assert.doesNotMatch(regularPackageDescriptionText, /Ask for: Photo Tech/i);
     const regularPackageDescriptionBody = marketplaceDocumentDescriptionBody(regularPackageDescriptionText);
-    assertMarketplaceMessageLine(regularPackageDescriptionBody);
+    assertMarketplaceMessageLine(regularPackageDescriptionBody, { leadControl: true });
     assertSingleMarketplaceDescriptionPrice(regularPackageDescriptionBody);
     assertLeadControlSafeMarketplaceDescription(regularPackageDescriptionBody);
 
@@ -1240,20 +1260,26 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
       harness,
       `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
     );
-    assert.equal(afterDelete.photos.length, 3);
-    assert.deepEqual(afterDelete.photos.map((photo) => photo.originalName).sort(), ["interior.png", "lot-tag.jpg", "walkaround.mp4"]);
+    assert.equal(afterDelete.photos.length, 5);
+    assert.deepEqual(afterDelete.photos.map((photo) => photo.originalName).sort(), [
+      "interior.png",
+      "lot-tag.jpg",
+      "rear.jpg",
+      "side.jpg",
+      "walkaround.mp4",
+    ]);
 
     const deletedAll = await fetch(`${harness.baseUrl}/api/albums/${afterUpload.album.id}/media`, {
       method: "DELETE",
       headers: { Cookie: harness.cookie, Accept: "application/json" },
     });
     assert.equal(deletedAll.status, 200);
-    assert.equal((await deletedAll.json()).deleted, 3);
+    assert.equal((await deletedAll.json()).deleted, 5);
     mediaAuditEvents = await readAuditLog(harness);
     assertAuditEvent(mediaAuditEvents, "album.media_collection.deleted", (event) => (
       event.actor.username === TEST_USERNAME
       && event.details.albumId === afterUpload.album.id
-      && event.details.deleted === 3
+      && event.details.deleted === 5
       && event.details.filenames.includes(firstVideo.filename)
     ));
 
@@ -2768,9 +2794,9 @@ test("album inventory status marks O'Regan's vehicles that disappear from the fe
     assert.match(album.inventoryStatus.label, /No longer active in O'Regan's inventory as of/);
     assert.equal(album.inventoryStatus.lifecycle.sourceStatus, "source_removed");
     assert.equal(album.inventoryStatus.lifecycle.packageStatus, "source_removed_package");
-    assert.equal(album.inventoryStatus.lifecycle.facebookState, "stale_on_facebook");
-    assert.equal(album.inventoryStatus.lifecycle.facebookAction, "mark_sold");
-    assert.equal(album.inventoryStatus.lifecycle.shouldMarkFacebookSold, true);
+    assert.equal(album.inventoryStatus.lifecycle.facebookState, "facebook_verification_required");
+    assert.equal(album.inventoryStatus.lifecycle.facebookAction, "verify_facebook_before_mark_sold");
+    assert.equal(album.inventoryStatus.lifecycle.shouldMarkFacebookSold, false);
     assert.equal(album.inventoryStatus.lifecycle.canPostToFacebook, false);
 
     const descriptionDownload = await fetch(`${harness.baseUrl}/api/albums/${TEST_ALBUM_ID}/description.txt`, {
@@ -2778,7 +2804,7 @@ test("album inventory status marks O'Regan's vehicles that disappear from the fe
     });
     assert.equal(descriptionDownload.status, 200);
     const descriptionText = await descriptionDownload.text();
-    assert.match(descriptionText, /Facebook sync: Mark any matching Konner John Marketplace listing sold; do not delete it\./);
+    assert.match(descriptionText, /Facebook sync: Verify current Facebook and public O'Regan's status before marking a matching listing sold\./);
     assert.match(descriptionText, /Ready to post: No/);
 
     const packageDownload = await fetch(`${harness.baseUrl}/api/albums/${TEST_ALBUM_ID}/package`, {
@@ -2787,7 +2813,31 @@ test("album inventory status marks O'Regan's vehicles that disappear from the fe
     assert.equal(packageDownload.status, 200);
     const packageManifest = JSON.parse(zipEntryText(Buffer.from(await packageDownload.arrayBuffer()), "package-manifest.json"));
     assert.equal(packageManifest.readyToPost, false);
-    assert.equal(packageManifest.inventoryStatus.lifecycle.facebookAction, "mark_sold");
+    assert.equal(packageManifest.inventoryStatus.lifecycle.facebookAction, "verify_facebook_before_mark_sold");
+
+    const liveFacebookStatus = await postJson(harness, `/api/albums/${TEST_ALBUM_ID}/facebook-listing-status`, {
+      state: "live",
+      listingId: "source-removed-live-test",
+      title: "2026 Kia Seltos",
+      sellerName: "Konner John",
+      matchedBy: ["vin", "stock"],
+      matchConfidence: "exact",
+    });
+    assert.equal(liveFacebookStatus.status, 201);
+    assert.equal(liveFacebookStatus.body.inventoryStatus.lifecycle.facebookAction, "mark_sold");
+    assert.equal(liveFacebookStatus.body.inventoryStatus.lifecycle.shouldMarkFacebookSold, true);
+
+    const soldFacebookStatus = await postJson(harness, `/api/albums/${TEST_ALBUM_ID}/facebook-listing-status`, {
+      state: "sold",
+      listingId: "source-removed-live-test",
+      title: "2026 Kia Seltos",
+      sellerName: "Konner John",
+      matchedBy: ["vin", "stock"],
+      matchConfidence: "exact",
+    });
+    assert.equal(soldFacebookStatus.status, 201);
+    assert.equal(soldFacebookStatus.body.inventoryStatus.lifecycle.facebookAction, "already_sold");
+    assert.equal(soldFacebookStatus.body.inventoryStatus.lifecycle.shouldMarkFacebookSold, false);
 
     const notifications = await getJson(harness, "/api/notifications");
     assert.equal(notifications.unreadCount, 0);
@@ -3564,6 +3614,9 @@ test("multiple approved accounts can use live chat while duplicate vehicle uploa
 	      `/api/vehicle-album?dealershipId=15&inventoryTypeId=2&vin=${TEST_CAR.vin}`,
     );
     assert.equal(albumAfterConcurrentUploads.photos.length, expectedOriginalNames.length);
+    assert.equal(albumAfterConcurrentUploads.album.inventoryStatus.lifecycle.packageStatus, "needs_more_photos");
+    assert.equal(albumAfterConcurrentUploads.album.inventoryStatus.lifecycle.facebookAction, "capture_photos");
+    assert.equal(albumAfterConcurrentUploads.album.inventoryStatus.lifecycle.canPostToFacebook, false);
     assert.deepEqual(
       albumAfterConcurrentUploads.photos.map((photo) => photo.originalName).sort(),
       expectedOriginalNames,

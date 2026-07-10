@@ -1,5 +1,25 @@
 # CarPostClub Operations
 
+For a plain-language map of every CarPostClub server and Mac automation job, see
+[`automation-operating-model.md`](automation-operating-model.md).
+
+## Host Access Hardening
+
+Production keeps public web traffic on `80`/`443` and key-based SSH on `22`. Docker Swarm management ports are
+blocked from external interfaces, and Dokploy's port `3000` is reachable locally through an SSH tunnel:
+
+```bash
+ssh -L 3000:127.0.0.1:3000 konner
+```
+
+Then open `http://127.0.0.1:3000`. The installed policy is sourced from `ops/host-firewall.sh`,
+`ops/carpostclub-host-firewall.service`, and `ops/ssh/40-carpostclub-hardening.conf`. Verify it with:
+
+```bash
+ssh konner /usr/local/sbin/carpostclub-host-firewall --check
+ssh -o BatchMode=yes konner true
+```
+
 ## Production Smoke And Monitor
 
 Production currently runs through the Dokploy compose stack on `ssh konner` with app state under
@@ -19,6 +39,18 @@ npm run monitor:production -- \
 
 Add `--require-release-id <release-id>` during deploys to prove the live container is serving the expected release.
 
+For a reviewed, committed release, use the guarded Docker/Dokploy deployment path:
+
+```bash
+ops/deploy-production.sh
+```
+
+It refuses a dirty worktree, waits for real upload/write activity and recent upload temp files to clear, creates a
+verified pre-deploy state backup, builds an immutable image containing the exact Git commit, verifies the image
+health check, applies the one-time snapshot-retention compaction during the maintenance window, recreates the
+Dokploy Compose service, checks both the release id and source commit through `/healthz`, installs the bounded daily
+maintenance timer, and restores the prior Compose image automatically if the new release fails health verification.
+
 ## State Backup And Restore Check
 
 Create a state archive and verify it can be listed:
@@ -34,6 +66,19 @@ npm run restore:check -- --archive /var/lib/konner-upload/backups/carpostclub-st
 ```
 
 Use `--extract-check` to perform a non-destructive extraction into a temporary directory.
+
+Production should install the bounded daily maintenance timer after deploying the matching app image:
+
+```bash
+sudo ops/install-carpostclub-maintenance.sh
+systemctl list-timers carpostclub-maintenance.timer --no-pager
+```
+
+The timer runs at approximately 3:15 a.m. Halifax time. It keeps 14 days of raw half-hour inventory snapshot rows,
+then creates a verified state archive using consistent SQLite snapshots and retains the newest 14 matching archives.
+Current vehicle state, first/last-seen lifecycle data, run summaries referenced by current records, media, and app
+configuration remain preserved. Daily maintenance does not run `VACUUM`; use the retention helper's explicit
+`--vacuum` option only in a guarded maintenance window after a fresh verified backup.
 
 ## Token Rotation
 

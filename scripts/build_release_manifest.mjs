@@ -11,6 +11,7 @@ const root = path.resolve(args.root || process.cwd());
 const output = path.resolve(root, args.output || "release-manifest.json");
 const releaseId = args.releaseId || new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 const createdAt = args.createdAt || new Date().toISOString();
+const sourceCommit = String(args.sourceCommit || "").trim();
 const execFileAsync = promisify(execFile);
 
 const files = await collectManifestFiles(root);
@@ -19,6 +20,7 @@ const manifest = {
   releaseId,
   createdAt,
   source: args.source || "manual",
+  ...(sourceCommit ? { sourceCommit } : {}),
   root: ".",
   node: process.version,
   files,
@@ -147,6 +149,7 @@ function parseArgs(argv) {
     else if (arg === "--release-id") options.releaseId = argv[++index];
     else if (arg === "--created-at") options.createdAt = argv[++index];
     else if (arg === "--source") options.source = argv[++index];
+    else if (arg === "--source-commit") options.sourceCommit = argv[++index];
     else if (arg === "--help") {
       printHelp();
       process.exit(0);
@@ -166,5 +169,6 @@ Options:
   --release-id <id>      Release identifier. Default: current UTC timestamp.
   --created-at <iso>     Release creation timestamp. Default: now.
   --source <text>        Human-readable source label. Default: manual.
+  --source-commit <sha>  Git commit or source revision embedded in the release.
 `);
 }

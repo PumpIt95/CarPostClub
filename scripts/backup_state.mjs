@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { DatabaseSync } from "node:sqlite";
 
 const args = parseArgs(process.argv.slice(2));
 await loadEnvFile(args.envFile);
@@ -13,11 +15,8 @@ const stateRoot = path.resolve(args.root
   || path.dirname(process.env.UPLOAD_ROOT || "/var/lib/carpostclub/uploads"));
 const outputDir = path.resolve(args.outputDir || path.join(stateRoot, "backups"));
 const archive = path.resolve(args.archive || path.join(outputDir, `carpostclub-state-${timestampForFilename()}.tar.gz`));
-const excludes = [
-  `${path.basename(stateRoot)}/backups`,
-  `${path.basename(stateRoot)}/tmp`,
-  `${path.basename(stateRoot)}/debug-screenshots`,
-];
+const excludedDirectoryNames = new Set(["backups", "tmp", "debug-screenshots"]);
+const excludes = [...excludedDirectoryNames].map((name) => `${path.basename(stateRoot)}/${name}`);
 
 const stat = await fs.stat(stateRoot).catch((error) => {
   if (error?.code === "ENOENT") throw new Error(`State root does not exist: ${stateRoot}`);
@@ -32,6 +31,7 @@ if (args.dryRun) {
     stateRoot,
     archive,
     excludes,
+    retain: args.retain,
   }, null, 2));
   process.exit(0);
 }
@@ -39,16 +39,28 @@ if (args.dryRun) {
 await fs.mkdir(path.dirname(archive), { recursive: true });
 if (path.dirname(archive) !== outputDir) await fs.mkdir(outputDir, { recursive: true });
 
-const parent = path.dirname(stateRoot);
 const basename = path.basename(stateRoot);
-await run("tar", [
-  "-C",
-  parent,
-  ...excludes.map((exclude) => `--exclude=${exclude}`),
-  "-czf",
-  archive,
-  basename,
-]);
+const databasePaths = await currentSqliteDatabasePaths(stateRoot);
+const stagingParent = await fs.mkdtemp(path.join(os.tmpdir(), "carpostclub-backup-"));
+const stagedStateRoot = path.join(stagingParent, basename);
+try {
+  const excludedPaths = new Set(databasePaths.flatMap((databasePath) => [
+    databasePath,
+    `${databasePath}-wal`,
+    `${databasePath}-shm`,
+  ]));
+  await fs.cp(stateRoot, stagedStateRoot, {
+    recursive: true,
+    preserveTimestamps: true,
+    filter: (source) => shouldStagePath(source, stateRoot, excludedPaths),
+  });
+  for (const databasePath of databasePaths) {
+    await snapshotSqliteDatabase(databasePath, path.join(stagedStateRoot, path.basename(databasePath)));
+  }
+  await run("tar", ["-C", stagingParent, "-czf", archive, basename]);
+} finally {
+  await fs.rm(stagingParent, { recursive: true, force: true });
+}
 
 let entriesChecked = 0;
 if (args.verify !== false) {
@@ -58,6 +70,7 @@ if (args.verify !== false) {
 }
 
 const archiveStat = await fs.stat(archive);
+const removedArchives = await enforceArchiveRetention(outputDir, archive, args.retain);
 console.log(JSON.stringify({
   ok: true,
   stateRoot,
@@ -65,7 +78,63 @@ console.log(JSON.stringify({
   bytes: archiveStat.size,
   entriesChecked,
   excludes,
+  databaseSnapshots: databasePaths.map((databasePath) => path.basename(databasePath)),
+  retain: args.retain,
+  removedArchives,
 }, null, 2));
+
+async function currentSqliteDatabasePaths(root) {
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".sqlite"))
+    .map((entry) => path.join(root, entry.name))
+    .sort();
+}
+
+function shouldStagePath(source, root, excludedPaths) {
+  const resolved = path.resolve(source);
+  if (resolved === root) return true;
+  if (excludedPaths.has(resolved)) return false;
+  const relative = path.relative(root, resolved);
+  const first = relative.split(path.sep)[0];
+  return !excludedDirectoryNames.has(first);
+}
+
+async function snapshotSqliteDatabase(source, destination) {
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  await fs.rm(destination, { force: true });
+  const db = new DatabaseSync(source);
+  try {
+    db.exec("PRAGMA busy_timeout = 30000");
+    const escaped = destination.replaceAll("'", "''");
+    db.exec(`VACUUM INTO '${escaped}'`);
+  } finally {
+    db.close();
+  }
+}
+
+async function enforceArchiveRetention(directory, currentArchive, retain) {
+  if (!Number.isInteger(retain) || retain <= 0) return [];
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const archives = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^carpostclub-state-\d{8}T\d{6}Z\.tar\.gz$/.test(entry.name)) continue;
+    const archivePath = path.join(directory, entry.name);
+    const stat = await fs.stat(archivePath);
+    archives.push({ path: archivePath, mtimeMs: stat.mtimeMs });
+  }
+  archives.sort((left, right) => right.mtimeMs - left.mtimeMs || right.path.localeCompare(left.path));
+  const current = path.resolve(currentArchive);
+  const keep = new Set(archives.slice(0, retain).map((entry) => path.resolve(entry.path)));
+  keep.add(current);
+  const removed = [];
+  for (const entry of archives) {
+    if (keep.has(path.resolve(entry.path))) continue;
+    await fs.rm(entry.path, { force: true });
+    removed.push(entry.path);
+  }
+  return removed;
+}
 
 async function run(command, commandArgs, { capture = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -120,7 +189,7 @@ function timestampForFilename() {
 }
 
 function parseArgs(argv) {
-  const options = { verify: true };
+  const options = { verify: true, retain: 0 };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--root") options.root = argv[++index];
@@ -129,6 +198,12 @@ function parseArgs(argv) {
     else if (arg === "--env-file") options.envFile = argv[++index];
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--no-verify") options.verify = false;
+    else if (arg === "--retain") {
+      options.retain = Number(argv[++index]);
+      if (!Number.isInteger(options.retain) || options.retain < 0) {
+        throw new Error("--retain must be a non-negative integer");
+      }
+    }
     else if (arg === "--help") {
       printHelp();
       process.exit(0);
@@ -149,5 +224,6 @@ Options:
   --env-file <path>      Load a systemd/docker env file before resolving UPLOAD_ROOT.
   --dry-run              Print resolved paths without creating an archive.
   --no-verify            Skip tar listing verification after creation.
+  --retain <count>       Keep only the newest matching archives after success. Default: 0 (no pruning).
 `);
 }

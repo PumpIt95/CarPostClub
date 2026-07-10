@@ -1,0 +1,14 @@
+[Unit]
+Description=CarPostClub snapshot retention and verified state backup
+Wants=network-online.target
+Requires=docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/carpostclub-maintenance
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=45min
+UMask=0077

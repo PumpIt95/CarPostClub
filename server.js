@@ -27,6 +27,7 @@ import {
   normalizePushNotificationPreferences,
   pushNotificationPreferenceKeyForPayload,
 } from "./public/push-notification-preferences.js";
+import { pruneInventorySnapshotHistory } from "./scripts/inventory_snapshot_retention.mjs";
 
 const appRoot = fileURLToPath(new URL("./", import.meta.url));
 const publicRoot = fileURLToPath(new URL("./public/", import.meta.url));
@@ -97,6 +98,7 @@ const releaseManifestPath = process.env.CARPOSTCLUB_RELEASE_MANIFEST || process.
 const publicOrigin = normalizePublicOrigin(process.env.CARPOSTCLUB_PUBLIC_ORIGIN || process.env.KONNER_PUBLIC_ORIGIN || "");
 const maxFileBytes = positiveInteger(process.env.MAX_FILE_BYTES, 250 * 1024 * 1024);
 const maxUploadFiles = positiveInteger(process.env.MAX_UPLOAD_FILES, 100);
+const facebookMinimumPhotoCount = positiveInteger(process.env.CARPOSTCLUB_FACEBOOK_MIN_PHOTO_COUNT, 5);
 const chatMessageLimit = positiveInteger(process.env.CHAT_MESSAGE_LIMIT, 500);
 const chatResponseLimit = Math.min(chatMessageLimit, positiveInteger(process.env.CHAT_RESPONSE_LIMIT, 100));
 const chatMessageMaxLength = positiveInteger(process.env.CHAT_MESSAGE_MAX_LENGTH, 1000);
@@ -110,6 +112,7 @@ const marketplaceDescriptionFallbackModel = process.env.FACEBOOK_MARKETPLACE_DES
 const marketplaceDescriptionVariantCount = positiveInteger(process.env.FACEBOOK_MARKETPLACE_DESCRIPTION_VARIANT_COUNT, 6);
 const marketplaceDescriptionPromptVersion = "facebook_marketplace_description_v4_fee_699";
 const marketplaceLocation = process.env.FACEBOOK_MARKETPLACE_LOCATION || "Halifax, Nova Scotia";
+const marketplacePostalCode = normalizeMarketplacePostalCode(process.env.FACEBOOK_MARKETPLACE_POSTAL_CODE) || "B3K4P9";
 const marketplaceCleanTitleDefault = parseBooleanEnv("FACEBOOK_MARKETPLACE_CLEAN_TITLE_DEFAULT", true);
 const marketplacePriceDisclosureFee = 699.95;
 const marketplacePriceDisclosureHst = 14;
@@ -246,6 +249,16 @@ const oregansInventorySnapshotInitialDelayMs = positiveInteger(
     || process.env.OREGANS_INVENTORY_SNAPSHOT_INITIAL_DELAY_MS,
   30_000,
 );
+const oregansInventorySnapshotRetentionDays = nonNegativeInteger(
+  process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_RETENTION_DAYS
+    || process.env.OREGANS_INVENTORY_SNAPSHOT_RETENTION_DAYS,
+  14,
+);
+const oregansInventorySnapshotPruneIntervalMs = positiveInteger(
+  process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_PRUNE_INTERVAL_MS
+    || process.env.OREGANS_INVENTORY_SNAPSHOT_PRUNE_INTERVAL_MS,
+  6 * 60 * 60 * 1000,
+);
 const oregansInventorySnapshotEnabled = parseBooleanEnv("CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_ENABLED",
   parseBooleanEnv("OREGANS_INVENTORY_SNAPSHOT_ENABLED", !inventoryMockFile));
 const oregansInventorySnapshotTimeZone = process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_TIME_ZONE
@@ -333,7 +346,11 @@ let notificationLogWritePromise = Promise.resolve();
 let inventoryLifecycleWritePromise = Promise.resolve();
 let auditLogWritePromise = Promise.resolve();
 let oregansInventorySnapshotRunPromise = Promise.resolve();
+let oregansInventorySnapshotPendingRuns = 0;
 let oregansInventorySnapshotTimer = null;
+let oregansInventorySnapshotLastPruneAt = 0;
+let oregansInventorySnapshotLastPrune = null;
+let shuttingDown = false;
 let openaiClient = null;
 
 await fs.mkdir(uploadRoot, { recursive: true });
@@ -410,6 +427,7 @@ app.use(express.static(publicRoot, { index: false, maxAge: 0 }));
 app.use(rejectCrossOriginUnsafeRequests);
 
 app.get("/healthz", (_req, res) => {
+  const criticalOperations = criticalOperationSnapshot();
   res.json({
     ok: true,
     service: serviceName,
@@ -421,9 +439,9 @@ app.get("/healthz", (_req, res) => {
       objectStorageEnabled: s3MediaStorageEnabled,
     },
     uptimeSeconds: Math.round(process.uptime()),
-    shuttingDown: false,
-    criticalOperationCount: 0,
-    criticalOperations: [],
+    shuttingDown,
+    criticalOperationCount: criticalOperations.reduce((total, operation) => total + operation.count, 0),
+    criticalOperations,
   });
 });
 
@@ -782,6 +800,21 @@ app.post("/api/admin/push/dry-run", requireAdmin, async (req, res, next) => {
       upload: {
         simulations: uploadSimulations,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/operations-summary", requireAdmin, async (req, res, next) => {
+  try {
+    const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
+    const summary = operationsSummaryFromAlbums(gallery.albums);
+    setPrivateNoStore(res);
+    res.json({
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      ...summary,
     });
   } catch (error) {
     next(error);
@@ -1570,6 +1603,7 @@ function marketplaceReadyToPost(draft, inventoryStatus) {
 function inventoryLifecycleDocumentAction(inventoryStatus) {
   const action = inventoryStatus?.lifecycle?.facebookAction || "";
   if (action === "mark_sold") return "Mark any matching Konner John Marketplace listing sold; do not delete it.";
+  if (action === "verify_facebook_before_mark_sold") return "Verify current Facebook and public O'Regan's status before marking a matching listing sold.";
   if (action === "already_sold") return "Matching Konner John Marketplace listing is already sold.";
   if (action === "skip_no_live_listing") return "No matching live Konner John Marketplace listing was found during the last sweep.";
   if (action === "skip_already_live") return "Already represented on Konner John Marketplace; do not publish a duplicate.";
@@ -1578,6 +1612,7 @@ function inventoryLifecycleDocumentAction(inventoryStatus) {
   if (action === "review_sold_match") return "Review the sold matching Facebook listing before publishing a duplicate.";
   if (action === "post_if_not_live") return "Post to Konner John Marketplace if it is not already live.";
   if (action === "capture_photos") return "Capture and upload Connor photos before posting.";
+  if (action === "wait_for_upload") return "Wait for the current CPC photo upload to finish before posting.";
   if (action === "manual_review") return "Review manually before any Facebook action.";
   if (action === "review") return "Review inventory status before any Facebook action.";
   return "";
@@ -1861,10 +1896,34 @@ const server = app.listen(port, host, () => {
 });
 
 process.on("SIGTERM", () => {
+  shuttingDown = true;
   stopOregansInventorySnapshotScheduler();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 30_000).unref();
 });
+
+function criticalOperationSnapshot() {
+  const operations = [
+    ["vehicle-upload", vehicleUploadWritePromises],
+    ["photo-metadata-write", photoMetadataWritePromises],
+    ["marketplace-copy-write", marketplaceCopyStoreWritePromises],
+  ].flatMap(([type, operations]) => {
+    if (!operations?.size) return [];
+    return [{
+      type,
+      count: operations.size,
+      keys: [...operations.keys()].map((key) => String(key)).slice(0, 20),
+    }];
+  });
+  if (oregansInventorySnapshotPendingRuns > 0) {
+    operations.push({
+      type: "inventory-snapshot",
+      count: oregansInventorySnapshotPendingRuns,
+      keys: [],
+    });
+  }
+  return operations;
+}
 
 function applySecurityHeaders(_req, res, next) {
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -2409,6 +2468,8 @@ async function inventoryStatusForAlbum(album) {
 
 function inventoryLifecycleState({ sourceStatus, album, checkedAt = null, facebookListing = null }) {
   const hasPackagePhotos = Number(album?.mediaCount || 0) > 0;
+  const packageStatus = sourceActivePackageStatus(album);
+  const facebookPackageReady = packageStatus === "facebook_ready";
   const trustedFacebookListing = trustedFacebookListingStatus(facebookListing);
   if (sourceStatus === "manual") {
     return {
@@ -2434,29 +2495,41 @@ function inventoryLifecycleState({ sourceStatus, album, checkedAt = null, facebo
         checkedAt,
       };
     }
+    if (trustedFacebookListing?.state === "live") {
+      return {
+        sourceStatus: "source_removed",
+        packageStatus: hasPackagePhotos ? "source_removed_package" : "needs_photos",
+        facebookState: "stale_on_facebook",
+        facebookAction: "mark_sold",
+        shouldMarkFacebookSold: true,
+        canPostToFacebook: false,
+        checkedAt,
+      };
+    }
     return {
       sourceStatus: "source_removed",
       packageStatus: hasPackagePhotos ? "source_removed_package" : "needs_photos",
-      facebookState: "stale_on_facebook",
-      facebookAction: "mark_sold",
-      shouldMarkFacebookSold: true,
+      facebookState: "facebook_verification_required",
+      facebookAction: "verify_facebook_before_mark_sold",
+      shouldMarkFacebookSold: false,
       canPostToFacebook: false,
       checkedAt,
     };
   }
 
   if (sourceStatus === "source_active") {
-    const facebookOverride = sourceActiveFacebookLifecycleOverride(trustedFacebookListing, { hasPackagePhotos, checkedAt });
+    const facebookOverride = sourceActiveFacebookLifecycleOverride(trustedFacebookListing, { packageStatus, checkedAt });
     if (facebookOverride) return facebookOverride;
-    const staleFacebookOverride = sourceActiveStaleFacebookLifecycleOverride(facebookListing, { hasPackagePhotos, checkedAt });
+    const staleFacebookOverride = sourceActiveStaleFacebookLifecycleOverride(facebookListing, { packageStatus, checkedAt });
     if (staleFacebookOverride) return staleFacebookOverride;
+    const uploadInProgress = packageStatus === "upload_in_progress";
     return {
       sourceStatus: "source_active",
-      packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
-      facebookState: hasPackagePhotos ? "ready_to_post" : "needs_photos",
-      facebookAction: hasPackagePhotos ? "post_if_not_live" : "capture_photos",
+      packageStatus,
+      facebookState: facebookPackageReady ? "ready_to_post" : packageStatus,
+      facebookAction: facebookPackageReady ? "post_if_not_live" : uploadInProgress ? "wait_for_upload" : "capture_photos",
       shouldMarkFacebookSold: false,
-      canPostToFacebook: hasPackagePhotos,
+      canPostToFacebook: facebookPackageReady,
       checkedAt,
     };
   }
@@ -2472,25 +2545,38 @@ function inventoryLifecycleState({ sourceStatus, album, checkedAt = null, facebo
   };
 }
 
-function sourceActiveStaleFacebookLifecycleOverride(facebookListing, { hasPackagePhotos, checkedAt }) {
+function sourceActivePackageStatus(album) {
+  const photoCount = Number(album?.photoCount || 0);
+  if (vehicleUploadInProgressForAlbum(album)) return "upload_in_progress";
+  if (photoCount >= facebookMinimumPhotoCount) return "facebook_ready";
+  return photoCount > 0 ? "needs_more_photos" : "needs_photos";
+}
+
+function vehicleUploadInProgressForAlbum(album) {
+  if (!album?.vehicle) return false;
+  return vehicleUploadWritePromises.has(vehicleUploadLockKey(album.vehicle));
+}
+
+function sourceActiveStaleFacebookLifecycleOverride(facebookListing, { packageStatus, checkedAt }) {
   if (!facebookListing?.stale) return null;
+  const facebookPackageReady = packageStatus === "facebook_ready";
   return {
     sourceStatus: "source_active",
-    packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+    packageStatus,
     facebookState: "stale_facebook_evidence",
-    facebookAction: hasPackagePhotos ? "recheck_facebook_before_post" : "capture_photos",
+    facebookAction: facebookPackageReady ? "recheck_facebook_before_post" : packageStatus === "upload_in_progress" ? "wait_for_upload" : "capture_photos",
     shouldMarkFacebookSold: false,
     canPostToFacebook: false,
     checkedAt,
   };
 }
 
-function sourceActiveFacebookLifecycleOverride(facebookListing, { hasPackagePhotos, checkedAt }) {
+function sourceActiveFacebookLifecycleOverride(facebookListing, { packageStatus, checkedAt }) {
   if (!facebookListing) return null;
   if (facebookListing.state === "live") {
     return {
       sourceStatus: "source_active",
-      packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+      packageStatus,
       facebookState: "live_on_facebook",
       facebookAction: "skip_already_live",
       shouldMarkFacebookSold: false,
@@ -2501,7 +2587,7 @@ function sourceActiveFacebookLifecycleOverride(facebookListing, { hasPackagePhot
   if (facebookListing.state === "duplicate_blocked") {
     return {
       sourceStatus: "source_active",
-      packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+      packageStatus,
       facebookState: "duplicate_blocked",
       facebookAction: "review_duplicate_live_evidence",
       shouldMarkFacebookSold: false,
@@ -2512,7 +2598,7 @@ function sourceActiveFacebookLifecycleOverride(facebookListing, { hasPackagePhot
   if (facebookListing.state === "sold") {
     return {
       sourceStatus: "source_active",
-      packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+      packageStatus,
       facebookState: "sold_match_needs_review",
       facebookAction: "review_sold_match",
       shouldMarkFacebookSold: false,
@@ -2523,7 +2609,7 @@ function sourceActiveFacebookLifecycleOverride(facebookListing, { hasPackagePhot
   if (facebookListing.state === "publish_blocked") {
     return {
       sourceStatus: "source_active",
-      packageStatus: hasPackagePhotos ? "facebook_ready" : "needs_photos",
+      packageStatus,
       facebookState: "publish_blocked",
       facebookAction: "review",
       shouldMarkFacebookSold: false,
@@ -2537,6 +2623,45 @@ function sourceActiveFacebookLifecycleOverride(facebookListing, { hasPackagePhot
 function trustedFacebookListingStatus(facebookListing) {
   if (!facebookListing || facebookListing.stale) return null;
   return facebookListing;
+}
+
+function operationsSummaryFromAlbums(albums = []) {
+  const counts = {
+    totalCpcAlbums: albums.length,
+    sourceActiveCpcAlbums: 0,
+    sourceRemovedCpcAlbums: 0,
+    facebookLive: 0,
+    readyToPublish: 0,
+    staleFacebookVerification: 0,
+    awaitingKonnerUpload: 0,
+    needsReview: 0,
+  };
+
+  for (const album of albums) {
+    const status = album?.inventoryStatus || {};
+    const lifecycle = status.lifecycle || {};
+    const facebookState = lifecycle.facebookState || status.facebookListing?.state || "";
+    const action = lifecycle.facebookAction || "";
+    const sourceStatus = lifecycle.sourceStatus || "";
+
+    if (sourceStatus === "source_active" || status.active === true || status.status === "active") {
+      counts.sourceActiveCpcAlbums += 1;
+    }
+    if (sourceStatus === "source_removed" || status.active === false || status.status === "missing") {
+      counts.sourceRemovedCpcAlbums += 1;
+    }
+    if (["live", "live_on_facebook"].includes(facebookState)) counts.facebookLive += 1;
+    if (action === "post_if_not_live" && lifecycle.canPostToFacebook === true) counts.readyToPublish += 1;
+    if (facebookState === "stale_facebook_evidence" || action === "recheck_facebook_before_post") {
+      counts.staleFacebookVerification += 1;
+    }
+    if (["capture_photos", "wait_for_upload"].includes(action)) counts.awaitingKonnerUpload += 1;
+    if (action === "manual_review" || action === "review" || action === "verify_facebook_before_mark_sold") {
+      counts.needsReview += 1;
+    }
+  }
+
+  return counts;
 }
 
 async function recordAlbumInventoryLifecycle(album, inventoryStatus) {
@@ -3599,6 +3724,7 @@ async function buildMarketplaceDraftForUser(car, user, { album = null, force = f
     : "";
   const missingFields = [
     ["Location", fields.location],
+    ["Postal code", fields.postalCode],
     ["Year", fields.year],
     ["Make", fields.make],
     ["Model", fields.model],
@@ -3786,6 +3912,7 @@ function buildMarketplaceFields(car) {
     listingType: "Vehicle for sale",
     vehicleType: "Car/Truck",
     location: dealershipContext.location,
+    postalCode: dealershipContext.postalCode,
     dealershipName: dealershipContext.name,
     dealershipCity: dealershipContext.city,
     dealershipLabel: dealershipContext.label,
@@ -3959,7 +4086,7 @@ async function generateMarketplaceDescriptionVariants(input, count) {
               "Never start with 'I'm listing', 'I am listing', 'Listing this', 'Posting this', or similar listing-process language.",
               "Open naturally with a useful summary of the vehicle, for example '<year> <make> <model> <trim> with the main details kept simple.'",
               "Every description must mention the vehicle year, make, model, trim/status when available, and mileage when available. Include VIN when available.",
-              "Do not mention price anywhere. The app appends 'Message for more details!' and one required legal price line separately.",
+              "Do not mention price or add contact/disclosure footers. The app appends the user-specific contact line and required legal price line separately.",
               "Mention exterior colour, interior colour, transmission, fuel type, body style, and supplied highlights only when the supplied value is useful and specific. Keep this brief.",
               "Keep buyer benefits vague and conservative. Do not make strong claims about comfort, reliability, condition, winter use, safety, towing, family use, or tech unless the exact supporting fact is supplied.",
               "Do not say AWD, all-wheel drive, 4WD, four-wheel drive, winter confidence, towing, hybrid, electric, leather, sunroof, navigation, camera, heated seats, or similar feature claims unless those exact facts are supplied.",
@@ -4237,8 +4364,43 @@ function openOregansInventorySnapshotsDatabase() {
       ON oregans_inventory_vehicles(last_seen_at);
     CREATE INDEX IF NOT EXISTS oregans_inventory_snapshot_items_scope_idx
       ON oregans_inventory_snapshot_items(dealership_id, inventory_type_id, observed_at);
+    CREATE INDEX IF NOT EXISTS oregans_inventory_snapshot_items_observed_idx
+      ON oregans_inventory_snapshot_items(observed_at);
+    CREATE INDEX IF NOT EXISTS oregans_inventory_snapshot_runs_finished_idx
+      ON oregans_inventory_snapshot_runs(finished_at);
   `);
   return db;
+}
+
+function maybePruneOregansInventorySnapshotHistory({ force = false } = {}) {
+  if (!oregansInventorySnapshotRetentionDays) return null;
+  const now = Date.now();
+  if (!force && now - oregansInventorySnapshotLastPruneAt < oregansInventorySnapshotPruneIntervalMs) {
+    return null;
+  }
+  oregansInventorySnapshotLastPruneAt = now;
+  try {
+    const result = pruneInventorySnapshotHistory(oregansInventorySnapshotsDb, {
+      retentionDays: oregansInventorySnapshotRetentionDays,
+      now: new Date(now),
+      apply: true,
+    });
+    oregansInventorySnapshotLastPrune = {
+      ...result,
+      finishedAt: new Date().toISOString(),
+    };
+    return oregansInventorySnapshotLastPrune;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    oregansInventorySnapshotLastPrune = {
+      ok: false,
+      retentionDays: oregansInventorySnapshotRetentionDays,
+      error: message,
+      finishedAt: new Date().toISOString(),
+    };
+    console.warn(`O'Regan's inventory snapshot retention failed: ${message}`);
+    return oregansInventorySnapshotLastPrune;
+  }
 }
 
 function startOregansInventorySnapshotScheduler() {
@@ -4264,8 +4426,13 @@ function stopOregansInventorySnapshotScheduler() {
 }
 
 async function queueOregansInventorySnapshotRun({ reason = "manual" } = {}) {
-  oregansInventorySnapshotRunPromise = oregansInventorySnapshotRunPromise.catch(() => {}).then(() => {
-    return captureOregansInventorySnapshot({ reason });
+  oregansInventorySnapshotPendingRuns += 1;
+  oregansInventorySnapshotRunPromise = oregansInventorySnapshotRunPromise.catch(() => {}).then(async () => {
+    try {
+      return await captureOregansInventorySnapshot({ reason });
+    } finally {
+      oregansInventorySnapshotPendingRuns = Math.max(0, oregansInventorySnapshotPendingRuns - 1);
+    }
   });
   return oregansInventorySnapshotRunPromise;
 }
@@ -4329,6 +4496,7 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
     successfulScopes,
     errors,
   });
+  const retention = maybePruneOregansInventorySnapshotHistory();
   const albumPriceReconciliationPromise = writeResult.priceChanges.length
     ? reconcileAlbumPricesForInventoryPriceChanges(writeResult.priceChanges, finishedAt).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
@@ -4393,6 +4561,7 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
       count: writeResult.removedInventoryCount,
       vehicles: writeResult.removedInventory.slice(0, 20),
     },
+    ...(retention ? { retention } : {}),
     ...(albumPriceReconciliation ? { albumPriceReconciliation } : {}),
     ...(pushDelivery ? { pushDelivery } : {}),
     ...(priceChangePushDelivery ? { priceChangePushDelivery } : {}),
@@ -5299,6 +5468,12 @@ function oregansInventorySnapshotStatus() {
   `).all();
   return {
     latestRun: latestRun ? publicOregansInventorySnapshotRun(latestRun) : null,
+    retention: {
+      enabled: oregansInventorySnapshotRetentionDays > 0,
+      days: oregansInventorySnapshotRetentionDays,
+      pruneIntervalMs: oregansInventorySnapshotPruneIntervalMs,
+      lastPrune: oregansInventorySnapshotLastPrune,
+    },
     presentCounts: presentCounts.map((row) => ({
       dealershipId: row.dealership_id,
       dealershipName: row.dealership_name,
@@ -5711,6 +5886,7 @@ function marketplaceDealershipContext(car = {}) {
     name,
     city,
     location,
+    postalCode: marketplacePostalCode,
     label: name,
     contactName: marketplaceContactPerson,
   };
@@ -5901,6 +6077,7 @@ function buildMarketplaceCopyText({ title, fields, description, car, user = null
     ["Title", title],
     ["Vehicle type", fields.vehicleType],
     ["Location", fields.location],
+    ["Postal code", fields.postalCode],
     ...(!leadControl ? [
       ["Dealership", fields.dealershipName],
       ["Ask for", fields.contactName],
@@ -6045,7 +6222,14 @@ function appendMarketplaceContactLine(description, fields = {}, car = null, user
 }
 
 function buildMarketplaceContactLine(fields = {}, car = null, user = null) {
-  return "Message for more details!";
+  if (shouldLeadControlMarketplaceDescription(user)) return "Message for more details!";
+  const contactName = normalizeSpace(fields.contactName) || marketplaceContactPerson;
+  return `Message me for more details. If you're coming into the dealership, ask for ${contactName}.`;
+}
+
+function normalizeMarketplacePostalCode(value) {
+  const postalCode = normalizeSpace(value).toUpperCase().replace(/\s+/g, "");
+  return /^[A-Z]\d[A-Z]\d[A-Z]\d$/.test(postalCode) ? postalCode : "";
 }
 
 function appendMarketplaceLeadControlClosing(description) {
@@ -10971,6 +11155,7 @@ async function readReleaseInfo() {
       releaseId: manifest.releaseId || fallback.releaseId,
       createdAt: manifest.createdAt || null,
       source: manifest.source || "manifest",
+      sourceCommit: normalizeSpace(manifest.sourceCommit).slice(0, 120) || undefined,
       fileCount: Array.isArray(manifest.files) ? manifest.files.length : undefined,
     };
   } catch {

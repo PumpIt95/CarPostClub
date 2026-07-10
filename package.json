@@ -10,6 +10,8 @@
     "qa:gallery": "node scripts/gallery_visual_qa.mjs",
     "smoke": "node scripts/smoke_test.mjs",
     "backup:state": "node scripts/backup_state.mjs",
+    "prune:inventory-snapshots": "node scripts/inventory_snapshot_retention.mjs",
+    "restart:check": "node scripts/safe_restart.mjs --check-only",
     "restore:check": "node scripts/restore_state_check.mjs",
     "monitor:production": "node scripts/production_monitor.mjs",
     "backfill:marketplace-descriptions": "node scripts/backfill_marketplace_descriptions.mjs",

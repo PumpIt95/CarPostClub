@@ -29,6 +29,8 @@ The app defaults to `http://127.0.0.1:3911`.
 Use `.env.example` as the starting point. Do not commit real secrets.
 
 `OPENAI_API_KEY` is optional for local testing. Without it, Marketplace copy falls back to local template variants.
+Set `FACEBOOK_MARKETPLACE_POSTAL_CODE=B3K4P9` for Konner's current Facebook Marketplace location field; generated
+packages expose the postal code separately from the human-readable Halifax, Nova Scotia location.
 
 Set `CARPOSTCLUB_PUBLIC_ORIGIN=https://carpostclub.com` in production so generated invite links do not depend on
 the request `Host` header. Production also fails closed if no app password/hash is configured or if placeholder
@@ -53,6 +55,9 @@ briefly disappear and reappear inside the reappear cooldown do not send duplicat
 price changes send all-user price-change push notifications.
 Tune this with `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INTERVAL_MS`; set
 `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_ENABLED=false` to disable the scheduler.
+Raw per-vehicle snapshot rows default to 14 days of retention while first-seen, last-seen, removal, and current
+vehicle state are preserved. Tune the history window with
+`CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_RETENTION_DAYS`; set it to `0` to disable automatic pruning.
 
 Failed login attempts are throttled per username/IP in the app process. Tune this with
 `CARPOSTCLUB_LOGIN_RATE_LIMIT_MAX_ATTEMPTS` and `CARPOSTCLUB_LOGIN_RATE_LIMIT_WINDOW_MS`; keep an edge
@@ -76,12 +81,22 @@ npm test
 npm run test:e2e
 sudo npm run qa:gallery
 npm run smoke
-npm run backup:state
+npm run backup:state -- --retain 14
+npm run prune:inventory-snapshots
+npm run restart:check
 npm run restore:check -- --archive <backup.tar.gz>
 npm run monitor:production
 npm run backfill:marketplace-descriptions -- --dry-run
 docker compose up --build
 ```
+
+`npm run prune:inventory-snapshots` is a dry run unless `-- --apply` is supplied. Production deployment uses the
+guarded `ops/deploy-production.sh` workflow, which backs up state, verifies restart safety, builds an immutable image,
+checks its health, and installs the daily maintenance timer.
+
+Container builds generate `release-manifest.json` inside the image. Pass
+`--build-arg CARPOSTCLUB_SOURCE_COMMIT=$(git rev-parse HEAD)` so `/healthz` and `/api/version` identify the exact
+source commit that was deployed.
 
 `npm run test:e2e` uses Playwright. On this server, Chrome is available at `/usr/bin/google-chrome-stable`;
 set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to use a different browser executable.
@@ -110,6 +125,8 @@ CarPostClub uploads are handled inside the PWA. Users choose the dealership, inv
 - The upload controls stay disabled until an inventory vehicle is selected.
 - Uploaded media is saved to that vehicle's album and attributed to the signed-in user.
 - Marketplace description generation runs only after media is uploaded.
+- A source-active package needs at least five uploaded photos and no upload in progress before its lifecycle can be
+  labelled `facebook_ready`.
 
 ## Repository Scope
 

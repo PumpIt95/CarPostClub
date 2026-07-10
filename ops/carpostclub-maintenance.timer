@@ -1,0 +1,11 @@
+[Unit]
+Description=Run bounded CarPostClub maintenance daily
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 America/Halifax
+RandomizedDelaySec=10min
+Persistent=true
+Unit=carpostclub-maintenance.service
+
+[Install]
+WantedBy=timers.target

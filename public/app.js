@@ -3633,6 +3633,7 @@ function albumPostingKitRows(album, draft = null) {
     ["Mileage", formatMarketplaceMileage(fields.mileage) || vehicle.odometer],
     ["Dealership", fields.dealershipName || vehicle.dealershipName || album?.dealership?.name],
     ["Location", fields.location],
+    ["Postal code", fields.postalCode],
     ["Stock", vehicle.stockNumber || album.inventoryNumber],
     ["VIN", vehicle.vin],
     ["Body style", fields.bodyStyle || vehicle.bodyStyle],
@@ -3900,6 +3901,8 @@ function inventoryStatusLabel(status) {
     const base = `Sold: no longer active in O'Regan's inventory as of ${formatDate(status.checkedAt)}.`;
     return status.lifecycle?.facebookAction === "mark_sold"
       ? `${base} Facebook sync action: mark any matching Konner John Marketplace listing sold; do not delete it.`
+      : status.lifecycle?.facebookAction === "verify_facebook_before_mark_sold"
+        ? `${base} Facebook and public O'Regan's status must be verified before any listing is marked sold.`
       : base;
   }
   return status.label || "Inventory status unavailable.";
