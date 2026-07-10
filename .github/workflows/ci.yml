@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image from this commit
+        run: >-
+          docker build
+          --build-arg CARPOSTCLUB_RELEASE_ID=ci-${GITHUB_SHA}
+          --build-arg CARPOSTCLUB_SOURCE_COMMIT=${GITHUB_SHA}
+          --tag carpostclub:ci .
+      - name: Verify container health and provenance
+        run: |
+          docker run --detach --name carpostclub-ci --publish 127.0.0.1:3911:3911 \
+            --env NODE_ENV=production \
+            --env HOST=0.0.0.0 \
+            --env CARPOSTCLUB_AUTH_PASSWORD=ci-audit-password-58d1 \
+            --env CARPOSTCLUB_AUTH_SESSION_SECRET=ci-session-secret-58d1-keep-private \
+            --env CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_ENABLED=false \
+            carpostclub:ci
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:3911/healthz > /tmp/health.json && break
+            sleep 1
+          done
+          node -e '
+            const fs = require("node:fs");
+            const body = JSON.parse(fs.readFileSync("/tmp/health.json", "utf8"));
+            if (!body.ok || body.release?.sourceCommit !== process.env.GITHUB_SHA) process.exit(1);
+          '
+          test "$(docker inspect --format='{{.RestartCount}}' carpostclub-ci)" = "0"
+      - name: Show container logs on failure
+        if: failure()
+        run: docker logs carpostclub-ci
+      - name: Remove test container
+        if: always()
+        run: docker rm --force carpostclub-ci 2>/dev/null || true
