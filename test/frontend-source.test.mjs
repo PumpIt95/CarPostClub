@@ -146,8 +146,8 @@ test("home page gates uploads behind inventory car selection", async () => {
   assert.doesNotMatch(html, /id="galleryModelFilter"/);
   assert.doesNotMatch(html, /id="galleryYearFilter"/);
   assert.doesNotMatch(html, /id="galleryUploaderFilter"/);
-  assert.match(html, /\/app\.js\?v=20260625-hide-notification-settings-v79/);
-  assert.match(html, /\/styles\.css\?v=20260625-hide-notification-settings-v79/);
+  assert.match(html, /\/app\.js\?v=__CARPOSTCLUB_ASSET_VERSION__/);
+  assert.match(html, /\/styles\.css\?v=__CARPOSTCLUB_ASSET_VERSION__/);
   assert.doesNotMatch(html, /\/shortcuts\//i);
   assert.doesNotMatch(html, /Konner Photos/);
   assert.doesNotMatch(html, /id="albumName"/);
@@ -542,7 +542,12 @@ test("pwa manifest and service worker expose install, offline, and push features
   assert.match(offlineHtml, /CarPostClub Offline/);
   assert.doesNotMatch(offlineHtml, /Konner Photos/);
   assert.match(offlineHtml, /Try again/);
-  assert.match(serviceWorker, /carpostclub-pwa-v79/);
+  assert.match(offlineHtml, /styles\.css\?v=__CARPOSTCLUB_ASSET_VERSION__/);
+  assert.match(serviceWorker, /PWA_ASSET_VERSION = "__CARPOSTCLUB_ASSET_VERSION__"/);
+  assert.match(serviceWorker, /carpostclub-pwa-\$\{PWA_ASSET_VERSION\}/);
+  assert.match(serviceWorker, /const versionedAsset/);
+  assert.match(serviceWorker, /const OFFLINE_DOCUMENT = versionedAsset\("\/offline\.html"\)/);
+  assert.match(serviceWorker, /versionedAsset\("\/app\.js"\)/);
   assert.match(serviceWorker, /CarPostClub/);
   assert.match(serviceWorker, /carpostclub-icon-192\.png/);
   assert.match(serviceWorker, /upload-monkey\.svg/);
@@ -810,7 +815,7 @@ test("service worker offline fallback handles page navigations but not API reque
     caches: {
       keys: async () => [],
       delete: async () => true,
-      match: async (key) => key === "/offline.html" ? offlineResponse : null,
+      match: async (key) => String(key).startsWith("/offline.html?v=") ? offlineResponse : null,
       open: async () => ({
         addAll: async () => {},
         match: async () => null,
@@ -1178,7 +1183,7 @@ test("auth pages expose PWA metadata and brand assets", async () => {
   assert.match(source, /link rel="preload" as="image" href="\/icons\/carpostclub-icon-192\.png"/);
   assert.match(source, /<div class="auth-brand">/);
   assert.match(source, /<img src="\/icons\/carpostclub-icon-192\.png" alt="">/);
-  assert.match(source, /\/styles\.css\?v=20260625-hide-notification-settings-v79/);
+  assert.match(source, /pwaAssetUrl\("\/styles\.css"\)/);
   assert.match(styles, /\.auth-brand/);
   assert.match(styles, /\.auth-brand \.brand-mark/);
 });

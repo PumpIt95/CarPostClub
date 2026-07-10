@@ -468,7 +468,7 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assertNoStoreHeaders(passwordPage);
     const passwordPageText = await passwordPage.text();
     assert.match(passwordPageText, /Change password/);
-    assert.match(passwordPageText, /\/styles\.css\?v=20260625-hide-notification-settings-v79/);
+    assert.match(passwordPageText, /\/styles\.css\?v=[a-f0-9]{16}/i);
     assert.match(passwordPageText, /<link rel="manifest" href="\/manifest\.webmanifest">/);
     assert.match(passwordPageText, /<link rel="apple-touch-icon" href="\/icons\/carpostclub-apple-touch-icon\.png">/);
     assert.match(passwordPageText, /class="auth-brand"/);
@@ -1551,6 +1551,41 @@ test("push notification preferences filter delivery and notification history", a
   }
 });
 
+test("PWA assets use release versions, immutable caching, and gzip while the worker revalidates", async () => {
+  const harness = await startTestServer();
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const shell = await fetch(harness.baseUrl, {
+      headers: { Cookie: harness.cookie },
+    });
+    assert.equal(shell.status, 200);
+    assertNoStoreHeaders(shell);
+    const shellHtml = await shell.text();
+    const version = shellHtml.match(/\/styles\.css\?v=([a-f0-9]{16})/i)?.[1] || "";
+    assert.match(version, /^[a-f0-9]{16}$/i);
+    assert.match(shellHtml, new RegExp(`/app\\.js\\?v=${version}`));
+
+    const styles = await fetch(`${harness.baseUrl}/styles.css?v=${version}`, {
+      headers: { "Accept-Encoding": "gzip" },
+    });
+    assert.equal(styles.status, 200);
+    assert.equal(styles.headers.get("cache-control"), "public, max-age=31536000, immutable");
+    assert.equal(styles.headers.get("content-encoding"), "gzip");
+    assert.match(styles.headers.get("vary") || "", /accept-encoding/i);
+
+    const worker = await fetch(`${harness.baseUrl}/sw.js`, {
+      headers: { "Accept-Encoding": "gzip" },
+    });
+    assert.equal(worker.status, 200);
+    assert.equal(worker.headers.get("cache-control"), "no-cache");
+    assert.equal(worker.headers.get("service-worker-allowed"), "/");
+    assert.equal(worker.headers.get("content-encoding"), "gzip");
+    assert.match(await worker.text(), new RegExp(`PWA_ASSET_VERSION = "${version}"`));
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("production refuses to start without explicit auth configuration", async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "carpostclub-prod-auth-test-"));
   const port = await freePort();
@@ -2184,6 +2219,7 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     const initialStatus = await getJson(harness, "/api/inventory/snapshots/status");
     assert.equal(initialStatus.ok, true);
     assert.equal(initialStatus.enabled, false);
+    assert.equal(initialStatus.detailRetentionDays, 30);
     assert.equal(initialStatus.latestRun.id, firstRun.body.snapshot.id);
     assert.ok(initialStatus.presentCounts.some((count) => (
       count.dealershipId === "15"
@@ -2292,6 +2328,46 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     const gmUsed = finalStatus.presentCounts.find((count) => count.dealershipId === "18" && count.inventoryTypeId === "2");
     assert.equal(kiaUsed.count, 1);
     assert.equal(gmUsed.count, 1);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("inventory snapshot detail retention prunes old run rows but preserves current vehicle state", async () => {
+  const harness = await startTestServer({
+    env: { CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DETAIL_RETENTION_DAYS: "1" },
+  });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const firstRun = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(firstRun.status, 201);
+    assert.equal(firstRun.body.snapshot.snapshotDetailRetention.days, 1);
+    assert.equal(firstRun.body.snapshot.snapshotDetailRetention.prunedItemCount, 0);
+
+    const { DatabaseSync } = await import("node:sqlite");
+    const snapshotsDb = new DatabaseSync(path.join(harness.tempRoot, "oregans-inventory-snapshots.sqlite"));
+    try {
+      snapshotsDb.prepare("UPDATE oregans_inventory_snapshot_items SET observed_at = ?").run(
+        new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+      );
+    } finally {
+      snapshotsDb.close();
+    }
+
+    const secondRun = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(secondRun.status, 201);
+    assert.equal(secondRun.body.snapshot.snapshotDetailRetention.prunedItemCount, 1);
+
+    const verificationDb = new DatabaseSync(path.join(harness.tempRoot, "oregans-inventory-snapshots.sqlite"), { readOnly: true });
+    try {
+      const detailRow = verificationDb.prepare("SELECT COUNT(*) AS count FROM oregans_inventory_snapshot_items").get();
+      const vehicleRow = verificationDb.prepare("SELECT COUNT(*) AS count FROM oregans_inventory_vehicles WHERE present = 1").get();
+      assert.equal(Number(detailRow.count), 1);
+      assert.equal(Number(vehicleRow.count), 1);
+    } finally {
+      verificationDb.close();
+    }
   } finally {
     await stopTestServer(harness);
   }

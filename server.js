@@ -16,6 +16,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { ZipArchive } from "archiver";
 import bcrypt from "bcryptjs";
+import compression from "compression";
 import dotenv from "dotenv";
 import express from "express";
 import heicConvert from "heic-convert";
@@ -164,6 +165,13 @@ const loginRateLimitMaxAttempts = positiveInteger(process.env.CARPOSTCLUB_LOGIN_
 const shortcutBearerToken = normalizeSpace(process.env.CARPOSTCLUB_SHORTCUTS_BEARER_TOKEN || process.env.KONNER_SHORTCUTS_BEARER_TOKEN);
 const authSessionSecret = sessionSecret();
 const releaseInfo = await readReleaseInfo();
+const pwaAssetVersion = pwaAssetVersionForRelease(releaseInfo);
+const pwaAssetVersionToken = "__CARPOSTCLUB_ASSET_VERSION__";
+const [appShellTemplate, offlineShellTemplate, serviceWorkerTemplate] = await Promise.all([
+  fs.readFile(path.join(publicRoot, "index.html"), "utf8"),
+  fs.readFile(path.join(publicRoot, "offline.html"), "utf8"),
+  fs.readFile(path.join(publicRoot, "sw.js"), "utf8"),
+]);
 const thumbnailDirectoryName = ".thumbnails";
 const thumbnailMaxWidth = positiveInteger(process.env.THUMBNAIL_MAX_WIDTH, 640);
 const thumbnailMaxHeight = positiveInteger(process.env.THUMBNAIL_MAX_HEIGHT, 480);
@@ -248,6 +256,11 @@ const oregansInventorySnapshotInitialDelayMs = positiveInteger(
 );
 const oregansInventorySnapshotEnabled = parseBooleanEnv("CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_ENABLED",
   parseBooleanEnv("OREGANS_INVENTORY_SNAPSHOT_ENABLED", !inventoryMockFile));
+const oregansInventorySnapshotDetailRetentionDays = nonNegativeInteger(
+  process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DETAIL_RETENTION_DAYS
+    || process.env.OREGANS_INVENTORY_SNAPSHOT_DETAIL_RETENTION_DAYS,
+  30,
+);
 const oregansInventorySnapshotTimeZone = process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_TIME_ZONE
   || process.env.OREGANS_INVENTORY_SNAPSHOT_TIME_ZONE
   || "America/Halifax";
@@ -398,15 +411,34 @@ const chatUpload = multer({
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 app.use(applySecurityHeaders);
+app.use(compression({ threshold: 1024 }));
 app.use(express.urlencoded({ extended: false, limit: "32kb" }));
 app.use(express.json({ limit: "32kb" }));
-app.use((req, res, next) => {
-  if (/\.(?:css|js|webmanifest)$/i.test(req.path)) {
-    res.setHeader("Cache-Control", "no-cache");
-  }
-  next();
+const immutablePublicAssets = express.static(publicRoot, {
+  index: false,
+  maxAge: "1y",
+  immutable: true,
 });
-app.use(express.static(publicRoot, { index: false, maxAge: 0 }));
+const revalidatedPublicAssets = express.static(publicRoot, {
+  index: false,
+  maxAge: 0,
+});
+app.get("/offline.html", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.type("html").send(renderPwaTemplate(offlineShellTemplate));
+});
+app.get("/sw.js", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Service-Worker-Allowed", "/");
+  res.type("application/javascript").send(renderPwaTemplate(serviceWorkerTemplate));
+});
+app.use((req, res, next) => {
+  if (isCurrentVersionedPwaAssetRequest(req)) {
+    immutablePublicAssets(req, res, next);
+    return;
+  }
+  revalidatedPublicAssets(req, res, next);
+});
 app.use(rejectCrossOriginUnsafeRequests);
 
 app.get("/healthz", (_req, res) => {
@@ -805,7 +837,7 @@ app.get("/api/admin/operations-summary", requireAdmin, async (req, res, next) =>
 
 app.get("/", requireAuth, (_req, res) => {
   setPrivateNoStore(res);
-  res.sendFile(path.join(publicRoot, "index.html"));
+  res.type("html").send(renderPwaTemplate(appShellTemplate));
 });
 
 app.get("/gallery", requireAuth, (_req, res) => {
@@ -1067,6 +1099,7 @@ app.get("/api/inventory/snapshots/status", requireAuth, (_req, res, next) => {
       ok: true,
       enabled: oregansInventorySnapshotEnabled,
       intervalMs: oregansInventorySnapshotIntervalMs,
+      detailRetentionDays: oregansInventorySnapshotDetailRetentionDays,
       timeZone: oregansInventorySnapshotTimeZone,
       ...oregansInventorySnapshotStatus(),
     });
@@ -4291,6 +4324,8 @@ function openOregansInventorySnapshotsDatabase() {
       ON oregans_inventory_vehicles(last_seen_at);
     CREATE INDEX IF NOT EXISTS oregans_inventory_snapshot_items_scope_idx
       ON oregans_inventory_snapshot_items(dealership_id, inventory_type_id, observed_at);
+    CREATE INDEX IF NOT EXISTS oregans_inventory_snapshot_items_observed_at_idx
+      ON oregans_inventory_snapshot_items(observed_at);
   `);
   return db;
 }
@@ -4446,6 +4481,10 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
     removedInventory: {
       count: writeResult.removedInventoryCount,
       vehicles: writeResult.removedInventory.slice(0, 20),
+    },
+    snapshotDetailRetention: {
+      days: oregansInventorySnapshotDetailRetentionDays,
+      prunedItemCount: writeResult.prunedSnapshotItemCount,
     },
     ...(albumPriceReconciliation ? { albumPriceReconciliation } : {}),
     ...(pushDelivery ? { pushDelivery } : {}),
@@ -4610,6 +4649,12 @@ function writeOregansInventorySnapshotRun({
       snapshot_count = oregans_inventory_snapshot_scopes.snapshot_count + 1,
       last_count = excluded.last_count
   `);
+  const deleteExpiredSnapshotItems = oregansInventorySnapshotDetailRetentionDays > 0
+    ? oregansInventorySnapshotsDb.prepare(`
+      DELETE FROM oregans_inventory_snapshot_items
+      WHERE observed_at < ?
+    `)
+    : null;
   const observedCountByScope = new Map();
   for (const { scope } of observations) {
     const key = inventorySnapshotScopeKey(scope);
@@ -4620,6 +4665,7 @@ function writeOregansInventorySnapshotRun({
   const priceChanges = [];
   const removedInventory = [];
   let removedInventoryCount = 0;
+  let prunedSnapshotItemCount = 0;
   oregansInventorySnapshotsDb.exec("BEGIN IMMEDIATE");
   try {
     const scopeHasBaseline = new Map(successfulScopes.map((scope) => [
@@ -4682,13 +4728,24 @@ function writeOregansInventorySnapshotRun({
       );
     }
 
+    if (deleteExpiredSnapshotItems) {
+      const cutoff = inventorySnapshotDetailRetentionCutoff(finishedAt);
+      prunedSnapshotItemCount = Number(deleteExpiredSnapshotItems.run(cutoff)?.changes || 0);
+    }
+
     oregansInventorySnapshotsDb.exec("COMMIT");
   } catch (error) {
     oregansInventorySnapshotsDb.exec("ROLLBACK");
     throw error;
   }
 
-  return { newlyObserved, priceChanges, removedInventory, removedInventoryCount };
+  return { newlyObserved, priceChanges, removedInventory, removedInventoryCount, prunedSnapshotItemCount };
+}
+
+function inventorySnapshotDetailRetentionCutoff(observedAt) {
+  const observedMs = Date.parse(observedAt);
+  const referenceMs = Number.isFinite(observedMs) ? observedMs : Date.now();
+  return new Date(referenceMs - oregansInventorySnapshotDetailRetentionDays * 24 * 60 * 60 * 1000).toISOString();
 }
 
 function shouldNotifyNewlyObservedInventory(scopeHasBaseline, previous, observedAt) {
@@ -10964,7 +11021,7 @@ function renderAuthPage({ title, heading, body, error = "", success = "", wide =
   <link rel="apple-touch-icon" href="/icons/carpostclub-apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="preload" as="image" href="/icons/carpostclub-icon-192.png">
-  <link rel="stylesheet" href="/styles.css?v=20260625-hide-notification-settings-v79">
+  <link rel="stylesheet" href="${pwaAssetUrl("/styles.css")}">
 </head>
 <body class="login-body">
   <main class="login-card${wide ? " is-wide" : ""}">
@@ -11030,6 +11087,29 @@ async function readReleaseInfo() {
   } catch {
     return fallback;
   }
+}
+
+function pwaAssetVersionForRelease(release = {}) {
+  const source = [
+    release?.releaseId || "dev",
+    release?.createdAt || "",
+    nodeEnv === "development" ? String(process.pid) : "",
+  ].join(":");
+  return crypto.createHash("sha256").update(source).digest("hex").slice(0, 16);
+}
+
+function renderPwaTemplate(template) {
+  return String(template || "").replaceAll(pwaAssetVersionToken, pwaAssetVersion);
+}
+
+function pwaAssetUrl(pathname) {
+  return `${pathname}?v=${encodeURIComponent(pwaAssetVersion)}`;
+}
+
+function isCurrentVersionedPwaAssetRequest(req) {
+  if (nodeEnv === "development") return false;
+  if (req.path === "/sw.js" || !/\.(?:css|js|webmanifest)$/i.test(req.path)) return false;
+  return req.query?.v === pwaAssetVersion;
 }
 
 function parseBooleanEnv(name, fallback) {
