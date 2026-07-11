@@ -27,6 +27,7 @@ import {
   normalizePushNotificationPreferences,
   pushNotificationPreferenceKeyForPayload,
 } from "./public/push-notification-preferences.js";
+import { inventorySnapshotScheduleAt } from "./inventory-snapshot-schedule.js";
 import { pruneInventorySnapshotHistory } from "./scripts/inventory_snapshot_retention.mjs";
 
 const appRoot = fileURLToPath(new URL("./", import.meta.url));
@@ -244,6 +245,25 @@ const oregansInventorySnapshotIntervalMs = positiveInteger(
     || process.env.OREGANS_INVENTORY_SNAPSHOT_INTERVAL_MS,
   60 * 60 * 1000,
 );
+const oregansInventorySnapshotOffHoursIntervalMs = positiveInteger(
+  process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_OFF_HOURS_INTERVAL_MS
+    || process.env.OREGANS_INVENTORY_SNAPSHOT_OFF_HOURS_INTERVAL_MS,
+  oregansInventorySnapshotIntervalMs,
+);
+const oregansInventorySnapshotDayStartHour = boundedInteger(
+  process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DAY_START_HOUR
+    || process.env.OREGANS_INVENTORY_SNAPSHOT_DAY_START_HOUR,
+  0,
+  0,
+  23,
+);
+const oregansInventorySnapshotDayEndHour = boundedInteger(
+  process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DAY_END_HOUR
+    || process.env.OREGANS_INVENTORY_SNAPSHOT_DAY_END_HOUR,
+  24,
+  0,
+  24,
+);
 const oregansInventorySnapshotInitialDelayMs = positiveInteger(
   process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INITIAL_DELAY_MS
     || process.env.OREGANS_INVENTORY_SNAPSHOT_INITIAL_DELAY_MS,
@@ -348,6 +368,7 @@ let auditLogWritePromise = Promise.resolve();
 let oregansInventorySnapshotRunPromise = Promise.resolve();
 let oregansInventorySnapshotPendingRuns = 0;
 let oregansInventorySnapshotTimer = null;
+let oregansInventorySnapshotNextRunAt = null;
 let oregansInventorySnapshotLastPruneAt = 0;
 let oregansInventorySnapshotLastPrune = null;
 let shuttingDown = false;
@@ -1080,12 +1101,22 @@ app.get("/api/inventory/cars", requireAuth, async (req, res, next) => {
 
 app.get("/api/inventory/snapshots/status", requireAuth, (_req, res, next) => {
   try {
+    const schedule = currentOregansInventorySnapshotSchedule();
     res.setHeader("Cache-Control", "private, no-store");
     res.json({
       ok: true,
       enabled: oregansInventorySnapshotEnabled,
       intervalMs: oregansInventorySnapshotIntervalMs,
       timeZone: oregansInventorySnapshotTimeZone,
+      schedule: {
+        dayIntervalMs: oregansInventorySnapshotIntervalMs,
+        offHoursIntervalMs: oregansInventorySnapshotOffHoursIntervalMs,
+        dayStartHour: oregansInventorySnapshotDayStartHour,
+        dayEndHour: oregansInventorySnapshotDayEndHour,
+        currentIntervalMs: schedule.currentIntervalMs,
+        currentWindow: schedule.window,
+        nextRunAt: oregansInventorySnapshotNextRunAt,
+      },
       ...oregansInventorySnapshotStatus(),
     });
   } catch (error) {
@@ -4406,23 +4437,42 @@ function maybePruneOregansInventorySnapshotHistory({ force = false } = {}) {
 function startOregansInventorySnapshotScheduler() {
   if (!oregansInventorySnapshotEnabled || oregansInventorySnapshotTimer) return;
   const run = () => {
+    oregansInventorySnapshotTimer = null;
+    scheduleNextOregansInventorySnapshotRun(run);
     queueOregansInventorySnapshotRun({ reason: "scheduled" }).catch((error) => {
       console.warn(`O'Regan's inventory snapshot failed: ${error?.message || error}`);
     });
   };
-  oregansInventorySnapshotTimer = setTimeout(() => {
-    run();
-    oregansInventorySnapshotTimer = setInterval(run, oregansInventorySnapshotIntervalMs);
-    oregansInventorySnapshotTimer.unref?.();
-  }, oregansInventorySnapshotInitialDelayMs);
+  oregansInventorySnapshotNextRunAt = new Date(Date.now() + oregansInventorySnapshotInitialDelayMs).toISOString();
+  oregansInventorySnapshotTimer = setTimeout(run, oregansInventorySnapshotInitialDelayMs);
   oregansInventorySnapshotTimer.unref?.();
+}
+
+function scheduleNextOregansInventorySnapshotRun(run) {
+  if (!oregansInventorySnapshotEnabled || shuttingDown) return;
+  const now = new Date();
+  const schedule = currentOregansInventorySnapshotSchedule(now);
+  oregansInventorySnapshotNextRunAt = new Date(now.getTime() + schedule.delayMs).toISOString();
+  oregansInventorySnapshotTimer = setTimeout(run, schedule.delayMs);
+  oregansInventorySnapshotTimer.unref?.();
+}
+
+function currentOregansInventorySnapshotSchedule(now = new Date()) {
+  return inventorySnapshotScheduleAt({
+    now,
+    timeZone: oregansInventorySnapshotTimeZone,
+    dayIntervalMs: oregansInventorySnapshotIntervalMs,
+    offHoursIntervalMs: oregansInventorySnapshotOffHoursIntervalMs,
+    dayStartHour: oregansInventorySnapshotDayStartHour,
+    dayEndHour: oregansInventorySnapshotDayEndHour,
+  });
 }
 
 function stopOregansInventorySnapshotScheduler() {
   if (!oregansInventorySnapshotTimer) return;
   clearTimeout(oregansInventorySnapshotTimer);
-  clearInterval(oregansInventorySnapshotTimer);
   oregansInventorySnapshotTimer = null;
+  oregansInventorySnapshotNextRunAt = null;
 }
 
 async function queueOregansInventorySnapshotRun({ reason = "manual" } = {}) {
@@ -11184,6 +11234,12 @@ function nonNegativeInteger(value, fallback) {
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function boundedInteger(value, fallback, minimum, maximum) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
 }
 
 function delay(ms) {
