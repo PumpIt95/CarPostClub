@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Tune UCA cron offsets from observed automation run durations.
+"""Report legacy UCA run durations without changing the hybrid schedule.
 
-The Codex automation scheduler is cron/rrule based, so UCA jobs cannot natively
-trigger each other on completion. This helper measures recent run artifact
-durations and recommends tighter minute offsets for the fixed cron schedule.
+Publishing is now event-driven with a reduced fixed safety net. This helper is
+kept only for historical duration reporting; schedule changes belong in the
+shared automation policy and central audit.
 """
 
 from __future__ import annotations
@@ -23,11 +23,6 @@ AUTOMATIONS = Path("/Users/konnerhaas/.codex/automations")
 RUNS = ROOT / "automation-runs"
 BASELINE_PATH = RUNS / "uca-schedule-tuning-baseline.json"
 REPORT_PATH = RUNS / "uca-schedule-tuning-report.json"
-MANUAL_MINUTE_OVERRIDES = {
-    # Konner requested the Facebook-ready publisher run at :15 after each hour.
-    "facebook-ready-publisher": 15,
-}
-
 UCA = {
     "photo-package-readiness-monitor": {
         "weekday": AUTOMATIONS / "photo-package-readiness-monitor" / "automation.toml",
@@ -272,8 +267,6 @@ def build_recommendation(summaries: dict[str, dict[str, Any]], min_samples: int)
     prep_estimate = max(float(photo["estimateMinutes"]), float(live["estimateMinutes"]))
     publisher_minute = ceil_to_step(prep_estimate + 5, 5)
     publisher_minute = max(10, min(45, publisher_minute))
-    publisher_minute = MANUAL_MINUTE_OVERRIDES.get("facebook-ready-publisher", publisher_minute)
-
     disclosure_minute = min(55, publisher_minute + 10)
     return (
         {
@@ -290,12 +283,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Recommend UCA automation minute offsets from observed run durations.")
     parser.add_argument("--include-history", action="store_true", help="ignore the baseline and use all recent artifacts")
     parser.add_argument("--mark-baseline", action="store_true", help="write the current time as the tuning baseline and exit")
-    parser.add_argument("--apply", action="store_true", help="apply recommended BYMINUTE offsets to UCA automation TOML")
+    parser.add_argument("--apply", action="store_true", help="retired; hybrid schedules must be changed through automation policy")
     parser.add_argument("--dry-run", action="store_true", help="compatibility alias; default behavior already does not apply changes")
     parser.add_argument("--min-samples", type=int, default=2)
     parser.add_argument("--limit", type=int, default=8)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+
+    if args.apply:
+        parser.error("--apply is disabled because CPC publishing now uses an event trigger plus policy-managed fallback schedules")
 
     if args.mark_baseline:
         data = write_baseline("Start measuring UCA schedule after compressed scheduling change.")
@@ -312,21 +308,11 @@ def main() -> int:
         summaries[automation_id] = summarize(rows, float(config["default_minutes"]))
         current[automation_id] = current_minute(config["weekday"])
 
-    recommendation, warnings = build_recommendation(summaries, args.min_samples)
-    insufficient = any(
-        summaries[key]["sampleCount"] < args.min_samples
-        for key in ["photo-package-readiness-monitor", "live-facebook-listing-sync"]
-    )
-
+    recommendation: dict[str, int] = {}
+    warnings = [
+        "report-only: fixed minute recommendations are retired; the deterministic CPC event trigger wakes publishing work",
+    ]
     applied = False
-    if args.apply and not insufficient:
-        for automation_id, minute in recommendation.items():
-            replace_minute(UCA[automation_id]["weekday"], minute)
-            replace_minute(UCA[automation_id]["saturday"], minute)
-        save_groups(load_groups(), recommendation)
-        applied = True
-    elif args.apply and insufficient:
-        warnings.append("not applying because post-baseline prep samples are insufficient")
 
     report = {
         "generatedAt": iso(datetime.now(timezone.utc)),

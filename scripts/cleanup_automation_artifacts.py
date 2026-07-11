@@ -64,10 +64,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--payload-retention-days",
         type=float,
-        default=14,
+        default=7,
         help=(
             "Remove rebuildable downloaded photo/package payloads older than this many "
-            "days while retaining run summaries and proof files. Default: 14."
+            "days while retaining run summaries and proof files. Default: 7."
         ),
     )
     parser.add_argument(

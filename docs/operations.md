@@ -74,7 +74,7 @@ sudo ops/install-carpostclub-maintenance.sh
 systemctl list-timers carpostclub-maintenance.timer --no-pager
 ```
 
-The timer runs at approximately 3:15 a.m. Halifax time. It keeps 14 days of raw half-hour inventory snapshot rows,
+The timer runs at approximately 3:15 a.m. Halifax time. It keeps 14 days of raw inventory snapshot rows,
 then creates a verified state archive using consistent SQLite snapshots and retains the newest 14 matching archives.
 Current vehicle state, first/last-seen lifecycle data, run summaries referenced by current records, media, and app
 configuration remain preserved. Daily maintenance does not run `VACUUM`; use the retention helper's explicit

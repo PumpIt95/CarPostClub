@@ -1,6 +1,6 @@
 # CarPostClub Jobs: Server vs This Mac
 
-Last audited: 2026-07-10 (America/Halifax)
+Last audited: 2026-07-11 (America/Halifax)
 
 ## The simple version
 
@@ -14,7 +14,7 @@ Last audited: 2026-07-10 (America/Halifax)
 1. **CarPostClub app (`konner-upload`)** — serves the PWA, login, albums, vehicle package data, listing drafts, chat, push notifications, and APIs. Docker restarts it if the process exits.
 2. **HTTPS router (`dokploy-traefik`)** — safely routes `carpostclub.com` traffic to the app and handles HTTPS.
 3. **Photo/object storage** — new production media uses S3-compatible object storage. The VPS keeps application databases and a smaller amount of local/legacy media.
-4. **O'Regan's inventory snapshots** — the app checks the configured O'Regan's inventory every 30 minutes. It tracks added, removed, reappearing, and price-changed vehicles and reconciles album lifecycle/price state. Raw per-vehicle observations are retained for 14 days while lifecycle summaries and current state are preserved.
+4. **O'Regan's inventory snapshots** — from 9:00 a.m. until 7:00 p.m. Halifax time, the app checks the configured O'Regan's inventory every 10 minutes; overnight checks are disabled. It tracks added, removed, reappearing, and price-changed vehicles and reconciles album lifecycle/price state. Raw per-vehicle observations are retained for 14 days while lifecycle summaries and current state are preserved.
 5. **Live update heartbeats** — while a user has the PWA open, tiny 25-second pings keep album/chat live-update connections alive. They stop when the user disconnects.
 6. **Host firewall** — the CarPostClub firewall service keeps app/admin ports private while allowing HTTPS and key-based SSH.
 
@@ -26,18 +26,18 @@ The VPS has one daily CarPostClub maintenance timer. It safely prunes raw invent
 
 - **Keep Awake** — `caffeinate` prevents sleep so scheduled browser jobs can run. This is the main reason the Mac must remain on (and usually plugged in) for Facebook automation.
 - **Ensure Codex Is Running** — every 5 minutes, checks that the local Codex app is available.
-- **Automation Watchdog** — every 5 minutes, checks Mac/Chrome pressure, missed schedules, locks, and coordination health. It does not publish, edit, sell, or reply on its own.
+- **Automation Watchdog** — every 5 minutes, checks Mac/Chrome pressure, missed schedules, locks, and coordination health. It also runs a no-AI CPC readiness check between 8:00 a.m. and 8:00 p.m. and wakes the existing publisher owner only when an in-scope used-car package is ready. Full configuration audits are cached for one hour instead of being repeated every five minutes.
 
 ### Active Codex jobs
 
 | Job | Schedule (Halifax) | Simple purpose | Owner boundary |
 | --- | --- | --- | --- |
-| Automation Supervisor And Repair | Daily 6:20 p.m. | Audits schedules, policy, locks, and shared infrastructure | Repairs coordination only; no Facebook business actions |
+| Automation Supervisor And Repair | Monday, Wednesday, and Friday at 6:20 p.m. | Audits schedules, policy, locks, and shared infrastructure | Repairs coordination only; no Facebook business actions |
 | Inventory Health Monitor | Daily 7:00 a.m. | Checks CarPostClub/O'Regan's inventory and API health | Reports health; does not take another job's Facebook action |
-| Facebook Ready Publisher | Weekdays 9:20 a.m., 1:20 p.m., and 5:20 p.m.; Saturday 11:20 a.m. and 3:20 p.m. | Publishes a verified, ready used-vehicle package | Only owner allowed to publish CPC-ready used vehicles |
-| Live Facebook Listing Sync | Weekdays 9:00 a.m., 1:00 p.m., and 5:00 p.m.; Saturday 11:00 a.m. and 3:00 p.m. | Compares source inventory with live Marketplace listings | Only owner allowed to mark verified stale listings sold |
-| Listing Price And Disclosure Audit And Fix | Weekdays 12:45 and 5:45 p.m.; Saturday noon and 4:00 p.m. | Checks and fixes live listing prices/disclosures | Only owner allowed to edit those fields |
-| Photo Package Readiness Monitor | Weekdays 10:45 a.m., 1:45 p.m., and 4:45 p.m.; Saturday 10:30 a.m. and 2:30 p.m. | Reconciles inventory, CPC media, and report-only Photos evidence | Reports readiness; never uploads CPC media |
+| Facebook Ready Publisher | Event-driven daily from 8:00 a.m. to 8:00 p.m.; fallback weekdays 5:20 p.m. and Saturday 3:20 p.m. | Publishes a verified, ready used-vehicle package soon after CPC upload | Only owner allowed to publish CPC-ready used vehicles |
+| Live Facebook Listing Sync | Weekdays 9:00 a.m. and 5:00 p.m.; Saturday 11:00 a.m. and 3:00 p.m. | Compares source inventory with live Marketplace listings | Only owner allowed to mark verified stale listings sold |
+| Listing Price And Disclosure Audit And Fix | Weekdays 5:45 p.m.; Saturday 4:00 p.m. | Checks and fixes live listing prices/disclosures | Only owner allowed to edit those fields |
+| Photo Package Readiness Monitor | Weekdays 4:45 p.m.; Saturday 2:30 p.m. | Reconciles inventory, CPC media, and report-only Photos evidence | Reports readiness; never uploads CPC media |
 | New Kia Facebook Lifecycle | Weekdays 7:00 p.m.; Saturday 4:30 p.m. | Maintains the separate new-Kia listing flow | Owns verified new-Kia publish/sold actions |
 | Message Memory Expiry Cleanup | Daily 6:45 a.m. | Removes expired local message-memory records | Local cleanup only; never opens Facebook or contacts anyone |
 
@@ -69,11 +69,12 @@ A manual one-time inbox request does not reactivate any paused schedule.
 - Broad read-only evidence is reused for a short policy-defined time. Every real publish/edit/sold action still gets a fresh targeted check.
 - Current package readiness comes from the normalized `/api/albums` lifecycle (`source active` + draft ready + `canPost`). Old readiness markers and hard-coded vehicle totals are not trusted.
 - Catch-up is latest-state only, coalesces repeated misses, respects owner locks, and ignores every paused automation.
+- The CPC readiness watcher is deterministic and uses no model while idle. A changed ready-car identity wakes the publisher promptly; an unchanged blocked candidate waits 90 minutes before retrying, and failed runs wait 30 minutes. Existing singletons, the shared browser lane, duplicate checks, and publish locks still apply.
 - Effective 2026-07-09, Photos/Finder/iPhone sources are report-only. Konner uploads CPC/PWA photos; automations do not import or upload them.
 
 ## Current efficiency limits
 
-- Active scheduled Codex runs: **90 per week**, down from **383**.
+- Active scheduled Codex runs: **53 per week**, down from **90** in the previous schedule and **383** before the larger consolidation. Real ready-car events add productive publisher runs rather than routine no-op runs.
 - Automation prompt text: about **23.7k characters total**, down from about **109k**.
 - Lightweight checks use the lower-cost tier; package reconciliation uses the middle tier; Facebook mutations use the strongest tier.
 - Current customer-contact pause is enforced in both policy and automation status, so missed-run recovery cannot silently turn it back on.

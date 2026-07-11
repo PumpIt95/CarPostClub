@@ -1087,6 +1087,15 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.ok(operationsSummary.totalCpcAlbums >= 2);
     assert.ok(operationsSummary.sourceActiveCpcAlbums >= 1);
     assert.ok(operationsSummary.readyToPublish >= 1);
+    assert.ok(Array.isArray(operationsSummary.readyToPublishItems));
+    const readySummaryItem = operationsSummary.readyToPublishItems.find((item) => item.albumId === afterUpload.album.id);
+    assert.ok(readySummaryItem);
+    assert.equal(readySummaryItem.stockNumber, TEST_CAR.stockNumber);
+    assert.equal(readySummaryItem.vin, TEST_CAR.vin);
+    assert.equal(readySummaryItem.dealershipId, "15");
+    assert.equal(readySummaryItem.inventoryTypeId, "2");
+    assert.equal(readySummaryItem.mediaCount, 6);
+    assert.match(readySummaryItem.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.ok(operationsSummary.needsReview >= 1);
     assert.equal(typeof operationsSummary.facebookLive, "number");
     assert.equal(typeof operationsSummary.staleFacebookVerification, "number");

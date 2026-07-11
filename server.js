@@ -2672,6 +2672,7 @@ function operationsSummaryFromAlbums(albums = []) {
     staleFacebookVerification: 0,
     awaitingKonnerUpload: 0,
     needsReview: 0,
+    readyToPublishItems: [],
   };
 
   for (const album of albums) {
@@ -2688,7 +2689,19 @@ function operationsSummaryFromAlbums(albums = []) {
       counts.sourceRemovedCpcAlbums += 1;
     }
     if (["live", "live_on_facebook"].includes(facebookState)) counts.facebookLive += 1;
-    if (action === "post_if_not_live" && lifecycle.canPostToFacebook === true) counts.readyToPublish += 1;
+    if (action === "post_if_not_live" && lifecycle.canPostToFacebook === true) {
+      counts.readyToPublish += 1;
+      const vehicle = album?.vehicle || {};
+      counts.readyToPublishItems.push({
+        albumId: normalizeSpace(album?.id),
+        stockNumber: normalizeSpace(vehicle.stockNumber || album?.inventoryNumber),
+        vin: normalizeSpace(vehicle.vin).toUpperCase(),
+        dealershipId: normalizeSpace(vehicle.dealershipId || album?.dealershipId),
+        inventoryTypeId: normalizeSpace(album?.inventoryTypeId || vehicle.inventoryTypeId),
+        mediaCount: Number(album?.mediaCount || 0),
+        updatedAt: normalizeIsoDate(album?.updatedAt) || "",
+      });
+    }
     if (facebookState === "stale_facebook_evidence" || action === "recheck_facebook_before_post") {
       counts.staleFacebookVerification += 1;
     }
@@ -2698,6 +2711,11 @@ function operationsSummaryFromAlbums(albums = []) {
     }
   }
 
+  counts.readyToPublishItems.sort((left, right) => (
+    left.albumId.localeCompare(right.albumId)
+      || left.stockNumber.localeCompare(right.stockNumber)
+      || left.vin.localeCompare(right.vin)
+  ));
   return counts;
 }
 
