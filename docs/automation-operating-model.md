@@ -27,6 +27,7 @@ The VPS has one daily CarPostClub maintenance timer. It safely prunes raw invent
 - **Keep Awake** — `caffeinate` prevents sleep so scheduled browser jobs can run. This is the main reason the Mac must remain on (and usually plugged in) for Facebook automation.
 - **Ensure Codex Is Running** — every 5 minutes, checks that the local Codex app is available.
 - **Automation Watchdog** — every 5 minutes, checks Mac/Chrome pressure, missed schedules, locks, and coordination health. It also runs a no-AI CPC readiness check between 8:00 a.m. and 8:00 p.m. and wakes the existing publisher owner only when an in-scope used-car package is ready. Full configuration audits are cached for one hour instead of being repeated every five minutes.
+- **Deterministic daily cleanup** — the watchdog clears expired local buyer-status flags and removes rebuildable automation photo/package payloads older than seven days. It does not open Facebook, contact anyone, or delete CPC/server photos.
 
 ### Active Codex jobs
 
@@ -39,7 +40,6 @@ The VPS has one daily CarPostClub maintenance timer. It safely prunes raw invent
 | Listing Price And Disclosure Audit And Fix | Weekdays 5:45 p.m.; Saturday 4:00 p.m. | Checks and fixes live listing prices/disclosures | Only owner allowed to edit those fields |
 | Photo Package Readiness Monitor | Weekdays 4:45 p.m.; Saturday 2:30 p.m. | Reconciles inventory, CPC media, and report-only Photos evidence | Reports readiness; never uploads CPC media |
 | New Kia Facebook Lifecycle | Weekdays 7:00 p.m.; Saturday 4:30 p.m. | Maintains the separate new-Kia listing flow | Owns verified new-Kia publish/sold actions |
-| Message Memory Expiry Cleanup | Daily 6:45 a.m. | Removes expired local message-memory records | Local cleanup only; never opens Facebook or contacts anyone |
 
 Weekday and Saturday entries for the same purpose are companion schedules, not separate owners. Their short prompts inherit the base job's rules.
 
@@ -56,6 +56,7 @@ These remain paused until Konner explicitly reactivates the recurring schedules:
 Also paused:
 
 - Chrome Pressure Recovery Guard — redundant because the five-minute watchdog already does the deterministic check.
+- Message Memory Expiry Cleanup — its exact local cleanup now runs directly in the watchdog without starting Codex; this is not a customer-contact job.
 - Retry Rogers Retention Chat — completed one-time reminder; it must not replay.
 
 A manual one-time inbox request does not reactivate any paused schedule.
@@ -74,7 +75,7 @@ A manual one-time inbox request does not reactivate any paused schedule.
 
 ## Current efficiency limits
 
-- Active scheduled Codex runs: **53 per week**, down from **90** in the previous schedule and **383** before the larger consolidation. Real ready-car events add productive publisher runs rather than routine no-op runs.
+- Active scheduled Codex runs: **46 per week**, down from **90** in the previous schedule and **383** before the larger consolidation. Real ready-car events add productive publisher runs rather than routine no-op runs.
 - Automation prompt text: about **23.7k characters total**, down from about **109k**.
 - Lightweight checks use the lower-cost tier; package reconciliation uses the middle tier; Facebook mutations use the strongest tier.
 - Current customer-contact pause is enforced in both policy and automation status, so missed-run recovery cannot silently turn it back on.
