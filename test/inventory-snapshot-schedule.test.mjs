@@ -19,6 +19,17 @@ function scheduleAt(iso) {
   });
 }
 
+function daytimeOnlyScheduleAt(iso) {
+  return inventorySnapshotScheduleAt({
+    now: new Date(iso),
+    timeZone: "America/Halifax",
+    dayIntervalMs: DAY_INTERVAL_MS,
+    offHoursEnabled: false,
+    dayStartHour: 9,
+    dayEndHour: 19,
+  });
+}
+
 test("inventory snapshot schedule uses ten-minute daytime cadence", () => {
   const schedule = scheduleAt("2026-07-11T15:04:25.000Z"); // 12:04:25 Halifax
   assert.equal(schedule.window, "day");
@@ -47,6 +58,21 @@ test("inventory snapshot schedule handles Halifax daylight-saving time", () => {
   assert.equal(summer.window, "day");
   assert.equal(winter.delayMs, 5 * 60 * 1000);
   assert.equal(summer.delayMs, 5 * 60 * 1000);
+});
+
+test("daytime-only schedule pauses overnight until 9 a.m.", () => {
+  const schedule = daytimeOnlyScheduleAt("2026-07-11T22:12:00.000Z"); // 19:12 Halifax
+  assert.equal(schedule.window, "off_hours");
+  assert.equal(schedule.paused, true);
+  assert.equal(schedule.currentIntervalMs, null);
+  assert.equal(schedule.delayMs, (13 * 60 + 48) * 60 * 1000);
+});
+
+test("daytime-only schedule accounts for daylight-saving changes overnight", () => {
+  const springForward = daytimeOnlyScheduleAt("2026-03-07T23:00:00.000Z"); // 19:00 AST
+  const fallBack = daytimeOnlyScheduleAt("2026-10-31T22:00:00.000Z"); // 19:00 ADT
+  assert.equal(springForward.delayMs, 13 * 60 * 60 * 1000);
+  assert.equal(fallBack.delayMs, 15 * 60 * 60 * 1000);
 });
 
 test("hour windows support all-day and overnight schedules", () => {

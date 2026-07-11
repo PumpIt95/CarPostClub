@@ -250,6 +250,10 @@ const oregansInventorySnapshotOffHoursIntervalMs = positiveInteger(
     || process.env.OREGANS_INVENTORY_SNAPSHOT_OFF_HOURS_INTERVAL_MS,
   oregansInventorySnapshotIntervalMs,
 );
+const oregansInventorySnapshotOffHoursEnabled = parseBooleanEnv(
+  "CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_OFF_HOURS_ENABLED",
+  parseBooleanEnv("OREGANS_INVENTORY_SNAPSHOT_OFF_HOURS_ENABLED", true),
+);
 const oregansInventorySnapshotDayStartHour = boundedInteger(
   process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DAY_START_HOUR
     || process.env.OREGANS_INVENTORY_SNAPSHOT_DAY_START_HOUR,
@@ -1110,11 +1114,13 @@ app.get("/api/inventory/snapshots/status", requireAuth, (_req, res, next) => {
       timeZone: oregansInventorySnapshotTimeZone,
       schedule: {
         dayIntervalMs: oregansInventorySnapshotIntervalMs,
+        offHoursEnabled: oregansInventorySnapshotOffHoursEnabled,
         offHoursIntervalMs: oregansInventorySnapshotOffHoursIntervalMs,
         dayStartHour: oregansInventorySnapshotDayStartHour,
         dayEndHour: oregansInventorySnapshotDayEndHour,
         currentIntervalMs: schedule.currentIntervalMs,
         currentWindow: schedule.window,
+        paused: schedule.paused,
         nextRunAt: oregansInventorySnapshotNextRunAt,
       },
       ...oregansInventorySnapshotStatus(),
@@ -4438,20 +4444,26 @@ function startOregansInventorySnapshotScheduler() {
   if (!oregansInventorySnapshotEnabled || oregansInventorySnapshotTimer) return;
   const run = () => {
     oregansInventorySnapshotTimer = null;
-    scheduleNextOregansInventorySnapshotRun(run);
+    const schedule = currentOregansInventorySnapshotSchedule();
+    scheduleNextOregansInventorySnapshotRun(run, schedule);
+    if (schedule.paused) return;
     queueOregansInventorySnapshotRun({ reason: "scheduled" }).catch((error) => {
       console.warn(`O'Regan's inventory snapshot failed: ${error?.message || error}`);
     });
   };
+  const schedule = currentOregansInventorySnapshotSchedule();
+  if (schedule.paused) {
+    scheduleNextOregansInventorySnapshotRun(run, schedule);
+    return;
+  }
   oregansInventorySnapshotNextRunAt = new Date(Date.now() + oregansInventorySnapshotInitialDelayMs).toISOString();
   oregansInventorySnapshotTimer = setTimeout(run, oregansInventorySnapshotInitialDelayMs);
   oregansInventorySnapshotTimer.unref?.();
 }
 
-function scheduleNextOregansInventorySnapshotRun(run) {
+function scheduleNextOregansInventorySnapshotRun(run, schedule = currentOregansInventorySnapshotSchedule()) {
   if (!oregansInventorySnapshotEnabled || shuttingDown) return;
   const now = new Date();
-  const schedule = currentOregansInventorySnapshotSchedule(now);
   oregansInventorySnapshotNextRunAt = new Date(now.getTime() + schedule.delayMs).toISOString();
   oregansInventorySnapshotTimer = setTimeout(run, schedule.delayMs);
   oregansInventorySnapshotTimer.unref?.();
@@ -4463,6 +4475,7 @@ function currentOregansInventorySnapshotSchedule(now = new Date()) {
     timeZone: oregansInventorySnapshotTimeZone,
     dayIntervalMs: oregansInventorySnapshotIntervalMs,
     offHoursIntervalMs: oregansInventorySnapshotOffHoursIntervalMs,
+    offHoursEnabled: oregansInventorySnapshotOffHoursEnabled,
     dayStartHour: oregansInventorySnapshotDayStartHour,
     dayEndHour: oregansInventorySnapshotDayEndHour,
   });

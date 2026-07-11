@@ -6,6 +6,7 @@ export function inventorySnapshotScheduleAt({
   timeZone = "America/Halifax",
   dayIntervalMs,
   offHoursIntervalMs = dayIntervalMs,
+  offHoursEnabled = true,
   dayStartHour = 0,
   dayEndHour = 24,
 } = {}) {
@@ -14,15 +15,44 @@ export function inventorySnapshotScheduleAt({
 
   const local = localTimeParts(date, timeZone);
   const dayWindow = hourIsInWindow(local.hour, dayStartHour, dayEndHour);
+  if (!dayWindow && !offHoursEnabled) {
+    return {
+      window: "off_hours",
+      paused: true,
+      currentIntervalMs: null,
+      delayMs: delayUntilNextDayWindow(date, timeZone, dayStartHour),
+      localHour: local.hour,
+      localMinute: local.minute,
+    };
+  }
   const intervalMs = positiveInterval(dayWindow ? dayIntervalMs : offHoursIntervalMs);
 
   return {
     window: dayWindow ? "day" : "off_hours",
+    paused: false,
     currentIntervalMs: intervalMs,
     delayMs: alignedDelayMs(date, local, intervalMs),
     localHour: local.hour,
     localMinute: local.minute,
   };
+}
+
+function delayUntilNextDayWindow(date, timeZone, dayStartHour) {
+  const startHour = integerInRange(dayStartHour, 0, 23, "dayStartHour");
+  const formatter = timeFormatter(timeZone);
+  const local = localTimeParts(date, timeZone, formatter);
+  const elapsedThisMinuteMs = local.second * 1000 + date.getUTCMilliseconds();
+  const firstMinuteBoundary = date.getTime() + MINUTE_MS - elapsedThisMinuteMs;
+
+  for (let minuteOffset = 0; minuteOffset < 48 * 60; minuteOffset += 1) {
+    const candidate = new Date(firstMinuteBoundary + minuteOffset * MINUTE_MS);
+    const candidateLocal = localTimeParts(candidate, timeZone, formatter);
+    if (candidateLocal.hour === startHour && candidateLocal.minute === 0) {
+      return candidate.getTime() - date.getTime();
+    }
+  }
+
+  throw new Error(`Could not find the next ${startHour}:00 window in ${timeZone}`);
 }
 
 export function hourIsInWindow(hour, startHour, endHour) {
@@ -35,14 +65,18 @@ export function hourIsInWindow(hour, startHour, endHour) {
   return hourValue >= start || hourValue < end;
 }
 
-function localTimeParts(date, timeZone) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+function timeFormatter(timeZone) {
+  return new Intl.DateTimeFormat("en-CA", {
     timeZone,
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
     hourCycle: "h23",
-  }).formatToParts(date).map((part) => [part.type, part.value]));
+  });
+}
+
+function localTimeParts(date, timeZone, formatter = timeFormatter(timeZone)) {
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
 
   return {
     hour: Number(parts.hour),

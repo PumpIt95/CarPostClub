@@ -60,7 +60,9 @@ For a time-aware schedule, use that interval for the daytime window and set
 `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DAY_START_HOUR`, and
 `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DAY_END_HOUR`. Runs align to predictable wall-clock boundaries in
 `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_TIME_ZONE` (for example, a 10-minute interval runs at :00, :10, :20,
-:30, :40, and :50). Leaving the off-hours interval equal to the daytime interval preserves a fixed schedule.
+:30, :40, and :50). Set `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_OFF_HOURS_ENABLED=false` to stop inventory
+requests outside the daytime window entirely. Leaving it enabled with the off-hours interval equal to the daytime
+interval preserves a fixed schedule.
 Raw per-vehicle snapshot rows default to 14 days of retention while first-seen, last-seen, removal, and current
 vehicle state are preserved. Tune the history window with
 `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_RETENTION_DAYS`; set it to `0` to disable automatic pruning.

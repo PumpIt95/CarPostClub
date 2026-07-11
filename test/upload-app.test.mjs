@@ -2314,6 +2314,42 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
   }
 });
 
+test("O'Regan's inventory scheduler stays idle outside its daytime-only window", async () => {
+  const currentHalifaxHour = Number(new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Halifax",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date()));
+  const dayStartHour = (currentHalifaxHour + 1) % 24;
+  const dayEndHour = (currentHalifaxHour + 2) % 24;
+  const harness = await startTestServer({
+    env: {
+      CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_ENABLED: "true",
+      CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INITIAL_DELAY_MS: "20",
+      CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INTERVAL_MS: "50",
+      CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_OFF_HOURS_ENABLED: "false",
+      CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DAY_START_HOUR: String(dayStartHour),
+      CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DAY_END_HOUR: String(dayEndHour),
+    },
+  });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    await sleep(100);
+    const status = await getJson(harness, "/api/inventory/snapshots/status");
+    assert.equal(status.ok, true);
+    assert.equal(status.enabled, true);
+    assert.equal(status.schedule.offHoursEnabled, false);
+    assert.equal(status.schedule.currentWindow, "off_hours");
+    assert.equal(status.schedule.paused, true);
+    assert.equal(status.schedule.currentIntervalMs, null);
+    assert.ok(Date.parse(status.schedule.nextRunAt) > Date.now());
+    assert.equal(status.latestRun, null);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
 test("inventory-added batch sends one separate notification per vehicle", async () => {
   const harness = await startTestServer();
 
