@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# State archives contain credentials, tokens, and private push keys; keep new
+# deployment-created backups root-readable only even outside systemd's UMask.
+umask 077
+
 release_id="${1:?release id required}"
 source_commit="${2:?source commit required}"
 release_dir="${3:?release directory required}"
