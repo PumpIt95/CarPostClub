@@ -10,7 +10,7 @@ The website is live, healthy, authenticated, and running the intended inventory 
 
 The main issue is operational rather than a current website outage: the daily maintenance service has failed on four consecutive runs because it cannot read one root-owned automation state file while building the backup. Therefore the timer is enabled, but the latest successful backup is currently from the deployment rather than daily maintenance. I fixed the scripts locally on this audit branch; the fix is not deployed.
 
-The other important risks are: the deployed commit is one commit ahead of GitHub `main`, existing backup archives are world-readable and contain sensitive state, GitHub `main` has no branch protection, static PWA assets are uncompressed and always `no-cache`, and there is no evidence of an off-server backup.
+The other important risks are: the deployed commit is one commit ahead of GitHub `main`, existing backup archives are world-readable and contain sensitive state, GitHub `main` has no branch protection, static PWA assets are uncompressed and always `no-cache`, the production container has no explicit CPU/memory/PID limits, and there is no evidence of an off-server backup. The production databases pass integrity checks. The local workspace also holds about 4 GB of automation/package artifacts, but the safe cleanup dry-run found no deletable items because current/proof directories are protected.
 
 ## 2. Systems inspected
 
@@ -21,7 +21,7 @@ The other important risks are: the deployed commit is one commit ahead of GitHub
 - Production through `ssh konner`: Dokploy, Traefik, CarPostClub container, ports, firewall, SSH settings, Docker health, logs, disk, memory, state files, SQLite databases, backups, and systemd maintenance timer/service.
 - Production authenticated APIs: inventory, albums, normalized album lifecycle, operations summary, push configuration, chat, and public health/domain behavior.
 - All 21 local automation definitions, policy, loaded launch agents, shared Facebook lane, evidence registry, all 23 CPC skills, and protected/archived coordination artifacts.
-- Node test suite, Playwright suite, syntax checks, `npm audit`, backup restore validation, inventory retention dry-run, and restart safety check.
+- Node test suite, Playwright suite, syntax checks, `npm audit`, backup restore validation, inventory retention dry-run, restart safety check, production SQLite integrity/index/schema checks, Docker runtime/resource metadata, OS update state, TLS certificate dates, and local artifact-retention dry-run.
 
 ## 3. Safety boundary and actions taken
 
@@ -51,6 +51,8 @@ Local changes were made only on `codex/cpc-audit-20260714` and committed separat
 
 **AUDIT-008 — JSON state coordination is process-local.** The server serializes JSON writes with in-process promises, and the documentation correctly warns not to run a second writer against the same state root (`server.js:361-377`, `server.js:5841-5855`, `server.js:7623-7635`, `server.js:9647-9651`, `README.md:82-86`). This is safe for the current single app container, but it is a scaling/recovery constraint.
 
+**AUDIT-012 — Production container resource guardrails are not explicit.** Docker reports the app running as non-root UID 995:982, but with unlimited memory, CPU, and PID settings (`0`, `0`, and `<no value>`), a writable root filesystem, no dropped capabilities, and no `no-new-privileges` security option. This is not a current outage—the app is using about 132 MiB—but a runaway request, image-processing job, or logging loop could compete with Dokploy/Postgres/Redis or consume host resources. Add conservative limits and hardening only after load testing and a rollback plan.
+
 ### Low / defense-in-depth
 
 **AUDIT-009 — CSP still permits `unsafe-inline`.** The custom security headers are strong overall, but `script-src` and `style-src` allow inline code (`server.js:1970-1988`). This is currently needed by the existing UI/server-rendered pages, but nonce/hash-based CSP would provide stronger XSS protection after a deliberate frontend refactor.
@@ -59,11 +61,19 @@ Local changes were made only on `codex/cpc-audit-20260714` and committed separat
 
 **AUDIT-011 — Test fixture passwords are committed.** The test suite contains obvious test-only passwords in `test/upload-app.test.mjs`. No real production secret pattern was found in tracked files or history, and the test directory is excluded from production images. This is a hygiene item, not a production credential exposure.
 
+**AUDIT-013 — Local automation/package artifacts need an explicit retention policy.** The workspace currently uses about 3.4 GB in `automation-runs`, 463 MB in `facebook-post-packages-current`, 98 MB in `tmp`, and smaller report/artifact directories. The safe cleanup tool reports zero eligible deletions because current-run markers and proof artifacts are protected. No files were deleted; this is a local storage/maintenance issue, not production data loss.
+
+**AUDIT-014 — A small number of active VINs appear in more than one dealership scope.** The production database has two VINs present under two active dealership records, with different stock numbers/prices; other repeated VIN rows are historical removals. This can be legitimate dealership transfer/source behavior, and there is no SQLite corruption or duplicate primary key. It remains a matching/publishing risk unless the downstream policy consistently prefers the current dealership/source record.
+
+**AUDIT-015 — Three host packages are awaiting upgrade.** `unattended-upgrades` is enabled and active, and the host certificate is valid through August 28, 2026, but `containerd.io`, `python3-software-properties`, and `software-properties-common` have newer available versions. This is a low-priority maintenance item; it should be scheduled with a container-health check and rollback awareness.
+
 ## 5. User-visible functionality
 
 The public domain redirects unauthenticated visitors to `/login`; `/healthz` responds successfully; authenticated API endpoints respond; PWA, gallery, upload, chat, push, and mobile-share behavior are covered by passing tests. Full-resolution share/download behavior was not changed.
 
 Production currently reports 74 album packages: 43 source-active and 31 source-removed/inactive. All 74 have media, 43 have marketplace drafts, and 2 gallery notifications are unread in the current read-only capture. Source-removed packages remain visible/inactive as designed.
+
+The price-change path is covered end to end: an inventory price change updates album metadata, records the previous price, regenerates an upload-pool marketplace description or marks a protected/manual copy stale, and queues dealership-targeted push notifications. The regression test also confirms duplicate price-change runs do not send a second notification.
 
 ## 6. API, inventory, and Facebook lifecycle
 
@@ -77,6 +87,8 @@ The O'Regan's snapshot schedule is confirmed in production as:
 The default helper query intentionally fetches dealership 15 only, so its 36-car result must not be compared directly with all four dealerships. The snapshot database shows current type-2 counts of 36, 36, 66, and 27 across the four configured dealership scopes.
 
 The operations summary reports `readyToPublish=0`, `staleFacebookVerification=43`, `facebookLive=0`, and `needsReview=31`. The normalized albums endpoint reports 60 stored Facebook-live records, but all 74 Facebook evidence records are stale. Those numbers are not contradictory: 60 is historical stored evidence; the operations summary correctly refuses to treat it as fresh verification.
+
+The database audit found two VINs represented by two currently-present dealership records, with different dealership/stock/price values. This is consistent with a transfer or cross-dealership feed condition rather than a duplicate SQLite key; VIN-first matching must continue to keep dealership scope and current presence in the decision.
 
 The customer-contact automations remain paused. No Chrome/Facebook live-listing audit was performed because fresh Facebook verification would require taking control of the logged-in browser and the current policy intentionally pauses customer-contact work. This is recorded as an unverified item, not treated as a website failure.
 
@@ -103,6 +115,8 @@ Dokploy and Traefik are healthy. The app port is bound to loopback; HTTPS is exp
 
 The deployment script is appropriately guarded: it refuses a dirty tree, creates a verified backup, builds from an exact Git commit, checks image health and release provenance, performs maintenance, recreates the service, and has an automatic previous-compose rollback path (`ops/deploy-production.sh`, `ops/deploy-production-remote.sh`). Rollback should still be followed by a manual health/release check because the rollback trap attempts recovery but does not independently prove the old service is healthy.
 
+The application image is listed at about 460 MB; Dokploy, Postgres, Redis, and Traefik images account for most of the remaining image storage. The app container is non-root and not privileged, but Docker reports no explicit memory/CPU/PID limits, a writable root filesystem, no dropped capabilities, and `json-file` logging with an empty rotation config. These settings are acceptable for the current low-load state but should be hardened deliberately, not changed during this audit.
+
 ## 9. Production/server health
 
 At audit time:
@@ -113,14 +127,20 @@ At audit time:
 - State root: about 1.2 GB; local upload media about 25 MB because S3 is enabled.
 - Recent app logs: 3 lines, no error-like lines; current low volume does not remove the need for rotation.
 - Public domain: login redirect and health endpoint work; unauthenticated inventory access correctly returns 401.
+- OS patching: `unattended-upgrades` is enabled/active; three non-security package updates are available for the next maintenance window.
+- HTTPS: the public certificate chains to Let's Encrypt and is valid until August 28, 2026.
 
 ## 10. Database, storage, backup, restore, and retention
 
 The inventory snapshot SQLite database is about 198.8 MB with 125,677 raw items, 847 runs, and 1,045 current vehicle records. It uses WAL mode and busy timeouts. There are 846 completed runs and 1 failed run; the newest completed snapshot was July 14 at 21:50 UTC.
 
+Both production SQLite databases passed read-only `PRAGMA integrity_check` and `PRAGMA quick_check`. The inventory database has primary-key indexes plus indexes for observed time, scope, current-seen, and last-seen queries; the marketplace description database has its album primary key and input-hash index. The marketplace store contains 91 non-empty, valid JSON records with distinct input hashes. The inventory vehicle table has 846 present and 199 removed records, with no blank VIN or stock values. The two active cross-dealership VIN repeats described above should be reviewed as source/business data, not repaired by deleting rows.
+
 The 14-day retention dry-run found 3,279 item rows and 16 run rows eligible at the audit clock. No rows were deleted because the command was explicitly run without `--apply`. Daily maintenance is supposed to prune those rows and preserve lifecycle/current references.
 
 There are 15 matching backup archives, consistent with a retain-14 policy plus the newly-created current archive. The latest archive passed both safe tar listing validation and a temporary extraction check: 1,299 archive entries and 1,112 extracted files. The temporary extraction directory was removed after validation.
+
+Local retention evidence is separate from production: the audit workspace contains roughly 3.4 GB of `automation-runs`, 463 MB of current Facebook post packages, 98 MB of temporary files, and smaller artifact/report folders. `python3 scripts/cleanup_automation_artifacts.py` returned a safe dry-run of zero deletions because protected current/proof markers prevent automatic cleanup. No local artifact was deleted; a future cleanup pass needs an explicit retention decision.
 
 ## 11. Automation, skills, locks, and ownership
 
@@ -140,7 +160,9 @@ The current run-directory marker files point to historical completed runs, not l
 
 The largest easy performance opportunity is the app shell: 191 KB JavaScript and 72 KB CSS are served uncompressed and with no-cache headers (`server.js:450-456`; `package.json` has no compression middleware). The service worker uses stale-while-revalidate for static assets, so repeat PWA visits benefit after install. The safest next improvement is to finish/review the existing asset compression/versioning PR rather than redesigning the photo download path.
 
-Reliability is good inside the single-container design: SQLite writes use transactions/WAL, uploads have per-vehicle serialization, deployment health is release-aware, and the restart check blocks active operations. The main reliability gap is the failed maintenance service and the documented single-writer JSON-state constraint.
+Reliability is good inside the single-container design: SQLite writes use transactions/WAL, uploads have per-vehicle serialization, deployment health is release-aware, and the restart check blocks active operations. The main reliability gaps are the failed maintenance service, the documented single-writer JSON-state constraint, and the absence of explicit container resource ceilings.
+
+Local storage is the bigger efficiency concern on this computer than on the VPS: approximately 4 GB is in automation/package working directories, while the cleanup tool deliberately finds no safe automatic deletions. This protects Facebook evidence and current work, but it means storage will not reclaim itself without a reviewed retention policy.
 
 ## 13. Repository, GitHub, Dokploy, and production drift
 
@@ -150,6 +172,7 @@ Reliability is good inside the single-container design: SQLite writes use transa
 - GitHub `main`: `5a6499c`; the production commit is not on remote `main`.
 - GitHub: 5 open pull requests, several drafts; PR #12 is the PWA performance/snapshot-retention draft and is not based on `main`.
 - GitHub CI: latest remote `main` run passed for `5a6499c`.
+- Deployment path: GitHub has CI but no automatic production-deploy workflow; production is updated by the guarded local `ops/deploy-production.sh`/SSH release process, which packages the exact `git archive HEAD` and mounts production `.env` separately.
 - Local Docker CLI: unavailable, so a local image build was not independently reproduced.
 - Dokploy production image/release: healthy and matches local deployed commit.
 
@@ -157,7 +180,7 @@ Reliability is good inside the single-container design: SQLite writes use transa
 
 Verification completed:
 
-- 90 Node tests passed.
+- 92 Node tests passed, including regression coverage for generated export exclusions and protected maintenance/backup execution.
 - 19 Playwright browser tests passed.
 - JavaScript syntax checks passed.
 - Shell syntax and `git diff --check` passed.
@@ -166,11 +189,13 @@ Verification completed:
 - Production restart-safety check passed.
 - Backup listing and extraction restore checks passed.
 - Inventory retention dry-run passed without applying deletions.
+- Production SQLite integrity/quick checks and schema/index inspection passed; marketplace description JSON validation passed.
 
 Local fixes committed separately:
 
 1. `fd9941b` — `Harden generated album export exclusions`: ignores `current-albums-normalized-*.json` in Git and Docker. This protects the existing generated 85 KB export from accidental tracking or image inclusion.
 2. `a7630b3` — `Repair maintenance backup permissions`: runs maintenance reads/backups as container root and sets `umask 077` for deployment-created archives.
+3. `b93ddfb` — `Add audit regression coverage`: verifies the two safe local fixes remain present.
 
 Nothing from this branch has been pushed or deployed. A safe deployment sequence is: review/merge or intentionally push this branch, run the full tests, confirm a fresh backup is readable and private, run `ops/deploy-production.sh` from a clean reviewed worktree, then verify `/healthz`, `/api/version`, Docker health, timer/service status, and authenticated inventory/albums. If health or release provenance fails, the deployment script restores the prior compose image; then independently verify the rollback release and backup age.
 
@@ -185,5 +210,8 @@ Before treating the system as fully finished:
 5. Add Docker log rotation and consider `no-new-privileges`/capability reduction after testing.
 6. Review PR #12's compression/versioning work against current `main`; do not merge it blindly because its base is stale.
 7. When customer-contact/Facebook work is explicitly reactivated, perform fresh seller-listing verification before any Facebook mutation.
+8. Decide how long local automation runs and Facebook post packages should be retained; review protected markers before any cleanup apply run.
+9. Schedule the three available host package updates and recheck the app/container health afterward.
+10. Review the two active cross-dealership VIN matches with the dealership/source owner before changing any deduplication or publishing rule.
 
 Not verified in this audit: a fresh logged-in Facebook seller-listing comparison, a fresh Chrome UI run, live O'Regan's website HTML parsing independent of the production API, offsite backup restore, local Docker image reproducibility, and a real production deployment of the two local fixes. These are intentionally left as follow-up items rather than guessed or changed.
