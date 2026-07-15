@@ -6,7 +6,7 @@ Password-gated vehicle media intake, team chat, upload history, and listing copy
 
 - Pulls current O'Regan's inventory by dealership and inventory type.
 - Saves uploaded car media into a per-car album named from the vehicle and inventory number.
-- Treats O'Regan's removal as the source-of-truth signal that a package is no longer available; the app greys that album and marks the Facebook sync action as `mark_sold` without sending a push alert.
+- Treats O'Regan's removal as the source-of-truth signal that a package is no longer available after a configurable feed-removal grace window; the app greys that album and marks the Facebook sync action as `mark_sold` without sending a push alert.
 - Provides per-asset and album-wide download/delete actions.
 - Generates Facebook Marketplace description variants only after media is uploaded.
 - Privately assigns one Marketplace description to each active user.
@@ -66,6 +66,9 @@ interval preserves a fixed schedule.
 Raw per-vehicle snapshot rows default to 14 days of retention while first-seen, last-seen, removal, and current
 vehicle state are preserved. Tune the history window with
 `CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_RETENTION_DAYS`; set it to `0` to disable automatic pruning.
+Brief feed gaps are held for 48 hours by default before a vehicle becomes source-removed. Tune this with
+`CARPOSTCLUB_OREGANS_INVENTORY_REMOVAL_GRACE_MS`; the active grace value is exposed by
+`/api/inventory/snapshots/status`.
 
 Failed login attempts are throttled per username/IP in the app process. Tune this with
 `CARPOSTCLUB_LOGIN_RATE_LIMIT_MAX_ATTEMPTS` and `CARPOSTCLUB_LOGIN_RATE_LIMIT_WINDOW_MS`; keep an edge

@@ -3879,6 +3879,8 @@ function inventoryStatusBadge(status) {
     ? "Available"
     : statusName === "missing"
       ? "Sold"
+      : statusName === "temporarily_missing"
+        ? "Checking"
       : statusName === "manual"
         ? "Manual"
         : "Unknown";
@@ -3904,6 +3906,9 @@ function inventoryStatusLabel(status) {
       : status.lifecycle?.facebookAction === "verify_facebook_before_mark_sold"
         ? `${base} Facebook and public O'Regan's status must be verified before any listing is marked sold.`
       : base;
+  }
+  if (status.status === "temporarily_missing") {
+    return status.label || "Inventory feed is being rechecked.";
   }
   return status.label || "Inventory status unavailable.";
 }

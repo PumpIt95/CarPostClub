@@ -134,6 +134,11 @@ const inventoryReappearPushCooldownMs = nonNegativeInteger(
     || process.env.KONNER_INVENTORY_REAPPEAR_PUSH_COOLDOWN_MS,
   24 * 60 * 60 * 1000,
 );
+const inventoryRemovalGraceMs = nonNegativeInteger(
+  process.env.CARPOSTCLUB_OREGANS_INVENTORY_REMOVAL_GRACE_MS
+    || process.env.OREGANS_INVENTORY_REMOVAL_GRACE_MS,
+  48 * 60 * 60 * 1000,
+);
 const previewPushEnabled = nodeEnv !== "production" || parseBooleanEnv("CARPOSTCLUB_INTERNAL_PREVIEW_PUSH_ENABLED", false);
 const notificationLogLimitPerUser = positiveInteger(process.env.CARPOSTCLUB_NOTIFICATION_LOG_LIMIT_PER_USER || process.env.KONNER_NOTIFICATION_LOG_LIMIT_PER_USER, 200);
 const auditLogLimit = positiveInteger(process.env.CARPOSTCLUB_AUDIT_LOG_LIMIT || process.env.KONNER_AUDIT_LOG_LIMIT || process.env.AUDIT_LOG_LIMIT, 1000);
@@ -2471,19 +2476,28 @@ async function inventoryStatusForAlbum(album) {
     const inventory = await fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId });
     const matchedCar = inventory.cars.find((car) => inventoryCarMatchesAlbum(car, album));
     const checkedAt = inventory.fetchedAtIso || new Date(inventory.fetchedAt || Date.now()).toISOString();
+    const recentlyConfirmedVehicle = matchedCar
+      ? null
+      : recentInventorySnapshotVehicleForAlbum(album, checkedAt);
+    const temporarilyMissing = !matchedCar && Boolean(recentlyConfirmedVehicle);
+    const sourceActive = Boolean(matchedCar || temporarilyMissing);
     return {
       source: "oregans",
-      status: matchedCar ? "active" : "missing",
-      active: Boolean(matchedCar),
+      status: matchedCar ? "active" : temporarilyMissing ? "temporarily_missing" : "missing",
+      active: sourceActive,
       checkedAt,
       label: matchedCar
         ? `Active in O'Regan's inventory as of ${checkedAt}.`
-        : `No longer active in O'Regan's inventory as of ${checkedAt}.`,
-      matchedInventoryKey: matchedCar?.inventoryKey || matchedCar?.vin || "",
-      matchedStockNumber: matchedCar?.stockNumber || "",
+        : temporarilyMissing
+          ? `Temporarily absent from O'Regan's inventory feed as of ${checkedAt}; last confirmed active at ${recentlyConfirmedVehicle.last_seen_at}. Waiting for the next successful refresh.`
+          : `No longer active in O'Regan's inventory as of ${checkedAt}.`,
+      matchedInventoryKey: matchedCar?.inventoryKey || matchedCar?.vin || recentlyConfirmedVehicle?.vin || "",
+      matchedStockNumber: matchedCar?.stockNumber || recentlyConfirmedVehicle?.stock_number || "",
+      lastConfirmedAt: recentlyConfirmedVehicle?.last_seen_at || "",
       facebookListing,
       lifecycle: inventoryLifecycleState({
-        sourceStatus: matchedCar ? "source_active" : "source_removed",
+        sourceStatus: sourceActive ? "source_active" : "source_removed",
+        sourceTemporarilyMissing: temporarilyMissing,
         album,
         checkedAt,
         facebookListing,
@@ -2503,7 +2517,7 @@ async function inventoryStatusForAlbum(album) {
   }
 }
 
-function inventoryLifecycleState({ sourceStatus, album, checkedAt = null, facebookListing = null }) {
+function inventoryLifecycleState({ sourceStatus, sourceTemporarilyMissing = false, album, checkedAt = null, facebookListing = null }) {
   const hasPackagePhotos = Number(album?.mediaCount || 0) > 0;
   const packageStatus = sourceActivePackageStatus(album);
   const facebookPackageReady = packageStatus === "facebook_ready";
@@ -2555,6 +2569,10 @@ function inventoryLifecycleState({ sourceStatus, album, checkedAt = null, facebo
   }
 
   if (sourceStatus === "source_active") {
+    if (sourceTemporarilyMissing) {
+      const temporaryOverride = sourceActiveTemporarilyMissingFacebookLifecycleOverride(facebookListing, { packageStatus, checkedAt });
+      if (temporaryOverride) return temporaryOverride;
+    }
     const facebookOverride = sourceActiveFacebookLifecycleOverride(trustedFacebookListing, { packageStatus, checkedAt });
     if (facebookOverride) return facebookOverride;
     const staleFacebookOverride = sourceActiveStaleFacebookLifecycleOverride(facebookListing, { packageStatus, checkedAt });
@@ -2576,6 +2594,22 @@ function inventoryLifecycleState({ sourceStatus, album, checkedAt = null, facebo
     packageStatus: hasPackagePhotos ? "photo_matched" : "needs_photos",
     facebookState: "unknown",
     facebookAction: "review",
+    shouldMarkFacebookSold: false,
+    canPostToFacebook: false,
+    checkedAt,
+  };
+}
+
+function sourceActiveTemporarilyMissingFacebookLifecycleOverride(facebookListing, { packageStatus, checkedAt }) {
+  const facebookOverride = sourceActiveFacebookLifecycleOverride(trustedFacebookListingStatus(facebookListing), { packageStatus, checkedAt });
+  if (facebookOverride) return facebookOverride;
+  const staleFacebookOverride = sourceActiveStaleFacebookLifecycleOverride(facebookListing, { packageStatus, checkedAt });
+  if (staleFacebookOverride) return staleFacebookOverride;
+  return {
+    sourceStatus: "source_active",
+    packageStatus,
+    facebookState: "source_recheck_pending",
+    facebookAction: "hold_source_recheck",
     shouldMarkFacebookSold: false,
     canPostToFacebook: false,
     checkedAt,
@@ -2990,6 +3024,38 @@ function inventoryCarMatchesAlbum(car, album) {
   const carStock = normalizeSpace(car?.stockNumber).toUpperCase();
   const albumStock = normalizeSpace(vehicle.stockNumber).toUpperCase();
   return Boolean(carStock && albumStock && carStock === albumStock);
+}
+
+function recentInventorySnapshotVehicleForAlbum(album, checkedAt) {
+  if (!inventoryRemovalGraceMs) return null;
+  const checkedAtMs = Date.parse(checkedAt);
+  if (!Number.isFinite(checkedAtMs)) return null;
+  const cutoff = new Date(checkedAtMs - inventoryRemovalGraceMs).toISOString();
+  const vehicle = album?.vehicle || {};
+  const dealershipId = normalizeSpace(vehicle.dealershipId || album?.dealership?.id);
+  const inventoryTypeId = normalizeSpace(vehicle.inventoryTypeId || album?.inventoryTypeId || defaultInventoryTypeId);
+  if (!dealershipId || !inventoryTypeId) return null;
+  const rows = oregansInventorySnapshotsDb.prepare(`
+    SELECT *
+    FROM oregans_inventory_vehicles
+    WHERE dealership_id = ?
+      AND inventory_type_id = ?
+      AND present = 1
+      AND last_seen_at >= ?
+    ORDER BY last_seen_at DESC
+  `).all(dealershipId, inventoryTypeId, cutoff);
+  return rows.find((row) => inventorySnapshotVehicleMatchesAlbum(row, album)) || null;
+}
+
+function inventorySnapshotVehicleMatchesAlbum(row, album) {
+  const vehicle = album?.vehicle || {};
+  const albumValues = [vehicle.inventoryKey, vehicle.vin, vehicle.stockNumber]
+    .map((value) => normalizeSpace(value).toUpperCase())
+    .filter(Boolean);
+  const rowValues = [row?.vin, row?.stock_number]
+    .map((value) => normalizeSpace(value).toUpperCase())
+    .filter(Boolean);
+  return albumValues.some((value) => rowValues.includes(value));
 }
 
 async function ensureCarAlbum(car, user = null) {
@@ -4756,6 +4822,7 @@ function writeOregansInventorySnapshotRun({
       AND inventory_type_id = ?
       AND present = 1
       AND last_snapshot_run_id <> ?
+      AND last_seen_at <= ?
   `);
   const selectRemoved = oregansInventorySnapshotsDb.prepare(`
     SELECT *
@@ -4858,8 +4925,9 @@ function writeOregansInventorySnapshotRun({
       );
     }
 
+    const removalCutoff = new Date(Date.parse(finishedAt) - inventoryRemovalGraceMs).toISOString();
     for (const scope of successfulScopes) {
-      const removed = markRemoved.run(finishedAt, scope.dealershipId, scope.inventoryTypeId, runId);
+      const removed = markRemoved.run(finishedAt, scope.dealershipId, scope.inventoryTypeId, runId, removalCutoff);
       removedInventoryCount += Number(removed?.changes || 0);
       removedInventory.push(
         ...selectRemoved.all(scope.dealershipId, scope.inventoryTypeId, finishedAt)
@@ -5423,10 +5491,7 @@ function oregansInventoryAddedPushPayload(vehicles, timestamp) {
     title,
     body,
     tag: `carpostclub-inventory-added-${dealership?.id || "unknown"}-${tagVehicleKey}-${timestampMs}`,
-    url: vehicleDeepLink({
-      dealershipId: dealership?.id || first.dealershipId,
-      inventoryTypeId: first.inventoryTypeId,
-    }),
+    url: vehicleDeepLink(first),
     dealershipId: dealership?.id || normalizeAuthDealershipId(first.dealershipId),
     inventoryTypeId: normalizeSpace(first.inventoryTypeId || defaultInventoryTypeId),
     inventoryKey: first.inventoryKey || first.vin || "",
@@ -5555,6 +5620,7 @@ function oregansInventorySnapshotStatus() {
       pruneIntervalMs: oregansInventorySnapshotPruneIntervalMs,
       lastPrune: oregansInventorySnapshotLastPrune,
     },
+    removalGraceMs: inventoryRemovalGraceMs,
     presentCounts: presentCounts.map((row) => ({
       dealershipId: row.dealership_id,
       dealershipName: row.dealership_name,

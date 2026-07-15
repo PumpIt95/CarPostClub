@@ -2189,7 +2189,11 @@ test("album responses strip unsafe source listing URLs from stored metadata", as
 });
 
 test("O'Regan's inventory snapshots track newly seen vehicles by dealership", async () => {
-  const harness = await startTestServer();
+  const harness = await startTestServer({
+    env: {
+      CARPOSTCLUB_OREGANS_INVENTORY_REMOVAL_GRACE_MS: "0",
+    },
+  });
 
   try {
     harness.cookie = await login(harness.baseUrl);
@@ -2318,6 +2322,65 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     const gmUsed = finalStatus.presentCounts.find((count) => count.dealershipId === "18" && count.inventoryTypeId === "2");
     assert.equal(kiaUsed.count, 1);
     assert.equal(gmUsed.count, 1);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("O'Regan's removal grace holds a brief feed gap and allows later removal", async () => {
+  const harness = await startTestServer({
+    env: {
+      CARPOSTCLUB_OREGANS_INVENTORY_REMOVAL_GRACE_MS: "80",
+    },
+  });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const uploaded = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [{ filename: "grace-front.jpg", type: "image/jpeg", body: jpegBytes("grace-front") }],
+    });
+    assert.equal(uploaded.status, 201);
+
+    const baseline = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(baseline.status, 201);
+    const baselineStatus = await getJson(harness, "/api/inventory/snapshots/status");
+    assert.equal(baselineStatus.removalGraceMs, 80);
+
+    await writeInventoryMock(harness, []);
+    await sleep(20);
+    const briefGap = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(briefGap.status, 201);
+    assert.equal(briefGap.body.snapshot.removedInventory.count, 0);
+
+    const gapStatus = await getJson(harness, "/api/inventory/snapshots/status");
+    assert.ok(gapStatus.presentCounts.some((count) => (
+      count.dealershipId === "15"
+      && count.inventoryTypeId === "2"
+      && count.count === 1
+    )));
+    const gapAlbums = await getJson(harness, "/api/albums");
+    const temporarilyMissing = gapAlbums.albums.find((album) => album.id === TEST_ALBUM_ID);
+    assert.ok(temporarilyMissing);
+    assert.equal(temporarilyMissing.inventoryStatus.status, "temporarily_missing");
+    assert.equal(temporarilyMissing.inventoryStatus.active, true);
+    assert.equal(temporarilyMissing.inventoryStatus.lifecycle.sourceStatus, "source_active");
+    assert.equal(temporarilyMissing.inventoryStatus.lifecycle.facebookAction, "hold_source_recheck");
+    assert.equal(temporarilyMissing.inventoryStatus.lifecycle.shouldMarkFacebookSold, false);
+    assert.equal(temporarilyMissing.inventoryStatus.lifecycle.canPostToFacebook, false);
+    assert.equal(temporarilyMissing.inventoryStatus.lastConfirmedAt, baseline.body.snapshot.finishedAt);
+
+    await sleep(120);
+    const expiredGap = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(expiredGap.status, 201);
+    assert.equal(expiredGap.body.snapshot.removedInventory.count, 1);
+    const removedAlbums = await getJson(harness, "/api/albums");
+    const removed = removedAlbums.albums.find((album) => album.id === TEST_ALBUM_ID);
+    assert.ok(removed);
+    assert.equal(removed.inventoryStatus.status, "missing");
+    assert.equal(removed.inventoryStatus.lifecycle.sourceStatus, "source_removed");
   } finally {
     await stopTestServer(harness);
   }

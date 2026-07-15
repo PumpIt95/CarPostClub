@@ -20,11 +20,13 @@ if [[ "${running}" != "true" ]]; then
 fi
 
 printf 'carpostclub_maintenance=started container=%s\n' "${container}"
-docker exec "${container}" node /app/scripts/inventory_snapshot_retention.mjs \
+# Maintenance reads the complete state root, including root-owned automation state
+# that the non-root web process intentionally cannot read.
+docker exec --user 0:0 "${container}" node /app/scripts/inventory_snapshot_retention.mjs \
   --db "${state_root}/oregans-inventory-snapshots.sqlite" \
   --retention-days "${snapshot_retention_days}" \
   --apply
-docker exec "${container}" node /app/scripts/backup_state.mjs \
+docker exec --user 0:0 "${container}" node /app/scripts/backup_state.mjs \
   --root "${state_root}" \
   --retain "${backup_retention_count}"
 printf 'carpostclub_maintenance=complete snapshot_retention_days=%s backup_retention_count=%s\n' \

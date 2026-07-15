@@ -50,3 +50,4 @@ automation-skills-backup
 production-inventory-*.json
 production-facebook-ready-*.json
 cpc-albums-current.json
+current-albums-normalized-*.json
