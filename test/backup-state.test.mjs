@@ -41,6 +41,8 @@ test("state backup snapshots SQLite consistently and prunes only old matching ar
       ], { encoding: "utf8" });
       assert.equal(run.status, 0, run.stderr);
       lastResult = JSON.parse(run.stdout);
+      const archiveStat = await fs.stat(archive);
+      assert.equal(archiveStat.mode & 0o777, 0o600);
       const stamp = new Date(Date.UTC(2026, 0, index + 1));
       await fs.utimes(archive, stamp, stamp);
     }

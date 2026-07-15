@@ -58,6 +58,9 @@ try {
     await snapshotSqliteDatabase(databasePath, path.join(stagedStateRoot, path.basename(databasePath)));
   }
   await run("tar", ["-C", stagingParent, "-czf", archive, basename]);
+  // State archives contain credentials, tokens, and private push keys.
+  // Enforce private permissions inside the container, independent of its umask.
+  await fs.chmod(archive, 0o600);
 } finally {
   await fs.rm(stagingParent, { recursive: true, force: true });
 }
