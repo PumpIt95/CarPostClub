@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import zlib from "node:zlib";
@@ -1100,6 +1101,13 @@ test("photo uploads require an O'Regan's dealership and car selection", async ()
     assert.equal(typeof operationsSummary.facebookLive, "number");
     assert.equal(typeof operationsSummary.staleFacebookVerification, "number");
     assert.equal(typeof operationsSummary.awaitingKonnerUpload, "number");
+    assert.equal(operationsSummary.automationSignals.version, 1);
+    assert.match(operationsSummary.automationSignals.cpc.packageFingerprint, /^[a-f0-9]{64}$/);
+    assert.ok(operationsSummary.automationSignals.cpc.albumCount >= 2);
+    assert.match(operationsSummary.automationSignals.oregans.membershipFingerprint, /^[a-f0-9]{64}$/);
+    assert.match(operationsSummary.automationSignals.oregans.priceFingerprint, /^[a-f0-9]{64}$/);
+    assert.match(operationsSummary.automationSignals.oregans.detailsFingerprint, /^[a-f0-9]{64}$/);
+    assert.equal(typeof operationsSummary.automationSignals.oregans.presentCount, "number");
 
     const albumMarketplaceDraft = await getJson(harness, `/api/albums/${afterUpload.album.id}/marketplace-draft`);
     assert.equal(albumMarketplaceDraft.draft.descriptionSource, "template-upload");
@@ -2220,6 +2228,11 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
       && count.inventoryTypeId === "2"
       && count.count === 1
     )));
+    const initialAutomationSummary = await getJson(harness, "/api/admin/operations-summary");
+    assert.equal(initialAutomationSummary.automationSignals.oregans.latestRunId, firstRun.body.snapshot.id);
+    assert.equal(initialAutomationSummary.automationSignals.oregans.presentCount, 1);
+    assert.equal(initialAutomationSummary.automationSignals.oregans.latestMembershipChangeRunId, "");
+    assert.equal(initialAutomationSummary.automationSignals.oregans.latestDetailsChangeRunId, "");
 
     const michael = await createApprovedAccount(harness, {
       username: "michael",
@@ -2253,6 +2266,24 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     assert.equal(secondRun.body.snapshot.pushDelivery.requested, 2);
     assert.equal(secondRun.body.snapshot.pushDelivery.skipped, 2);
     assert.equal(secondRun.body.snapshot.pushDelivery.logged, 2);
+    const changedAutomationSummary = await getJson(harness, "/api/admin/operations-summary");
+    assert.equal(changedAutomationSummary.automationSignals.oregans.latestRunId, secondRun.body.snapshot.id);
+    assert.equal(changedAutomationSummary.automationSignals.oregans.presentCount, 3);
+    assert.equal(changedAutomationSummary.automationSignals.oregans.latestMembershipChangeRunId, secondRun.body.snapshot.id);
+    assert.deepEqual(changedAutomationSummary.automationSignals.oregans.latestMembershipChangeCounts, {
+      added: 2,
+      removed: 0,
+    });
+    assert.equal(secondRun.body.snapshot.detailsChanges.count, 0);
+    assert.equal(changedAutomationSummary.automationSignals.oregans.latestDetailsChangeRunId, "");
+    assert.notEqual(
+      changedAutomationSummary.automationSignals.oregans.membershipFingerprint,
+      initialAutomationSummary.automationSignals.oregans.membershipFingerprint,
+    );
+    assert.notEqual(
+      changedAutomationSummary.automationSignals.oregans.priceFingerprint,
+      initialAutomationSummary.automationSignals.oregans.priceFingerprint,
+    );
     assert.deepEqual(
       secondRun.body.snapshot.pushDelivery.dealerships.map((dealership) => ({
         dealershipId: dealership.dealershipId,
@@ -2322,6 +2353,71 @@ test("O'Regan's inventory snapshots track newly seen vehicles by dealership", as
     const gmUsed = finalStatus.presentCounts.find((count) => count.dealershipId === "18" && count.inventoryTypeId === "2");
     assert.equal(kiaUsed.count, 1);
     assert.equal(gmUsed.count, 1);
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("startup upgrades legacy inventory snapshot runs with private change counters", async () => {
+  const harness = await startTestServer({
+    prepareTempRoot: async ({ tempRoot }) => {
+      const db = new DatabaseSync(path.join(tempRoot, "oregans-inventory-snapshots.sqlite"));
+      try {
+        db.exec(`
+          CREATE TABLE oregans_inventory_snapshot_runs (
+            id TEXT PRIMARY KEY,
+            reason TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL DEFAULT '',
+            scope_json TEXT NOT NULL DEFAULT '[]',
+            summary_json TEXT NOT NULL DEFAULT '[]',
+            error TEXT NOT NULL DEFAULT ''
+          );
+          INSERT INTO oregans_inventory_snapshot_runs (
+            id, reason, status, started_at, finished_at, scope_json, summary_json, error
+          ) VALUES (
+            'legacy-run', 'scheduled', 'completed',
+            '2026-07-18T12:00:00.000Z', '2026-07-18T12:00:01.000Z', '[]', '[]', ''
+          );
+        `);
+      } finally {
+        db.close();
+      }
+    },
+  });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const summary = await getJson(harness, "/api/admin/operations-summary");
+    assert.equal(summary.automationSignals.oregans.latestRunId, "legacy-run");
+    assert.equal(summary.automationSignals.oregans.latestMembershipChangeRunId, "");
+    assert.equal(summary.automationSignals.oregans.latestPriceChangeRunId, "");
+    assert.equal(summary.automationSignals.oregans.latestDetailsChangeRunId, "");
+
+    const db = new DatabaseSync(path.join(harness.tempRoot, "oregans-inventory-snapshots.sqlite"));
+    try {
+      const columns = new Set(
+        db.prepare("PRAGMA table_info(oregans_inventory_snapshot_runs)").all().map((column) => column.name),
+      );
+      assert.equal(columns.has("new_inventory_count"), true);
+      assert.equal(columns.has("price_change_count"), true);
+      assert.equal(columns.has("details_change_count"), true);
+      assert.equal(columns.has("removed_inventory_count"), true);
+      const legacy = db.prepare(`
+        SELECT new_inventory_count, price_change_count, details_change_count, removed_inventory_count
+        FROM oregans_inventory_snapshot_runs
+        WHERE id = 'legacy-run'
+      `).get();
+      assert.deepEqual({ ...legacy }, {
+        new_inventory_count: 0,
+        price_change_count: 0,
+        details_change_count: 0,
+        removed_inventory_count: 0,
+      });
+    } finally {
+      db.close();
+    }
   } finally {
     await stopTestServer(harness);
   }
@@ -2542,6 +2638,9 @@ test("O'Regan's inventory price changes send all-user push alerts", async () => 
     assert.equal(firstRun.body.snapshot.newInventory.count, 0);
     assert.equal(firstRun.body.snapshot.priceChanges.count, 0);
     assert.equal(firstRun.body.snapshot.priceChangePushDelivery, undefined);
+    const initialAutomationSummary = await getJson(harness, "/api/admin/operations-summary");
+    assert.equal(initialAutomationSummary.automationSignals.oregans.latestPriceChangeRunId, "");
+    assert.equal(initialAutomationSummary.automationSignals.oregans.latestDetailsChangeRunId, "");
 
     const michael = await createApprovedAccount(harness, {
       username: "michael.price",
@@ -2584,6 +2683,19 @@ test("O'Regan's inventory price changes send all-user push alerts", async () => 
     assert.equal(secondRun.body.snapshot.priceChangePushDelivery.logged, 2);
     assert.equal(secondRun.body.snapshot.priceChangePushDelivery.vehicles[0].stockNumber, TEST_CAR.stockNumber);
     assert.equal(secondRun.body.snapshot.priceChangePushDelivery.vehicles[0].logged, 2);
+    const changedAutomationSummary = await getJson(harness, "/api/admin/operations-summary");
+    assert.equal(changedAutomationSummary.automationSignals.oregans.latestPriceChangeRunId, secondRun.body.snapshot.id);
+    assert.equal(changedAutomationSummary.automationSignals.oregans.latestPriceChangeCount, 1);
+    assert.equal(secondRun.body.snapshot.detailsChanges.count, 0);
+    assert.equal(changedAutomationSummary.automationSignals.oregans.latestDetailsChangeRunId, "");
+    assert.equal(
+      changedAutomationSummary.automationSignals.oregans.membershipFingerprint,
+      initialAutomationSummary.automationSignals.oregans.membershipFingerprint,
+    );
+    assert.notEqual(
+      changedAutomationSummary.automationSignals.oregans.priceFingerprint,
+      initialAutomationSummary.automationSignals.oregans.priceFingerprint,
+    );
 
     const updatedAlbumMetadata = JSON.parse(
       await fs.readFile(path.join(harness.uploadRoot, TEST_ALBUM_ID, ".album.json"), "utf8"),
@@ -2630,11 +2742,28 @@ test("O'Regan's inventory price changes send all-user push alerts", async () => 
     const thirdRun = await postJson(harness, "/api/inventory/snapshots/run", {});
     assert.equal(thirdRun.status, 201);
     assert.equal(thirdRun.body.snapshot.priceChanges.count, 0);
+    assert.equal(thirdRun.body.snapshot.detailsChanges.count, 0);
     assert.equal(thirdRun.body.snapshot.priceChangePushDelivery, undefined);
 
     const afterDuplicateRun = await getJson(harness, "/api/notifications");
     assert.equal(afterDuplicateRun.unreadCount, 1);
     assert.equal(afterDuplicateRun.notifications.length, 1);
+
+    const detailsChangedCar = {
+      ...priceChangedCar,
+      trim: "EX Premium",
+      odometer: "18,100 km",
+      odometerValue: 18100,
+    };
+    await sleep(20);
+    await writeInventoryMock(harness, [detailsChangedCar]);
+    const fourthRun = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(fourthRun.status, 201);
+    assert.equal(fourthRun.body.snapshot.priceChanges.count, 0);
+    assert.equal(fourthRun.body.snapshot.detailsChanges.count, 1);
+    const detailsAutomationSummary = await getJson(harness, "/api/admin/operations-summary");
+    assert.equal(detailsAutomationSummary.automationSignals.oregans.latestDetailsChangeRunId, fourthRun.body.snapshot.id);
+    assert.equal(detailsAutomationSummary.automationSignals.oregans.latestDetailsChangeCount, 1);
   } finally {
     await stopTestServer(harness);
   }
@@ -3751,12 +3880,15 @@ test("multiple approved accounts can use live chat while duplicate vehicle uploa
   }
 });
 
-async function startTestServer({ env = {}, inventoryCars = [TEST_CAR] } = {}) {
+async function startTestServer({ env = {}, inventoryCars = [TEST_CAR], prepareTempRoot = null } = {}) {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "carpostclub-test-"));
   const uploadRoot = path.join(tempRoot, "uploads");
   const tmpRoot = path.join(tempRoot, "tmp");
   const inventoryMockFile = path.join(tempRoot, "inventory.json");
   await fs.writeFile(inventoryMockFile, `${JSON.stringify({ cars: inventoryCars }, null, 2)}\n`);
+  if (prepareTempRoot) {
+    await prepareTempRoot({ tempRoot, uploadRoot, tmpRoot, inventoryMockFile });
+  }
   const port = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ["server.js"], {
