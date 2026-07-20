@@ -171,6 +171,56 @@ class ChangeEventRouterTests(unittest.TestCase):
             1_000 + SUBJECT.PUBLISHER_UNCHANGED_RETRY_SECONDS,
         ))
 
+    def test_publisher_retries_a_deferred_run_after_five_minutes(self) -> None:
+        candidate = SUBJECT.candidate_view({"readyToPublishItems": [ready_item("A1")]})
+        publisher = {
+            "lastAttemptSignature": candidate["signature"],
+            "lastAttemptEpoch": 1_000,
+            "lastRunStatus": "deferred",
+        }
+        self.assertFalse(SUBJECT.publisher_should_queue(candidate, publisher, 1_299))
+        self.assertTrue(SUBJECT.publisher_should_queue(
+            candidate,
+            publisher,
+            1_000 + SUBJECT.DEFERRED_RETRY_SECONDS,
+        ))
+
+    def test_deferred_runner_status_keeps_publisher_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_path = root / "state.json"
+            summary_path = root / "summary.json"
+            summary_path.write_text(
+                json.dumps(summary(ready=[ready_item("A1")])),
+                encoding="utf-8",
+            )
+            argv = [
+                str(SUBJECT_PATH),
+                "--summary-file", str(summary_path),
+                "--state-path", str(state_path),
+                "--now", "2026-07-19T12:00:00-03:00",
+            ]
+            runner_result = mock.Mock(
+                stdout="automation_run_status=deferred source=cpc-change-event\n",
+                returncode=0,
+            )
+            stdout = io.StringIO()
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(
+                SUBJECT, "availability_blocker", return_value=""
+            ), mock.patch.object(
+                SUBJECT, "run_checked", return_value=runner_result
+            ), contextlib.redirect_stdout(stdout):
+                self.assertEqual(SUBJECT.main(), 0)
+
+            output = json.loads(stdout.getvalue())
+            saved = json.loads(state_path.read_text(encoding="utf-8"))
+            pending = saved["pending"][SUBJECT.PUBLISHER_ID]
+            self.assertEqual(output["status"], "deferred")
+            self.assertEqual(output["reason"], "deferred")
+            self.assertEqual(pending["lastRunStatus"], "deferred")
+            expected_epoch = int(dt.datetime.fromisoformat("2026-07-19T12:00:00-03:00").timestamp())
+            self.assertEqual(pending["lastAttemptEpoch"], expected_epoch)
+
     def test_ready_package_can_be_handled_by_publisher_without_a_second_readiness_run(self) -> None:
         previous = SUBJECT.owner_targets(summary(cpc="cpc-a"))
         current_summary = summary(cpc="cpc-b", ready=[ready_item("A1")])

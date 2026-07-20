@@ -178,9 +178,13 @@ def publisher_should_queue(candidate: dict[str, Any], publisher: dict[str, Any],
     if not last_signature or last_signature != signature:
         return True
     elapsed = max(0, now_epoch - int_or_zero(publisher.get("lastAttemptEpoch")))
-    retry = FAILED_RETRY_SECONDS if str(publisher.get("lastRunStatus") or "") in {
-        "failed", "timeout", "error"
-    } else PUBLISHER_UNCHANGED_RETRY_SECONDS
+    last_status = str(publisher.get("lastRunStatus") or "")
+    if last_status in {"failed", "timeout", "error"}:
+        retry = FAILED_RETRY_SECONDS
+    elif last_status in {"deferred", "busy", "covered"}:
+        retry = DEFERRED_RETRY_SECONDS
+    else:
+        retry = PUBLISHER_UNCHANGED_RETRY_SECONDS
     return elapsed >= retry
 
 
@@ -448,7 +452,7 @@ def main() -> int:
         returncode = 1
         state["lastError"] = str(error)[:500]
 
-    if run_status in {"busy", "covered"}:
+    if run_status in {"busy", "covered", "deferred"}:
         item.update({
             "lastRunStatus": "deferred",
             "lastDeferredAt": dt.datetime.now(LOCAL_TZ).isoformat(),
