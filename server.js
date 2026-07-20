@@ -840,11 +840,13 @@ app.get("/api/admin/operations-summary", requireAdmin, async (req, res, next) =>
   try {
     const gallery = await listAlbumsForUser(req.authUser, { includeInventoryStatus: true });
     const summary = operationsSummaryFromAlbums(gallery.albums);
+    const automationSignals = operationsAutomationSignals(gallery.albums);
     setPrivateNoStore(res);
     res.json({
       ok: true,
       generatedAt: new Date().toISOString(),
       ...summary,
+      automationSignals,
     });
   } catch (error) {
     next(error);
@@ -1158,6 +1160,7 @@ app.post("/api/inventory/snapshots/run", requireAdmin, async (req, res, next) =>
       finishedAt: snapshot.finishedAt,
       newInventoryCount: snapshot.newInventory?.count || 0,
       priceChangeCount: snapshot.priceChanges?.count || 0,
+      detailsChangeCount: snapshot.detailsChanges?.count || 0,
       removedInventoryCount: snapshot.removedInventory?.count || 0,
     });
     res.setHeader("Cache-Control", "private, no-store");
@@ -2751,6 +2754,125 @@ function operationsSummaryFromAlbums(albums = []) {
       || left.vin.localeCompare(right.vin)
   ));
   return counts;
+}
+
+function operationsAutomationSignals(albums = []) {
+  const cpcPackages = albums.map((album) => {
+    const vehicle = album?.vehicle || {};
+    return {
+      albumId: normalizeSpace(album?.id),
+      stockNumber: normalizeSpace(vehicle.stockNumber || album?.inventoryNumber).toUpperCase(),
+      vin: normalizeSpace(vehicle.vin).toUpperCase(),
+      dealershipId: normalizeSpace(vehicle.dealershipId || album?.dealership?.id),
+      inventoryTypeId: normalizeSpace(album?.inventoryTypeId || vehicle.inventoryTypeId),
+      mediaCount: Number(album?.mediaCount || 0),
+      photoCount: Number(album?.photoCount || 0),
+      videoCount: Number(album?.videoCount || 0),
+      updatedAt: normalizeIsoDate(album?.updatedAt) || "",
+    };
+  }).sort((left, right) => (
+    left.albumId.localeCompare(right.albumId)
+      || left.stockNumber.localeCompare(right.stockNumber)
+      || left.vin.localeCompare(right.vin)
+  ));
+
+  const trackedScopes = new Set(oregansInventorySnapshotScopes().map((scope) => (
+    inventorySnapshotScopeKey(scope)
+  )));
+  const inventoryRows = oregansInventorySnapshotsDb.prepare(`
+    SELECT *
+    FROM oregans_inventory_vehicles
+    WHERE present = 1
+    ORDER BY dealership_id, inventory_type_id, stock_number, vehicle_key
+  `).all().filter((row) => trackedScopes.has(inventorySnapshotScopeKey({
+    dealershipId: row.dealership_id,
+    inventoryTypeId: row.inventory_type_id,
+  })));
+
+  const membership = inventoryRows.map((row) => ({
+    vehicleKey: normalizeSpace(row.vehicle_key),
+    vin: normalizeSpace(row.vin).toUpperCase(),
+    stockNumber: normalizeSpace(row.stock_number).toUpperCase(),
+    dealershipId: normalizeSpace(row.dealership_id),
+    inventoryTypeId: normalizeSpace(row.inventory_type_id),
+  }));
+  const prices = inventoryRows.map((row) => ({
+    vehicleKey: normalizeSpace(row.vehicle_key),
+    price: normalizeSpace(row.price),
+    priceValue: nullableFiniteNumber(row.price_value),
+  }));
+  const details = inventoryRows.map((row) => ({
+    vehicleKey: normalizeSpace(row.vehicle_key),
+    title: normalizeSpace(row.title),
+    year: normalizeSpace(row.year),
+    make: normalizeSpace(row.make),
+    model: normalizeSpace(row.model),
+    trim: normalizeSpace(row.trim),
+    odometer: normalizeSpace(row.odometer),
+    odometerValue: nullableFiniteNumber(row.odometer_value),
+    exteriorColor: normalizeSpace(row.exterior_color),
+    interiorColor: normalizeSpace(row.interior_color),
+    bodyStyle: normalizeSpace(row.body_style),
+    fuelType: normalizeSpace(row.fuel_type),
+    transmission: normalizeSpace(row.transmission),
+    detailUrl: normalizeSpace(row.detail_url),
+  }));
+  const latestRun = oregansInventorySnapshotsDb.prepare(`
+    SELECT id, status, finished_at
+    FROM oregans_inventory_snapshot_runs
+    ORDER BY started_at DESC
+    LIMIT 1
+  `).get();
+  const latestMembershipChange = oregansInventorySnapshotsDb.prepare(`
+    SELECT id, finished_at, new_inventory_count, removed_inventory_count
+    FROM oregans_inventory_snapshot_runs
+    WHERE new_inventory_count > 0 OR removed_inventory_count > 0
+    ORDER BY started_at DESC
+    LIMIT 1
+  `).get();
+  const latestPriceChange = oregansInventorySnapshotsDb.prepare(`
+    SELECT id, finished_at, price_change_count
+    FROM oregans_inventory_snapshot_runs
+    WHERE price_change_count > 0
+    ORDER BY started_at DESC
+    LIMIT 1
+  `).get();
+  const latestDetailsChange = oregansInventorySnapshotsDb.prepare(`
+    SELECT id, finished_at, details_change_count
+    FROM oregans_inventory_snapshot_runs
+    WHERE details_change_count > 0
+    ORDER BY started_at DESC
+    LIMIT 1
+  `).get();
+
+  return {
+    version: 1,
+    cpc: {
+      packageFingerprint: hashJson(cpcPackages),
+      albumCount: cpcPackages.length,
+    },
+    oregans: {
+      membershipFingerprint: hashJson(membership),
+      priceFingerprint: hashJson(prices),
+      detailsFingerprint: hashJson(details),
+      presentCount: inventoryRows.length,
+      latestRunId: normalizeSpace(latestRun?.id),
+      latestRunStatus: normalizeSpace(latestRun?.status),
+      latestRunFinishedAt: normalizeIsoDate(latestRun?.finished_at) || "",
+      latestMembershipChangeRunId: normalizeSpace(latestMembershipChange?.id),
+      latestMembershipChangeFinishedAt: normalizeIsoDate(latestMembershipChange?.finished_at) || "",
+      latestMembershipChangeCounts: {
+        added: Number(latestMembershipChange?.new_inventory_count || 0),
+        removed: Number(latestMembershipChange?.removed_inventory_count || 0),
+      },
+      latestPriceChangeRunId: normalizeSpace(latestPriceChange?.id),
+      latestPriceChangeFinishedAt: normalizeIsoDate(latestPriceChange?.finished_at) || "",
+      latestPriceChangeCount: Number(latestPriceChange?.price_change_count || 0),
+      latestDetailsChangeRunId: normalizeSpace(latestDetailsChange?.id),
+      latestDetailsChangeFinishedAt: normalizeIsoDate(latestDetailsChange?.finished_at) || "",
+      latestDetailsChangeCount: Number(latestDetailsChange?.details_change_count || 0),
+    },
+  };
 }
 
 async function recordAlbumInventoryLifecycle(album, inventoryStatus) {
@@ -4421,7 +4543,11 @@ function openOregansInventorySnapshotsDatabase() {
       finished_at TEXT NOT NULL DEFAULT '',
       scope_json TEXT NOT NULL DEFAULT '[]',
       summary_json TEXT NOT NULL DEFAULT '[]',
-      error TEXT NOT NULL DEFAULT ''
+      error TEXT NOT NULL DEFAULT '',
+      new_inventory_count INTEGER NOT NULL DEFAULT 0,
+      price_change_count INTEGER NOT NULL DEFAULT 0,
+      details_change_count INTEGER NOT NULL DEFAULT 0,
+      removed_inventory_count INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS oregans_inventory_vehicles (
       vehicle_key TEXT PRIMARY KEY,
@@ -4490,6 +4616,19 @@ function openOregansInventorySnapshotsDatabase() {
     CREATE INDEX IF NOT EXISTS oregans_inventory_snapshot_runs_finished_idx
       ON oregans_inventory_snapshot_runs(finished_at);
   `);
+  const runColumns = new Set(
+    db.prepare("PRAGMA table_info(oregans_inventory_snapshot_runs)").all().map((column) => column.name),
+  );
+  for (const [name, definition] of [
+    ["new_inventory_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["price_change_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["details_change_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["removed_inventory_count", "INTEGER NOT NULL DEFAULT 0"],
+  ]) {
+    if (!runColumns.has(name)) {
+      db.exec(`ALTER TABLE oregans_inventory_snapshot_runs ADD COLUMN ${name} ${definition}`);
+    }
+  }
   return db;
 }
 
@@ -4704,6 +4843,9 @@ async function captureOregansInventorySnapshot({ reason = "manual" } = {}) {
       count: writeResult.priceChanges.length,
       vehicles: writeResult.priceChanges.slice(0, 20),
     },
+    detailsChanges: {
+      count: writeResult.detailsChangeCount,
+    },
     removedInventory: {
       count: writeResult.removedInventoryCount,
       vehicles: writeResult.removedInventory.slice(0, 20),
@@ -4738,6 +4880,14 @@ function writeOregansInventorySnapshotRun({
       summary_json,
       error
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const updateRunChangeCounts = oregansInventorySnapshotsDb.prepare(`
+    UPDATE oregans_inventory_snapshot_runs
+    SET new_inventory_count = ?,
+        price_change_count = ?,
+        details_change_count = ?,
+        removed_inventory_count = ?
+    WHERE id = ?
   `);
   const upsertVehicle = oregansInventorySnapshotsDb.prepare(`
     INSERT INTO oregans_inventory_vehicles (
@@ -4837,8 +4987,23 @@ function writeOregansInventorySnapshotRun({
     SELECT
       vehicle_key,
       present,
+      vin,
+      stock_number,
+      title,
+      year,
+      make,
+      model,
+      trim,
       price,
       price_value,
+      odometer,
+      odometer_value,
+      exterior_color,
+      interior_color,
+      body_style,
+      fuel_type,
+      transmission,
+      detail_url,
       first_seen_at,
       current_seen_at,
       last_seen_at,
@@ -4882,6 +5047,7 @@ function writeOregansInventorySnapshotRun({
   const newlyObserved = [];
   const priceChanges = [];
   const removedInventory = [];
+  let detailsChangeCount = 0;
   let removedInventoryCount = 0;
   oregansInventorySnapshotsDb.exec("BEGIN IMMEDIATE");
   try {
@@ -4904,15 +5070,16 @@ function writeOregansInventorySnapshotRun({
     for (const { car, scope } of observations) {
       const record = oregansInventorySnapshotVehicleRecord(car, scope, finishedAt, runId);
       const previous = selectVehicle.get(record.vehicleKey);
-      if (shouldNotifyNewlyObservedInventory(scopeHasBaseline.get(inventorySnapshotScopeKey(scope)), previous, finishedAt)) {
+      const scopeHadBaseline = scopeHasBaseline.get(inventorySnapshotScopeKey(scope));
+      if (shouldNotifyNewlyObservedInventory(scopeHadBaseline, previous, finishedAt)) {
         newlyObserved.push(publicOregansInventorySnapshotVehicleFromCar(car, scope, finishedAt, record.vehicleKey));
-      } else if (
-        scopeHasBaseline.get(inventorySnapshotScopeKey(scope))
-        && previous
-        && Number(previous.present)
-        && oregansInventorySnapshotPriceChanged(previous, car)
-      ) {
-        priceChanges.push(publicOregansInventorySnapshotPriceChangeFromCar(car, scope, finishedAt, record.vehicleKey, previous));
+      } else if (scopeHadBaseline && previous && Number(previous.present)) {
+        if (oregansInventorySnapshotPriceChanged(previous, car)) {
+          priceChanges.push(publicOregansInventorySnapshotPriceChangeFromCar(car, scope, finishedAt, record.vehicleKey, previous));
+        }
+        if (oregansInventorySnapshotDetailsChanged(previous, car)) {
+          detailsChangeCount += 1;
+        }
       }
       upsertVehicle.run(...record.values);
       insertItem.run(
@@ -4946,13 +5113,21 @@ function writeOregansInventorySnapshotRun({
       );
     }
 
+    updateRunChangeCounts.run(
+      newlyObserved.length,
+      priceChanges.length,
+      detailsChangeCount,
+      removedInventoryCount,
+      runId,
+    );
+
     oregansInventorySnapshotsDb.exec("COMMIT");
   } catch (error) {
     oregansInventorySnapshotsDb.exec("ROLLBACK");
     throw error;
   }
 
-  return { newlyObserved, priceChanges, removedInventory, removedInventoryCount };
+  return { newlyObserved, priceChanges, detailsChangeCount, removedInventory, removedInventoryCount };
 }
 
 function shouldNotifyNewlyObservedInventory(scopeHasBaseline, previous, observedAt) {
@@ -5114,6 +5289,44 @@ function oregansInventorySnapshotPriceChanged(previous, car) {
   const previousPrice = normalizeSpace(previous?.price);
   const currentPrice = normalizeSpace(car?.price);
   return Boolean(previousPrice && currentPrice && previousPrice !== currentPrice);
+}
+
+function oregansInventorySnapshotDetailsChanged(previous, car) {
+  const previousDetails = {
+    vin: normalizeSpace(previous?.vin).toUpperCase(),
+    stockNumber: normalizeSpace(previous?.stock_number).toUpperCase(),
+    title: normalizeSpace(previous?.title),
+    year: normalizeSpace(previous?.year),
+    make: normalizeSpace(previous?.make),
+    model: normalizeSpace(previous?.model),
+    trim: normalizeSpace(previous?.trim),
+    odometer: normalizeSpace(previous?.odometer),
+    odometerValue: nullableFiniteNumber(previous?.odometer_value),
+    exteriorColor: normalizeSpace(previous?.exterior_color),
+    interiorColor: normalizeSpace(previous?.interior_color),
+    bodyStyle: normalizeSpace(previous?.body_style),
+    fuelType: normalizeSpace(previous?.fuel_type),
+    transmission: normalizeSpace(previous?.transmission),
+    detailUrl: normalizeSpace(previous?.detail_url),
+  };
+  const currentDetails = {
+    vin: normalizeSpace(car?.vin).toUpperCase(),
+    stockNumber: normalizeSpace(car?.stockNumber).toUpperCase(),
+    title: normalizeSpace(car?.title),
+    year: normalizeSpace(car?.year),
+    make: normalizeSpace(car?.make),
+    model: normalizeSpace(car?.model),
+    trim: normalizeSpace(car?.trim),
+    odometer: normalizeSpace(car?.odometer),
+    odometerValue: nullableFiniteNumber(car?.odometerValue),
+    exteriorColor: normalizeSpace(car?.exteriorColor),
+    interiorColor: normalizeSpace(car?.interiorColor),
+    bodyStyle: normalizeSpace(car?.bodyStyle),
+    fuelType: normalizeSpace(car?.fuelType),
+    transmission: normalizeSpace(car?.transmission),
+    detailUrl: normalizeSpace(car?.detailUrl),
+  };
+  return hashJson(previousDetails) !== hashJson(currentDetails);
 }
 
 function nullableFiniteNumber(value) {
@@ -5640,6 +5853,10 @@ function publicOregansInventorySnapshotRun(row) {
     finishedAt: row.finished_at,
     scopes: safeParseJson(row.summary_json, []),
     error: row.error,
+    newInventoryCount: Number(row.new_inventory_count || 0),
+    priceChangeCount: Number(row.price_change_count || 0),
+    detailsChangeCount: Number(row.details_change_count || 0),
+    removedInventoryCount: Number(row.removed_inventory_count || 0),
   };
 }
 

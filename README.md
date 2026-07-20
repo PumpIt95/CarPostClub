@@ -70,6 +70,11 @@ Brief feed gaps are held for 48 hours by default before a vehicle becomes source
 `CARPOSTCLUB_OREGANS_INVENTORY_REMOVAL_GRACE_MS`; the active grace value is exposed by
 `/api/inventory/snapshots/status`.
 
+The admin-only `/api/admin/operations-summary` response includes compact `automationSignals` hashes for CPC
+packages and current O'Regan's membership, prices, and listing details. Snapshot runs also retain small added,
+removed, price-change, and details-change counters so a local latest-state automation can detect work that happened while its Mac
+was asleep without polling Facebook or downloading the full inventory on every check.
+
 Failed login attempts are throttled per username/IP in the app process. Tune this with
 `CARPOSTCLUB_LOGIN_RATE_LIMIT_MAX_ATTEMPTS` and `CARPOSTCLUB_LOGIN_RATE_LIMIT_WINDOW_MS`; keep an edge
 rate limit in front of public deployments as a second layer.
