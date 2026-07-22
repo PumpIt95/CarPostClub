@@ -17,6 +17,8 @@
     "backfill:marketplace-descriptions": "node scripts/backfill_marketplace_descriptions.mjs",
     "preflight:facebook-publish": "node scripts/facebook_publish_transport_preflight.mjs",
     "cleanup:automation-artifacts": "python3 scripts/cleanup_automation_artifacts.py",
+    "check:syntax": "node --check server.js && find scripts -name '*.mjs' -print0 | xargs -0 -r -n1 node --check && find scripts ops -name '*.py' -print0 | xargs -0 -r -n1 python3 -m py_compile && find scripts ops -name '*.sh' -print0 | xargs -0 -r -n1 bash -n",
+    "audit:dependencies": "npm audit --omit=dev",
     "test": "node --test test/*.test.mjs",
     "test:e2e": "playwright test"
   },
@@ -29,7 +31,7 @@
     "heic-convert": "^2.1.0",
     "multer": "^2.2.0",
     "openai": "^6.39.0",
-    "sharp": "^0.34.5",
+    "sharp": "^0.35.3",
     "web-push": "^3.6.7"
   },
   "engines": {

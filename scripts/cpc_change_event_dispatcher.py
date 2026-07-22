@@ -1,22 +1,23 @@
-#!/Users/konnerhaas/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3
+#!/usr/bin/env python3
 """Run CPC change-router cycles back-to-back after successful owner completion."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import subprocess
+import sys
 from collections.abc import Callable
 from typing import Any
 
 
-DEFAULT_PYTHON = pathlib.Path(
-    "/Users/konnerhaas/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
-)
+DEFAULT_PYTHON = pathlib.Path(os.environ.get("CPC2_PYTHON", sys.executable))
 DEFAULT_ROUTER = pathlib.Path(__file__).with_name("cpc_change_event_router.py")
 DEFAULT_MAX_OWNER_RUNS = 6
 MAX_OWNER_RUNS_LIMIT = 12
+PUBLISHER_ID = "facebook-ready-publisher"
 
 
 def parse_router_output(stdout: str, returncode: int) -> dict[str, Any]:
@@ -35,10 +36,23 @@ def parse_router_output(stdout: str, returncode: int) -> dict[str, Any]:
     }
 
 
-def run_router_cycle(python_bin: pathlib.Path, router: pathlib.Path) -> dict[str, Any]:
+def run_router_cycle(
+    python_bin: pathlib.Path,
+    router: pathlib.Path,
+    immediate_deferred_owner: str = "",
+    immediate_target_signature: str = "",
+) -> dict[str, Any]:
+    command = [str(python_bin), str(router)]
+    if immediate_deferred_owner:
+        command.extend([
+            "--immediate-deferred-owner",
+            immediate_deferred_owner,
+            "--immediate-target-signature",
+            immediate_target_signature,
+        ])
     try:
         result = subprocess.run(
-            [str(python_bin), str(router)],
+            command,
             text=True,
             capture_output=True,
             check=False,
@@ -70,9 +84,35 @@ def compact_cycle(payload: dict[str, Any]) -> dict[str, Any]:
             "stocks",
             "pendingOwners",
             "routerReturnCode",
+            "immediateRetryConsumed",
         )
         if key in payload
     }
+
+
+def recovery_aware_cycle_runner(
+    python_bin: pathlib.Path,
+    router: pathlib.Path,
+    immediate_deferred_owner: str = "",
+    immediate_target_signature: str = "",
+) -> Callable[[], dict[str, Any]]:
+    remaining_immediate_owner = immediate_deferred_owner
+    remaining_target_signature = immediate_target_signature
+
+    def run() -> dict[str, Any]:
+        nonlocal remaining_immediate_owner, remaining_target_signature
+        payload = run_router_cycle(
+            python_bin,
+            router,
+            remaining_immediate_owner,
+            remaining_target_signature,
+        )
+        if payload.get("immediateRetryConsumed") is True:
+            remaining_immediate_owner = ""
+            remaining_target_signature = ""
+        return payload
+
+    return run
 
 
 def dispatch_completion_chain(
@@ -145,15 +185,26 @@ def main() -> int:
     parser.add_argument("--python", type=pathlib.Path, default=DEFAULT_PYTHON)
     parser.add_argument("--router", type=pathlib.Path, default=DEFAULT_ROUTER)
     parser.add_argument("--max-owner-runs", type=int, default=DEFAULT_MAX_OWNER_RUNS)
+    parser.add_argument("--immediate-deferred-owner", choices=(PUBLISHER_ID,), default="")
+    parser.add_argument("--immediate-target-signature", default="")
     args = parser.parse_args()
 
     if not 1 <= args.max_owner_runs <= MAX_OWNER_RUNS_LIMIT:
         parser.error(f"--max-owner-runs must be between 1 and {MAX_OWNER_RUNS_LIMIT}")
+    if bool(args.immediate_deferred_owner) != bool(args.immediate_target_signature):
+        parser.error("immediate deferred owner and target signature must be provided together")
 
     result = dispatch_completion_chain(
-        lambda: run_router_cycle(args.python, args.router),
+        recovery_aware_cycle_runner(
+            args.python,
+            args.router,
+            args.immediate_deferred_owner,
+            args.immediate_target_signature,
+        ),
         args.max_owner_runs,
     )
+    result["immediateRetryOwner"] = args.immediate_deferred_owner or None
+    result["immediateRetryTargetSignature"] = args.immediate_target_signature or None
     print(json.dumps(result, sort_keys=True))
     return 2 if result["status"] in {"run_failed", "summary_error"} else 0
 

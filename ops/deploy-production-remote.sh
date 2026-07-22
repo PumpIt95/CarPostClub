@@ -71,6 +71,18 @@ cp "${compose_file}" "${compose_backup}"
 sed -E "s#^([[:space:]]*image:)[[:space:]].*#\1 ${image}#" "${compose_file}" > "${compose_file}.new"
 mv "${compose_file}.new" "${compose_file}"
 rollback_needed=1
+for required_setting in \
+  'mem_limit:' \
+  'cpus:' \
+  'pids_limit:' \
+  'no-new-privileges:true' \
+  'cap_drop:' \
+  'logging:'; do
+  if ! grep -Fq "${required_setting}" "${compose_file}"; then
+    printf 'compose_runtime_hardening_missing=%s\n' "${required_setting}" >&2
+    exit 5
+  fi
+done
 
 printf 'deploy_maintenance_window=started\n'
 docker compose -f "${compose_file}" stop "${container}"

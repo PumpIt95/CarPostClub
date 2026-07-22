@@ -15,6 +15,21 @@ services:
       - carpostclub-state:/var/lib/carpostclub
     ports:
       - "127.0.0.1:3911:3911"
+    # Keep host pressure and Docker's json-file log growth bounded. Override
+    # these defaults through the environment when the host has a different
+    # capacity profile.
+    mem_limit: ${CARPOSTCLUB_MEMORY_LIMIT:-1g}
+    cpus: ${CARPOSTCLUB_CPU_LIMIT:-1.5}
+    pids_limit: ${CARPOSTCLUB_PIDS_LIMIT:-256}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: ${CARPOSTCLUB_LOG_MAX_SIZE:-20m}
+        max-file: ${CARPOSTCLUB_LOG_MAX_FILE:-5}
     restart: unless-stopped
 
 volumes:

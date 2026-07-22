@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SUBJECT_PATH = Path(__file__).with_name("cpc_change_event_dispatcher.py")
@@ -24,6 +25,62 @@ def sequence_runner(items: list[dict]):
 
 
 class CompletionDispatcherTests(unittest.TestCase):
+    def test_router_command_includes_immediate_recovery_owner(self) -> None:
+        completed = mock.Mock(stdout='{"status":"idle"}\n', stderr="", returncode=0)
+        with mock.patch.object(SUBJECT.subprocess, "run", return_value=completed) as run:
+            payload = SUBJECT.run_router_cycle(
+                Path("/python"),
+                Path("/router.py"),
+                SUBJECT.PUBLISHER_ID,
+                "target-123",
+            )
+        self.assertEqual(payload["status"], "idle")
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/python",
+                "/router.py",
+                "--immediate-deferred-owner",
+                SUBJECT.PUBLISHER_ID,
+                "--immediate-target-signature",
+                "target-123",
+            ],
+        )
+
+    def test_recovery_owner_is_retained_until_router_consumes_it(self) -> None:
+        side_effect = [
+            {
+                "status": "triggered",
+                "runStatus": "done",
+                "owner": "live-facebook-listing-sync",
+                "immediateRetryConsumed": False,
+            },
+            {
+                "status": "triggered",
+                "runStatus": "done",
+                "owner": SUBJECT.PUBLISHER_ID,
+                "immediateRetryConsumed": True,
+            },
+            {"status": "idle", "immediateRetryConsumed": False},
+        ]
+        with mock.patch.object(SUBJECT, "run_router_cycle", side_effect=side_effect) as cycle:
+            runner = SUBJECT.recovery_aware_cycle_runner(
+                Path("/python"),
+                Path("/router.py"),
+                SUBJECT.PUBLISHER_ID,
+                "target-123",
+            )
+            runner()
+            runner()
+            runner()
+
+        self.assertEqual(cycle.call_args_list[0].args[2], SUBJECT.PUBLISHER_ID)
+        self.assertEqual(cycle.call_args_list[1].args[2], SUBJECT.PUBLISHER_ID)
+        self.assertEqual(cycle.call_args_list[2].args[2], "")
+        self.assertEqual(cycle.call_args_list[0].args[3], "target-123")
+        self.assertEqual(cycle.call_args_list[1].args[3], "target-123")
+        self.assertEqual(cycle.call_args_list[2].args[3], "")
+
     def test_idle_cycle_does_not_start_a_followup(self) -> None:
         result = SUBJECT.dispatch_completion_chain(
             sequence_runner([{"status": "idle", "routerReturnCode": 0}]),
