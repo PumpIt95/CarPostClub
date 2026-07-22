@@ -66,7 +66,7 @@ jobs:
             const body = JSON.parse(fs.readFileSync("/tmp/health.json", "utf8"));
             if (!body.ok || body.release?.sourceCommit !== process.env.GITHUB_SHA) process.exit(1);
           '
-          test "\$(docker inspect --format='{{.RestartCount}}' carpostclub-ci)" = "0"
+          test "$(docker inspect --format='{{.RestartCount}}' carpostclub-ci)" = "0"
       - name: Show container logs on failure
         if: failure()
         run: docker logs carpostclub-ci
