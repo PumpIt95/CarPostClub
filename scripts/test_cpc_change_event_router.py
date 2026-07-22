@@ -106,7 +106,7 @@ class ChangeEventRouterTests(unittest.TestCase):
         self.assertEqual(pending["listing-disclosure-audit-and-fix"]["signal"], "oregans_details")
         self.assertEqual(pending["photo-package-readiness-monitor"]["signal"], "cpc_package")
 
-    def test_membership_change_does_not_duplicate_listing_details_work(self) -> None:
+    def test_transfer_fingerprint_change_also_routes_listing_details_work(self) -> None:
         previous = SUBJECT.owner_targets(summary())
         current = SUBJECT.owner_targets(summary(
             membership="members-b",
@@ -121,8 +121,11 @@ class ChangeEventRouterTests(unittest.TestCase):
             current,
             dt.datetime(2026, 7, 19, 12, 0, tzinfo=SUBJECT.LOCAL_TZ),
         )
-        self.assertEqual(changed, ["live-facebook-listing-sync"])
-        self.assertNotIn("listing-disclosure-audit-and-fix", pending)
+        self.assertEqual(changed, [
+            "live-facebook-listing-sync",
+            "listing-disclosure-audit-and-fix",
+        ])
+        self.assertIn("listing-disclosure-audit-and-fix", pending)
 
     def test_transient_details_change_routes_from_persisted_run_id(self) -> None:
         previous = SUBJECT.owner_targets(summary(details_run="details-run-a"))

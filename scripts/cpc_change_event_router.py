@@ -136,6 +136,8 @@ def owner_targets(summary: dict[str, Any]) -> dict[str, str]:
         )
     if price or details:
         targets["listing-disclosure-audit-and-fix"] = stable_hash({
+            "price": price,
+            "details": details,
             "latestPriceChangeRun": price_change_run,
             "latestDetailsChangeRun": details_change_run,
         })
