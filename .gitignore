@@ -12,6 +12,9 @@ playwright-report/
 .playwright-cli/
 CHROME_TABS.md
 automation-runs/
+.automation-runs/
+.automation-live-sync-*/
+runs/
 chrome-tab-registry.sqlite
 facebook-marketplace-messages*.sqlite
 .automation-locks/
@@ -40,6 +43,8 @@ WATCHDOG_*.md
 automation-skills-backup/
 *-backups/
 production-inventory-*.json
+production-albums-live-sync-*.json
+production-albums-u*.json
 production-facebook-ready-*.json
 cpc-albums-current.json
 current-albums-normalized-*.json

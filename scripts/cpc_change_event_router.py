@@ -1,4 +1,4 @@
-#!/Users/konnerhaas/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3
+#!/usr/bin/env python3
 """Route CPC and O'Regan's changes to the one automation that owns each action."""
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -32,26 +33,43 @@ OWNER_PRIORITY = (
     "photo-package-readiness-monitor",
 )
 DEFAULT_STATE_PATH = pathlib.Path.home() / ".codex/automation-watchdog/cpc-change-router-state.json"
+PROJECT_ROOT = pathlib.Path(
+    os.environ.get("CPC2_ROOT", pathlib.Path(__file__).resolve().parents[1])
+).expanduser()
+CODEX_HOME = pathlib.Path(os.environ.get("CODEX_HOME", pathlib.Path.home() / ".codex")).expanduser()
 DEFAULT_HELPER = pathlib.Path(
-    "/Users/konnerhaas/.codex/skills/konner-production-access/scripts/konner_production_access.py"
+    os.environ.get(
+        "CPC2_PRODUCTION_ACCESS_HELPER",
+        str(CODEX_HOME / "skills/konner-production-access/scripts/konner_production_access.py"),
+    )
 )
-DEFAULT_RUNNER = pathlib.Path("/Users/konnerhaas/.codex/launchd/run_missed_automation.sh")
+DEFAULT_RUNNER = pathlib.Path(
+    os.environ.get("CPC2_AUTOMATION_RUNNER", str(CODEX_HOME / "launchd/run_missed_automation.sh"))
+)
 DEFAULT_SINGLETON = pathlib.Path(
-    "/Users/konnerhaas/.codex/skills/konner-ops-automation/scripts/automation_singleton.sh"
+    os.environ.get(
+        "CPC2_AUTOMATION_SINGLETON",
+        str(CODEX_HOME / "skills/konner-ops-automation/scripts/automation_singleton.sh"),
+    )
 )
 DEFAULT_LANE = pathlib.Path(
-    "/Users/konnerhaas/.codex/skills/konner-ops-automation/scripts/automation_lane.sh"
+    os.environ.get(
+        "CPC2_AUTOMATION_LANE",
+        str(CODEX_HOME / "skills/konner-ops-automation/scripts/automation_lane.sh"),
+    )
 )
 DEFAULT_RUNNER_LOCK = pathlib.Path.home() / ".codex/automation-watchdog/catchup-runner.lock"
-DEFAULT_MAINTENANCE_FLAG = pathlib.Path("/Users/konnerhaas/Documents/CPC2/.automation_maintenance_mode")
-PYTHON_BIN = pathlib.Path(
-    "/Users/konnerhaas/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
+DEFAULT_MAINTENANCE_FLAG = PROJECT_ROOT / ".automation_maintenance_mode"
+DEFAULT_PUBLISH_LOCK = pathlib.Path(
+    PROJECT_ROOT / ".automation-locks/facebook-publish.lock"
 )
+PYTHON_BIN = pathlib.Path(os.environ.get("CPC2_PYTHON", sys.executable))
 WINDOW_START_MINUTE = 9 * 60
 WINDOW_END_MINUTE = 19 * 60
 PUBLISHER_UNCHANGED_RETRY_SECONDS = 90 * 60
 FAILED_RETRY_SECONDS = 30 * 60
 DEFERRED_RETRY_SECONDS = 5 * 60
+MAX_IMMEDIATE_RECOVERY_ATTEMPTS = 1
 SUMMARY_TIMEOUT_SECONDS = 45
 RUNNER_TIMEOUT_SECONDS = 5_700
 
@@ -136,6 +154,8 @@ def owner_targets(summary: dict[str, Any]) -> dict[str, str]:
         )
     if price or details:
         targets["listing-disclosure-audit-and-fix"] = stable_hash({
+            "price": price,
+            "details": details,
             "latestPriceChangeRun": price_change_run,
             "latestDetailsChangeRun": details_change_run,
         })
@@ -178,9 +198,13 @@ def publisher_should_queue(candidate: dict[str, Any], publisher: dict[str, Any],
     if not last_signature or last_signature != signature:
         return True
     elapsed = max(0, now_epoch - int_or_zero(publisher.get("lastAttemptEpoch")))
-    retry = FAILED_RETRY_SECONDS if str(publisher.get("lastRunStatus") or "") in {
-        "failed", "timeout", "error"
-    } else PUBLISHER_UNCHANGED_RETRY_SECONDS
+    last_status = str(publisher.get("lastRunStatus") or "")
+    if last_status in {"failed", "timeout", "error"}:
+        retry = FAILED_RETRY_SECONDS
+    elif last_status in {"deferred", "busy", "covered"}:
+        retry = DEFERRED_RETRY_SECONDS
+    else:
+        retry = PUBLISHER_UNCHANGED_RETRY_SECONDS
     return elapsed >= retry
 
 
@@ -236,10 +260,97 @@ def pending_ready(item: dict[str, Any], now_epoch: int) -> bool:
     return now_epoch - last_attempt >= retry
 
 
-def next_pending_owner(pending: dict[str, Any], now_epoch: int) -> tuple[str, dict[str, Any]] | None:
-    for owner in OWNER_PRIORITY:
+def immediate_deferred_retry_allowed(
+    owner: str,
+    item: dict[str, Any],
+    target_signature: str = "",
+) -> bool:
+    return (
+        owner == PUBLISHER_ID
+        and bool(target_signature)
+        and str(item.get("targetSignature") or "") == target_signature
+        and str(item.get("lastRunStatus") or "") == "deferred"
+        and int_or_zero(item.get("immediateRecoveryAttempts")) < MAX_IMMEDIATE_RECOVERY_ATTEMPTS
+    )
+
+
+def protected_publisher_handoff_matches_ready(
+    publish_lock: pathlib.Path,
+    summary: dict[str, Any],
+) -> bool:
+    metadata = load_state(publish_lock / "owner.json")
+    if not metadata:
+        return False
+    if str(metadata.get("owner") or metadata.get("automationId") or "") not in {
+        "facebook-ready-publisher",
+        "facebook-ready-publisher-saturday",
+    }:
+        return False
+    composer_url = str(
+        metadata.get("protectedComposerUrl")
+        or metadata.get("composerUrl")
+        or ""
+    )
+    if (
+        metadata.get("handoff") is not True
+        or metadata.get("publishClicked") is True
+        or metadata.get("backendLiveStatusWritten") is True
+        or "facebook.com/marketplace/create/vehicle" not in composer_url
+    ):
+        return False
+
+    ready_items = summary.get("readyToPublishItems")
+    if not isinstance(ready_items, list):
+        return False
+    expected = {
+        "albumId": str(metadata.get("albumId") or "").strip(),
+        "stockNumber": str(
+            metadata.get("stockNumber") or metadata.get("stock") or ""
+        ).strip().upper(),
+        "vin": str(metadata.get("vin") or "").strip().upper(),
+    }
+    if not any(expected.values()):
+        return False
+    for raw in ready_items:
+        if not isinstance(raw, dict):
+            continue
+        current = {
+            "albumId": str(raw.get("albumId") or "").strip(),
+            "stockNumber": str(raw.get("stockNumber") or "").strip().upper(),
+            "vin": str(raw.get("vin") or "").strip().upper(),
+        }
+        if all(not value or current[key] == value for key, value in expected.items()):
+            return True
+    return False
+
+
+def next_pending_owner(
+    pending: dict[str, Any],
+    now_epoch: int,
+    immediate_deferred_owner: str = "",
+    immediate_target_signature: str = "",
+    prioritize_publisher: bool = False,
+) -> tuple[str, dict[str, Any]] | None:
+    priority = OWNER_PRIORITY
+    if prioritize_publisher:
+        priority = (PUBLISHER_ID,) + tuple(owner for owner in OWNER_PRIORITY if owner != PUBLISHER_ID)
+    for owner in priority:
         item = pending.get(owner)
-        if isinstance(item, dict) and pending_ready(item, now_epoch):
+        if not isinstance(item, dict):
+            continue
+        if owner == immediate_deferred_owner:
+            if immediate_deferred_retry_allowed(
+                owner,
+                item,
+                immediate_target_signature,
+            ):
+                return owner, item
+            # An explicit recovery request is pinned to the deferred target that
+            # failed before the restart. Never let this one-shot path launch a
+            # newly queued or otherwise changed publisher target through the
+            # router's ordinary ready/cooldown path.
+            continue
+        if pending_ready(item, now_epoch):
             return owner, item
     return None
 
@@ -330,10 +441,15 @@ def main() -> int:
     parser.add_argument("--lane", type=pathlib.Path, default=DEFAULT_LANE)
     parser.add_argument("--runner-lock", type=pathlib.Path, default=DEFAULT_RUNNER_LOCK)
     parser.add_argument("--maintenance-flag", type=pathlib.Path, default=DEFAULT_MAINTENANCE_FLAG)
+    parser.add_argument("--publish-lock", type=pathlib.Path, default=DEFAULT_PUBLISH_LOCK)
     parser.add_argument("--summary-file", type=pathlib.Path)
     parser.add_argument("--now")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--immediate-deferred-owner", choices=(PUBLISHER_ID,), default="")
+    parser.add_argument("--immediate-target-signature", default="")
     args = parser.parse_args()
+    if bool(args.immediate_deferred_owner) != bool(args.immediate_target_signature):
+        parser.error("immediate deferred owner and target signature must be provided together")
 
     now = parse_now(args.now)
     now_epoch = int(now.timestamp())
@@ -381,7 +497,17 @@ def main() -> int:
     if targets:
         state["observedOwnerTargets"] = targets
 
-    selected = next_pending_owner(pending, now_epoch)
+    protected_handoff_priority = protected_publisher_handoff_matches_ready(
+        args.publish_lock,
+        summary,
+    )
+    selected = next_pending_owner(
+        pending,
+        now_epoch,
+        args.immediate_deferred_owner,
+        args.immediate_target_signature,
+        protected_handoff_priority,
+    )
     if not selected:
         state["lastCheckStatus"] = "healthy"
         save_state(args.state_path, state)
@@ -390,10 +516,16 @@ def main() -> int:
             "signalMode": "fingerprints" if targets else "ready-only-fallback",
             "readyCount": candidate["readyCount"],
             "pendingOwners": sorted(pending),
+            "immediateRetryConsumed": False,
+            "protectedPublisherHandoffPriority": protected_handoff_priority,
         })
         return 0
 
     owner, item = selected
+    immediate_retry_selected = (
+        owner == args.immediate_deferred_owner
+        and immediate_deferred_retry_allowed(owner, item, args.immediate_target_signature)
+    )
     blocker = availability_blocker(args, owner)
     if blocker:
         item.update({
@@ -404,7 +536,13 @@ def main() -> int:
         })
         state["lastCheckStatus"] = "deferred"
         save_state(args.state_path, state)
-        emit({"status": "deferred", "owner": owner, "signal": item.get("signal"), "reason": blocker})
+        emit({
+            "status": "deferred",
+            "owner": owner,
+            "signal": item.get("signal"),
+            "reason": blocker,
+            "immediateRetryConsumed": False,
+        })
         return 0
 
     if args.dry_run:
@@ -419,9 +557,17 @@ def main() -> int:
             "readyCount": candidate["readyCount"],
             "stocks": candidate["stocks"],
             "pendingOwners": [candidate_owner for candidate_owner in OWNER_PRIORITY if candidate_owner in pending],
+            "immediateRetryEligible": immediate_retry_selected,
+            "immediateRetryConsumed": False,
+            "protectedPublisherHandoffPriority": protected_handoff_priority,
         })
         return 0
 
+    if immediate_retry_selected:
+        item.update({
+            "immediateRecoveryAttempts": int_or_zero(item.get("immediateRecoveryAttempts")) + 1,
+            "lastImmediateRecoveryAttemptAt": now.isoformat(),
+        })
     item.update({
         "lastRunStatus": "starting",
         "lastAttemptAt": now.isoformat(),
@@ -448,7 +594,7 @@ def main() -> int:
         returncode = 1
         state["lastError"] = str(error)[:500]
 
-    if run_status in {"busy", "covered"}:
+    if run_status in {"busy", "covered", "deferred"}:
         item.update({
             "lastRunStatus": "deferred",
             "lastDeferredAt": dt.datetime.now(LOCAL_TZ).isoformat(),
@@ -456,7 +602,13 @@ def main() -> int:
         })
         state["lastCheckStatus"] = "deferred"
         save_state(args.state_path, state)
-        emit({"status": "deferred", "owner": owner, "signal": item.get("signal"), "reason": run_status})
+        emit({
+            "status": "deferred",
+            "owner": owner,
+            "signal": item.get("signal"),
+            "reason": run_status,
+            "immediateRetryConsumed": immediate_retry_selected,
+        })
         return 0
 
     finished_at = dt.datetime.now(LOCAL_TZ).isoformat()
@@ -492,6 +644,8 @@ def main() -> int:
         "readyCount": candidate["readyCount"],
         "stocks": candidate["stocks"],
         "pendingOwners": [candidate_owner for candidate_owner in OWNER_PRIORITY if candidate_owner in pending],
+        "immediateRetryConsumed": immediate_retry_selected,
+        "protectedPublisherHandoffPriority": protected_handoff_priority,
     })
     return 0 if returncode == 0 else 2
 

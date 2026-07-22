@@ -10,6 +10,7 @@ const configuredChromiumPath =
 
 export default defineConfig({
   testDir: "./test/e2e",
+  workers: process.env.PLAYWRIGHT_WORKERS ? Number(process.env.PLAYWRIGHT_WORKERS) : undefined,
   timeout: 30_000,
   expect: {
     timeout: 5_000

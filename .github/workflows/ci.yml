@@ -23,9 +23,19 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Check production dependencies for known vulnerabilities
+        run: npm audit --omit=dev
+      - name: Check source syntax
+        run: |
+          node --check server.js
+          find scripts -name '*.mjs' -print0 | xargs -0 -r -n1 node --check
+          find scripts ops -name '*.py' -print0 | xargs -0 -r -n1 python3 -m py_compile
+          find scripts ops -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+          git diff --check
       - run: npm test
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
+      - name: Run browser suite with deterministic worker count
+        run: PLAYWRIGHT_WORKERS=1 npm run test:e2e
 
   container:
     runs-on: ubuntu-latest

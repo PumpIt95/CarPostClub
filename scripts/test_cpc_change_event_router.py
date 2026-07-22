@@ -106,7 +106,7 @@ class ChangeEventRouterTests(unittest.TestCase):
         self.assertEqual(pending["listing-disclosure-audit-and-fix"]["signal"], "oregans_details")
         self.assertEqual(pending["photo-package-readiness-monitor"]["signal"], "cpc_package")
 
-    def test_membership_change_does_not_duplicate_listing_details_work(self) -> None:
+    def test_transfer_fingerprint_change_also_routes_listing_details_work(self) -> None:
         previous = SUBJECT.owner_targets(summary())
         current = SUBJECT.owner_targets(summary(
             membership="members-b",
@@ -121,8 +121,11 @@ class ChangeEventRouterTests(unittest.TestCase):
             current,
             dt.datetime(2026, 7, 19, 12, 0, tzinfo=SUBJECT.LOCAL_TZ),
         )
-        self.assertEqual(changed, ["live-facebook-listing-sync"])
-        self.assertNotIn("listing-disclosure-audit-and-fix", pending)
+        self.assertEqual(changed, [
+            "live-facebook-listing-sync",
+            "listing-disclosure-audit-and-fix",
+        ])
+        self.assertIn("listing-disclosure-audit-and-fix", pending)
 
     def test_transient_details_change_routes_from_persisted_run_id(self) -> None:
         previous = SUBJECT.owner_targets(summary(details_run="details-run-a"))
@@ -157,6 +160,59 @@ class ChangeEventRouterTests(unittest.TestCase):
         selected = SUBJECT.next_pending_owner(pending, 10_000)
         self.assertEqual(selected[0], "live-facebook-listing-sync")
 
+    def test_due_exact_protected_handoff_prioritizes_publisher(self) -> None:
+        pending = {
+            "live-facebook-listing-sync": {
+                "lastAttemptEpoch": 0,
+                "signal": "oregans_membership",
+            },
+            SUBJECT.PUBLISHER_ID: {
+                "lastAttemptEpoch": 0,
+                "signal": "ready_to_publish",
+            },
+        }
+        selected = SUBJECT.next_pending_owner(
+            pending,
+            10_000,
+            prioritize_publisher=True,
+        )
+        self.assertEqual(selected[0], SUBJECT.PUBLISHER_ID)
+
+    def test_protected_handoff_priority_requires_exact_current_ready_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            publish_lock = Path(tmp) / "facebook-publish.lock"
+            publish_lock.mkdir()
+            owner = {
+                "owner": SUBJECT.PUBLISHER_ID,
+                "handoff": True,
+                "publishClicked": False,
+                "backendLiveStatusWritten": False,
+                "protectedComposerUrl": "https://www.facebook.com/marketplace/create/vehicle?step=audience",
+                "albumId": "album-a1",
+                "stock": "A1",
+                "vin": "VINA1",
+            }
+            (publish_lock / "owner.json").write_text(json.dumps(owner), encoding="utf-8")
+            current = summary(ready=[ready_item("A1")])
+            self.assertTrue(SUBJECT.protected_publisher_handoff_matches_ready(
+                publish_lock,
+                current,
+            ))
+
+            owner["vin"] = "DIFFERENTVIN"
+            (publish_lock / "owner.json").write_text(json.dumps(owner), encoding="utf-8")
+            self.assertFalse(SUBJECT.protected_publisher_handoff_matches_ready(
+                publish_lock,
+                current,
+            ))
+
+            owner.update({"vin": "VINA1", "publishClicked": True})
+            (publish_lock / "owner.json").write_text(json.dumps(owner), encoding="utf-8")
+            self.assertFalse(SUBJECT.protected_publisher_handoff_matches_ready(
+                publish_lock,
+                current,
+            ))
+
     def test_publisher_retries_unchanged_only_after_cooldown(self) -> None:
         candidate = SUBJECT.candidate_view({"readyToPublishItems": [ready_item("A1")]})
         publisher = {
@@ -170,6 +226,182 @@ class ChangeEventRouterTests(unittest.TestCase):
             publisher,
             1_000 + SUBJECT.PUBLISHER_UNCHANGED_RETRY_SECONDS,
         ))
+
+    def test_publisher_retries_a_deferred_run_after_five_minutes(self) -> None:
+        candidate = SUBJECT.candidate_view({"readyToPublishItems": [ready_item("A1")]})
+        publisher = {
+            "lastAttemptSignature": candidate["signature"],
+            "lastAttemptEpoch": 1_000,
+            "lastRunStatus": "deferred",
+        }
+        self.assertFalse(SUBJECT.publisher_should_queue(candidate, publisher, 1_299))
+        self.assertTrue(SUBJECT.publisher_should_queue(
+            candidate,
+            publisher,
+            1_000 + SUBJECT.DEFERRED_RETRY_SECONDS,
+        ))
+
+    def test_transport_recovery_can_retry_one_deferred_publisher_immediately(self) -> None:
+        pending = {
+            SUBJECT.PUBLISHER_ID: {
+                "targetSignature": "target-123",
+                "lastAttemptEpoch": 1_000,
+                "lastRunStatus": "deferred",
+                "immediateRecoveryAttempts": 0,
+            },
+        }
+        self.assertIsNone(SUBJECT.next_pending_owner(pending, 1_001))
+        selected = SUBJECT.next_pending_owner(
+            pending,
+            1_001,
+            SUBJECT.PUBLISHER_ID,
+            "target-123",
+        )
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected[0], SUBJECT.PUBLISHER_ID)
+        self.assertIsNone(SUBJECT.next_pending_owner(
+            pending,
+            1_001,
+            SUBJECT.PUBLISHER_ID,
+            "different-target",
+        ))
+
+    def test_transport_recovery_does_not_bypass_failure_cooldown(self) -> None:
+        pending = {
+            SUBJECT.PUBLISHER_ID: {
+                "targetSignature": "target-123",
+                "lastAttemptEpoch": 1_000,
+                "lastRunStatus": "failed",
+                "immediateRecoveryAttempts": 0,
+            },
+        }
+        self.assertIsNone(SUBJECT.next_pending_owner(
+            pending,
+            1_001,
+            SUBJECT.PUBLISHER_ID,
+            "target-123",
+        ))
+
+    def test_transport_recovery_never_launches_a_new_publisher_target(self) -> None:
+        pending = {
+            SUBJECT.PUBLISHER_ID: {
+                "targetSignature": "new-target",
+                "lastAttemptEpoch": 0,
+                "lastRunStatus": "pending",
+                "immediateRecoveryAttempts": 0,
+            },
+        }
+        self.assertEqual(
+            SUBJECT.next_pending_owner(pending, 1_001),
+            (SUBJECT.PUBLISHER_ID, pending[SUBJECT.PUBLISHER_ID]),
+        )
+        self.assertIsNone(SUBJECT.next_pending_owner(
+            pending,
+            1_001,
+            SUBJECT.PUBLISHER_ID,
+            "old-target",
+        ))
+
+    def test_transport_recovery_immediate_retry_is_limited_to_one_attempt(self) -> None:
+        pending = {
+            SUBJECT.PUBLISHER_ID: {
+                "targetSignature": "target-123",
+                "lastAttemptEpoch": 1_000,
+                "lastRunStatus": "deferred",
+                "immediateRecoveryAttempts": SUBJECT.MAX_IMMEDIATE_RECOVERY_ATTEMPTS,
+            },
+        }
+        self.assertIsNone(SUBJECT.next_pending_owner(
+            pending,
+            1_001,
+            SUBJECT.PUBLISHER_ID,
+            "target-123",
+        ))
+
+    def test_deferred_runner_status_keeps_publisher_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_path = root / "state.json"
+            summary_path = root / "summary.json"
+            summary_path.write_text(
+                json.dumps(summary(ready=[ready_item("A1")])),
+                encoding="utf-8",
+            )
+            argv = [
+                str(SUBJECT_PATH),
+                "--summary-file", str(summary_path),
+                "--state-path", str(state_path),
+                "--now", "2026-07-19T12:00:00-03:00",
+            ]
+            runner_result = mock.Mock(
+                stdout="automation_run_status=deferred source=cpc-change-event\n",
+                returncode=0,
+            )
+            stdout = io.StringIO()
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(
+                SUBJECT, "availability_blocker", return_value=""
+            ), mock.patch.object(
+                SUBJECT, "run_checked", return_value=runner_result
+            ), contextlib.redirect_stdout(stdout):
+                self.assertEqual(SUBJECT.main(), 0)
+
+            output = json.loads(stdout.getvalue())
+            saved = json.loads(state_path.read_text(encoding="utf-8"))
+            pending = saved["pending"][SUBJECT.PUBLISHER_ID]
+            self.assertEqual(output["status"], "deferred")
+            self.assertEqual(output["reason"], "deferred")
+            self.assertEqual(pending["lastRunStatus"], "deferred")
+            expected_epoch = int(dt.datetime.fromisoformat("2026-07-19T12:00:00-03:00").timestamp())
+            self.assertEqual(pending["lastAttemptEpoch"], expected_epoch)
+
+    def test_immediate_transport_retry_is_recorded_before_runner_starts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_path = root / "state.json"
+            summary_path = root / "summary.json"
+            current_summary = summary(ready=[ready_item("A1")])
+            candidate = SUBJECT.candidate_view(current_summary)
+            state_path.write_text(json.dumps({
+                "observedOwnerTargets": SUBJECT.owner_targets(current_summary),
+                "pending": {
+                    SUBJECT.PUBLISHER_ID: {
+                        "owner": SUBJECT.PUBLISHER_ID,
+                        "signal": "ready_to_publish",
+                        "targetSignature": candidate["signature"],
+                        "lastAttemptEpoch": 1_000,
+                        "lastRunStatus": "deferred",
+                        "immediateRecoveryAttempts": 0,
+                    },
+                },
+                "publisher": {},
+            }), encoding="utf-8")
+            summary_path.write_text(json.dumps(current_summary), encoding="utf-8")
+            argv = [
+                str(SUBJECT_PATH),
+                "--summary-file", str(summary_path),
+                "--state-path", str(state_path),
+                "--now", "2026-07-19T12:00:00-03:00",
+                "--immediate-deferred-owner", SUBJECT.PUBLISHER_ID,
+                "--immediate-target-signature", candidate["signature"],
+            ]
+            runner_result = mock.Mock(
+                stdout="automation_run_status=deferred source=cpc-change-event\n",
+                returncode=0,
+            )
+            stdout = io.StringIO()
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(
+                SUBJECT, "availability_blocker", return_value=""
+            ), mock.patch.object(
+                SUBJECT, "run_checked", return_value=runner_result
+            ), contextlib.redirect_stdout(stdout):
+                self.assertEqual(SUBJECT.main(), 0)
+
+            output = json.loads(stdout.getvalue())
+            saved = json.loads(state_path.read_text(encoding="utf-8"))
+            item = saved["pending"][SUBJECT.PUBLISHER_ID]
+            self.assertTrue(output["immediateRetryConsumed"])
+            self.assertEqual(item["immediateRecoveryAttempts"], 1)
+            self.assertEqual(item["lastRunStatus"], "deferred")
 
     def test_ready_package_can_be_handled_by_publisher_without_a_second_readiness_run(self) -> None:
         previous = SUBJECT.owner_targets(summary(cpc="cpc-a"))
