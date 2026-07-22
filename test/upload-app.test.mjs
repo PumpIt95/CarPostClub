@@ -2533,11 +2533,11 @@ test("an exact VIN that reappears under another stock and dealership stays sourc
     assert.equal(album.vehicle.stockNumber, "V8852");
     assert.equal(album.vehicle.price, "$29,990");
     assert.equal(album.vehicle.priceValue, 29990);
-    assert.equal(album.vehicle.dealershipId, "6");
-    assert.equal(album.vehicle.dealershipName, "O'Regan's Kia Dartmouth");
+    assert.equal(album.vehicle.dealershipId, "15");
+    assert.equal(album.vehicle.dealershipName, "O'Regan's Kia Halifax");
     assert.equal(album.vehicle.detailUrl, transferredCar.detailUrl);
-    assert.equal(album.dealership.id, "6");
-    assert.equal(album.dealership.name, "O'Regan's Kia Dartmouth");
+    assert.equal(album.dealership.id, "15");
+    assert.equal(album.dealership.name, "O'Regan's Kia Halifax");
 
     const transferredDraft = await getJson(harness, `/api/albums/${TEST_ALBUM_ID}/marketplace-draft`);
     assert.equal(transferredDraft.car.stockNumber, "V8852");

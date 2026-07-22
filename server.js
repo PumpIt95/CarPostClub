@@ -1270,8 +1270,9 @@ app.get("/api/albums/:albumId/marketplace-draft", requireAuth, async (req, res, 
     const album = await readAlbum(albumId);
     if (!album) throw httpError(404, "Album not found.");
     const currentAlbum = await albumWithInventoryStatus(album);
-    const car = carFromAlbum(currentAlbum);
-    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album: currentAlbum });
+    const marketplaceAlbum = albumWithMatchedMarketplaceDealership(currentAlbum);
+    const car = carFromAlbum(marketplaceAlbum);
+    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album: marketplaceAlbum });
     res.json({
       ok: true,
       album: publicAlbum(currentAlbum),
@@ -1493,11 +1494,12 @@ async function downloadAlbumDescription(req, res, next) {
     const album = await readAlbum(albumId);
     if (!album) throw httpError(404, "Album not found.");
     const currentAlbum = await albumWithInventoryStatus(album);
-    const car = carFromAlbum(currentAlbum);
-    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album: currentAlbum });
+    const marketplaceAlbum = albumWithMatchedMarketplaceDealership(currentAlbum);
+    const car = carFromAlbum(marketplaceAlbum);
+    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album: marketplaceAlbum });
     const photos = await listAlbumPhotos(albumId);
     const documentText = marketplaceDescriptionDocument({
-      album: currentAlbum,
+      album: marketplaceAlbum,
       car,
       draft,
       photos,
@@ -1523,11 +1525,12 @@ async function downloadAlbumPackage(req, res, next) {
     if (!photos.length) throw httpError(404, "No media to package.");
 
     const currentAlbum = await albumWithInventoryStatus(album);
-    const car = carFromAlbum(currentAlbum);
-    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album: currentAlbum });
+    const marketplaceAlbum = albumWithMatchedMarketplaceDealership(currentAlbum);
+    const car = carFromAlbum(marketplaceAlbum);
+    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album: marketplaceAlbum });
     const inventoryStatus = currentAlbum.inventoryStatus;
     const descriptionText = marketplaceDescriptionDocument({
-      album: currentAlbum,
+      album: marketplaceAlbum,
       car,
       draft,
       photos,
@@ -1535,7 +1538,7 @@ async function downloadAlbumPackage(req, res, next) {
       inventoryStatus,
     });
     const manifest = marketplacePackageManifest({
-      album: currentAlbum,
+      album: marketplaceAlbum,
       car,
       draft,
       photos,
@@ -2469,9 +2472,6 @@ function albumWithMatchedInventoryVehicle(album, inventoryStatus) {
     "fuelType",
     "transmission",
     "detailUrl",
-    "dealershipId",
-    "dealershipName",
-    "inventoryTypeId",
   ]) {
     const value = normalizeSpace(matchedVehicle[field]);
     if (value) vehicle[field] = value;
@@ -2481,24 +2481,41 @@ function albumWithMatchedInventoryVehicle(album, inventoryStatus) {
     if (value !== null) vehicle[field] = value;
   }
 
-  const dealershipId = normalizeSpace(matchedVehicle.dealershipId || vehicle.dealershipId);
-  const dealershipName = normalizeSpace(matchedVehicle.dealershipName || vehicle.dealershipName);
-  const knownDealership = oregansDealerships.find((candidate) => candidate.id === dealershipId) || null;
-  const dealership = dealershipId
-    ? {
-        ...(album?.dealership || {}),
-        ...(knownDealership || {}),
-        id: dealershipId,
-        name: dealershipName || knownDealership?.name || album?.dealership?.name || "",
-      }
-    : album?.dealership;
-
   return {
     ...album,
     vehicle,
-    dealership,
-    inventoryTypeId: normalizeSpace(matchedVehicle.inventoryTypeId) || album?.inventoryTypeId,
     sourceUrl: normalizeSpace(matchedVehicle.detailUrl) || album?.sourceUrl,
+  };
+}
+
+function albumWithMatchedMarketplaceDealership(album) {
+  const matchedVehicle = album?.inventoryStatus?.matchedVehicle;
+  if (!album?.inventoryStatus?.active || !matchedVehicle) return album;
+
+  const dealershipId = normalizeSpace(matchedVehicle.dealershipId);
+  if (!dealershipId) return album;
+  const knownDealership = oregansDealerships.find((candidate) => candidate.id === dealershipId) || null;
+  const dealershipName = normalizeSpace(matchedVehicle.dealershipName)
+    || knownDealership?.name
+    || album?.dealership?.name
+    || "";
+  const inventoryTypeId = normalizeSpace(matchedVehicle.inventoryTypeId) || album?.inventoryTypeId;
+
+  return {
+    ...album,
+    vehicle: {
+      ...(album?.vehicle || {}),
+      dealershipId,
+      dealershipName,
+      inventoryTypeId,
+    },
+    dealership: {
+      ...(album?.dealership || {}),
+      ...(knownDealership || {}),
+      id: dealershipId,
+      name: dealershipName,
+    },
+    inventoryTypeId,
   };
 }
 
