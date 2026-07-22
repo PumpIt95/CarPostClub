@@ -70,15 +70,8 @@ function buildAuthHeaders() {
 }
 
 function fallbackSessionSecret() {
-  return crypto.createHash("sha256")
-    .update(process.env.CARPOSTCLUB_AUTH_PASSWORD_HASH
-      || process.env.CARPOSTCLUB_AUTH_PASSWORD
-      || process.env.KONNER_AUTH_PASSWORD_HASH
-      || process.env.KONNER_AUTH_PASSWORD
-      || process.env.AUTH_PASSWORD_HASH
-      || process.env.AUTH_PASSWORD
-      || "carpostclub")
-    .digest("hex");
+  if (process.env.NODE_ENV === "test") return "test-session-secret";
+  throw new Error("Explicit auth session secret is required for the backfill helper.");
 }
 
 function bootstrapAdminPasswordVersion(secret) {

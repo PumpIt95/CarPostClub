@@ -11215,7 +11215,10 @@ function timingSafeEqual(left, right) {
 function sessionSecret() {
   const configured = configuredAuthSessionSecret();
   if (configured) return configured;
-  return crypto.createHash("sha256").update(authPasswordHash || authPassword || "carpostclub").digest("hex");
+  if (authEnabled && nodeEnv !== "test") {
+    throw new Error("Authentication session secret is not configured. Set CARPOSTCLUB_AUTH_SESSION_SECRET.");
+  }
+  return nodeEnv === "test" ? "test-session-secret" : crypto.randomBytes(32).toString("hex");
 }
 
 function configuredAuthSessionSecret() {
