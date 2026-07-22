@@ -1269,11 +1269,12 @@ app.get("/api/albums/:albumId/marketplace-draft", requireAuth, async (req, res, 
     const albumId = cleanAlbumId(req.params.albumId);
     const album = await readAlbum(albumId);
     if (!album) throw httpError(404, "Album not found.");
-    const car = carFromAlbum(album);
-    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album });
+    const currentAlbum = await albumWithInventoryStatus(album);
+    const car = carFromAlbum(currentAlbum);
+    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album: currentAlbum });
     res.json({
       ok: true,
-      album: publicAlbum(await albumWithInventoryStatus(album)),
+      album: publicAlbum(currentAlbum),
       car,
       draft,
     });
@@ -1491,20 +1492,20 @@ async function downloadAlbumDescription(req, res, next) {
     const albumId = cleanAlbumId(req.params.albumId);
     const album = await readAlbum(albumId);
     if (!album) throw httpError(404, "Album not found.");
-    const car = carFromAlbum(album);
-    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album });
+    const currentAlbum = await albumWithInventoryStatus(album);
+    const car = carFromAlbum(currentAlbum);
+    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album: currentAlbum });
     const photos = await listAlbumPhotos(albumId);
-    const inventoryStatus = await inventoryStatusForAlbum(album);
     const documentText = marketplaceDescriptionDocument({
-      album,
+      album: currentAlbum,
       car,
       draft,
       photos,
       user: req.authUser,
-      inventoryStatus,
+      inventoryStatus: currentAlbum.inventoryStatus,
     });
 
-    res.attachment(`${slugify(album.name || albumId)}-marketplace-description.txt`);
+    res.attachment(`${slugify(currentAlbum.name || albumId)}-marketplace-description.txt`);
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("Cache-Control", "private, no-store");
     res.send(documentText);
@@ -1521,11 +1522,12 @@ async function downloadAlbumPackage(req, res, next) {
     const photos = await listAlbumPhotos(albumId);
     if (!photos.length) throw httpError(404, "No media to package.");
 
-    const car = carFromAlbum(album);
-    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album });
-    const inventoryStatus = await inventoryStatusForAlbum(album);
+    const currentAlbum = await albumWithInventoryStatus(album);
+    const car = carFromAlbum(currentAlbum);
+    const draft = await buildMarketplaceDraftForUser(car, req.authUser, { album: currentAlbum });
+    const inventoryStatus = currentAlbum.inventoryStatus;
     const descriptionText = marketplaceDescriptionDocument({
-      album,
+      album: currentAlbum,
       car,
       draft,
       photos,
@@ -1533,7 +1535,7 @@ async function downloadAlbumPackage(req, res, next) {
       inventoryStatus,
     });
     const manifest = marketplacePackageManifest({
-      album,
+      album: currentAlbum,
       car,
       draft,
       photos,
@@ -1550,7 +1552,7 @@ async function downloadAlbumPackage(req, res, next) {
       next(error);
     });
 
-    res.attachment(`${slugify(album.name || albumId)}-marketplace-package.zip`);
+    res.attachment(`${slugify(currentAlbum.name || albumId)}-marketplace-package.zip`);
     res.setHeader("Cache-Control", "private, no-store");
     archive.pipe(res);
 
@@ -2439,9 +2441,64 @@ async function albumWithInventoryStatus(album) {
   recordAlbumInventoryLifecycle(album, inventoryStatus).catch((error) => {
     console.warn(`Inventory lifecycle update failed for ${album.id}: ${error?.message || error}`);
   });
+  const currentAlbum = albumWithMatchedInventoryVehicle(album, inventoryStatus);
+  return {
+    ...currentAlbum,
+    inventoryStatus,
+  };
+}
+
+function albumWithMatchedInventoryVehicle(album, inventoryStatus) {
+  const matchedVehicle = inventoryStatus?.matchedVehicle;
+  if (!inventoryStatus?.active || !matchedVehicle) return album;
+
+  const vehicle = { ...(album?.vehicle || {}) };
+  for (const field of [
+    "vin",
+    "stockNumber",
+    "title",
+    "year",
+    "make",
+    "model",
+    "trim",
+    "price",
+    "odometer",
+    "exteriorColor",
+    "interiorColor",
+    "bodyStyle",
+    "fuelType",
+    "transmission",
+    "detailUrl",
+    "dealershipId",
+    "dealershipName",
+    "inventoryTypeId",
+  ]) {
+    const value = normalizeSpace(matchedVehicle[field]);
+    if (value) vehicle[field] = value;
+  }
+  for (const field of ["priceValue", "odometerValue"]) {
+    const value = nullableFiniteNumber(matchedVehicle[field]);
+    if (value !== null) vehicle[field] = value;
+  }
+
+  const dealershipId = normalizeSpace(matchedVehicle.dealershipId || vehicle.dealershipId);
+  const dealershipName = normalizeSpace(matchedVehicle.dealershipName || vehicle.dealershipName);
+  const knownDealership = oregansDealerships.find((candidate) => candidate.id === dealershipId) || null;
+  const dealership = dealershipId
+    ? {
+        ...(album?.dealership || {}),
+        ...(knownDealership || {}),
+        id: dealershipId,
+        name: dealershipName || knownDealership?.name || album?.dealership?.name || "",
+      }
+    : album?.dealership;
+
   return {
     ...album,
-    inventoryStatus,
+    vehicle,
+    dealership,
+    inventoryTypeId: normalizeSpace(matchedVehicle.inventoryTypeId) || album?.inventoryTypeId,
+    sourceUrl: normalizeSpace(matchedVehicle.detailUrl) || album?.sourceUrl,
   };
 }
 
@@ -2487,6 +2544,16 @@ async function inventoryStatusForAlbum(album) {
       : recentInventorySnapshotVehicleForAlbum(album, checkedAt);
     const temporarilyMissing = !matchedCar && !reappearedVehicle && Boolean(recentlyConfirmedVehicle);
     const sourceActive = Boolean(matchedCar || reappearedVehicle || temporarilyMissing);
+    const matchedVehicle = matchedCar
+      ? {
+          ...matchedCar,
+          dealershipId: normalizeSpace(matchedCar?.dealership?.id),
+          dealershipName: normalizeSpace(matchedCar?.dealership?.name),
+          inventoryTypeId,
+        }
+      : reappearedVehicle
+        ? publicOregansInventorySnapshotVehicleFromRow(reappearedVehicle)
+        : null;
     return {
       source: "oregans",
       status: matchedCar || reappearedVehicle ? "active" : temporarilyMissing ? "temporarily_missing" : "missing",
@@ -2503,6 +2570,7 @@ async function inventoryStatusForAlbum(album) {
       matchedStockNumber: matchedCar?.stockNumber || reappearedVehicle?.stock_number || recentlyConfirmedVehicle?.stock_number || "",
       matchedDealershipId: matchedCar?.dealership?.id || reappearedVehicle?.dealership_id || dealershipId,
       matchedDealershipName: matchedCar?.dealership?.name || reappearedVehicle?.dealership_name || album?.dealership?.name || "",
+      matchedVehicle,
       stockNumberChanged: Boolean(reappearedVehicle && normalizeSpace(reappearedVehicle.stock_number).toUpperCase() !== normalizeSpace(vehicle.stockNumber).toUpperCase()),
       dealershipChanged: Boolean(reappearedVehicle && normalizeSpace(reappearedVehicle.dealership_id) !== dealershipId),
       lastConfirmedAt: reappearedVehicle?.last_seen_at || recentlyConfirmedVehicle?.last_seen_at || "",

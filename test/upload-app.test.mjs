@@ -2189,8 +2189,9 @@ test("album responses strip unsafe source listing URLs from stored metadata", as
     const albums = await getJson(harness, "/api/albums");
     const album = albums.albums.find((candidate) => candidate.id === albumId);
     assert.ok(album);
-    assert.equal(album.sourceUrl, null);
-    assert.equal(album.vehicle.detailUrl, "");
+    assert.equal(album.sourceUrl, TEST_CAR.detailUrl);
+    assert.equal(album.vehicle.detailUrl, TEST_CAR.detailUrl);
+    assert.doesNotMatch(album.sourceUrl, /phishing\.example|data:/);
   } finally {
     await stopTestServer(harness);
   }
@@ -2489,6 +2490,7 @@ test("an exact VIN that reappears under another stock and dealership stays sourc
     dealershipId: "6",
     stockNumber: "V8852",
     price: "$29,990",
+    priceValue: 29990,
     detailUrl: "https://www.oregans.com/inventory/Used-2026-Kia-Seltos-V8852/",
   };
   const harness = await startTestServer({
@@ -2528,6 +2530,21 @@ test("an exact VIN that reappears under another stock and dealership stays sourc
     assert.match(album.inventoryStatus.label, /stock V8852 at O'Regan's Kia Dartmouth/);
     assert.equal(album.inventoryStatus.lifecycle.sourceStatus, "source_active");
     assert.equal(album.inventoryStatus.lifecycle.shouldMarkFacebookSold, false);
+    assert.equal(album.vehicle.stockNumber, "V8852");
+    assert.equal(album.vehicle.price, "$29,990");
+    assert.equal(album.vehicle.priceValue, 29990);
+    assert.equal(album.vehicle.dealershipId, "6");
+    assert.equal(album.vehicle.dealershipName, "O'Regan's Kia Dartmouth");
+    assert.equal(album.vehicle.detailUrl, transferredCar.detailUrl);
+    assert.equal(album.dealership.id, "6");
+    assert.equal(album.dealership.name, "O'Regan's Kia Dartmouth");
+
+    const transferredDraft = await getJson(harness, `/api/albums/${TEST_ALBUM_ID}/marketplace-draft`);
+    assert.equal(transferredDraft.car.stockNumber, "V8852");
+    assert.equal(transferredDraft.car.price, "$29,990");
+    assert.equal(transferredDraft.car.priceValue, 29990);
+    assert.equal(transferredDraft.car.dealership.id, "6");
+    assert.equal(transferredDraft.draft.fields.price, 29990);
 
     const liveFacebookStatus = await postJson(harness, `/api/albums/${TEST_ALBUM_ID}/facebook-listing-status`, {
       state: "live",
