@@ -18,6 +18,7 @@ import { ZipArchive } from "archiver";
 import bcrypt from "bcryptjs";
 import dotenv from "dotenv";
 import express from "express";
+import { rateLimit } from "express-rate-limit";
 import heicConvert from "heic-convert";
 import multer from "multer";
 import OpenAI from "openai";
@@ -170,6 +171,14 @@ const authInviteLifetimeHours = positiveInteger(process.env.CARPOSTCLUB_AUTH_INV
 const authInviteLifetimeMs = authInviteLifetimeHours * 60 * 60 * 1000;
 const loginRateLimitWindowMs = positiveInteger(process.env.CARPOSTCLUB_LOGIN_RATE_LIMIT_WINDOW_MS || process.env.KONNER_LOGIN_RATE_LIMIT_WINDOW_MS, 10 * 60 * 1000);
 const loginRateLimitMaxAttempts = positiveInteger(process.env.CARPOSTCLUB_LOGIN_RATE_LIMIT_MAX_ATTEMPTS || process.env.KONNER_LOGIN_RATE_LIMIT_MAX_ATTEMPTS, 10);
+const requestRateLimitWindowMs = positiveInteger(
+  process.env.CARPOSTCLUB_REQUEST_RATE_LIMIT_WINDOW_MS || process.env.KONNER_REQUEST_RATE_LIMIT_WINDOW_MS,
+  60 * 1000,
+);
+const requestRateLimitMax = positiveInteger(
+  process.env.CARPOSTCLUB_REQUEST_RATE_LIMIT_MAX || process.env.KONNER_REQUEST_RATE_LIMIT_MAX,
+  600,
+);
 const shortcutBearerToken = normalizeSpace(process.env.CARPOSTCLUB_SHORTCUTS_BEARER_TOKEN || process.env.KONNER_SHORTCUTS_BEARER_TOKEN);
 const authSessionSecret = sessionSecret();
 const releaseInfo = await readReleaseInfo();
@@ -455,6 +464,12 @@ app.use((req, res, next) => {
 });
 app.use(express.static(publicRoot, { index: false, maxAge: 0 }));
 app.use(rejectCrossOriginUnsafeRequests);
+app.use(rateLimit({
+  windowMs: requestRateLimitWindowMs,
+  limit: requestRateLimitMax,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+}));
 
 app.get("/healthz", (_req, res) => {
   const criticalOperations = criticalOperationSnapshot();
@@ -2034,7 +2049,9 @@ function allowedRequestOrigins(req) {
 function shortcutRequestAuthorized(req) {
   if (!shortcutBearerToken) return true;
   const header = normalizeSpace(req.get("authorization"));
-  const bearer = /^Bearer\s+(.+)$/i.exec(header)?.[1] || "";
+  const bearer = header.toLowerCase().startsWith("bearer ")
+    ? header.slice("bearer ".length).trim()
+    : "";
   const explicitHeader = normalizeSpace(req.get("x-carpostclub-shortcut-token"));
   return [bearer, explicitHeader].some((token) => token && timingSafeEqual(token, shortcutBearerToken));
 }
@@ -9956,11 +9973,22 @@ function normalizeNotificationToken(value) {
 }
 
 function cleanPushNotificationId(value) {
-  return normalizeSpace(value)
-    .replace(/[^A-Za-z0-9:_-]/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 120);
+  const normalized = normalizeSpace(value).slice(0, 120);
+  const allowedCharacters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:_-";
+  let cleaned = "";
+  let previousWasDash = false;
+  for (const character of normalized) {
+    if (allowedCharacters.includes(character)) {
+      cleaned += character;
+      previousWasDash = character === "-";
+    } else if (!previousWasDash) {
+      cleaned += "-";
+      previousWasDash = true;
+    }
+  }
+  while (cleaned.startsWith("-")) cleaned = cleaned.slice(1);
+  while (cleaned.endsWith("-")) cleaned = cleaned.slice(0, -1);
+  return cleaned;
 }
 
 function cleanNotificationPath(value, fallback) {
@@ -10482,16 +10510,24 @@ function normalizeSpace(value) {
 }
 
 function decodeHtml(value) {
-  return String(value || "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&apos;/gi, "'")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&#(\d+);/g, (_match, code) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([a-f0-9]+);/gi, (_match, code) => String.fromCodePoint(Number.parseInt(code, 16)));
+  const namedEntities = {
+    amp: "&",
+    apos: "'",
+    gt: ">",
+    lt: "<",
+    nbsp: " ",
+    quot: '"',
+  };
+  return String(value || "").replace(/&(?:nbsp|amp|quot|apos|lt|gt|#\d+|#x[a-f0-9]+);/gi, (entity) => {
+    const name = entity.slice(1, -1).toLowerCase();
+    if (Object.hasOwn(namedEntities, name)) return namedEntities[name];
+    const code = name.startsWith("#x")
+      ? Number.parseInt(name.slice(2), 16)
+      : Number.parseInt(name.slice(1), 10);
+    return Number.isInteger(code) && code >= 0 && code <= 0x10ffff
+      ? String.fromCodePoint(code)
+      : entity;
+  });
 }
 
 function parseCurrency(value) {
