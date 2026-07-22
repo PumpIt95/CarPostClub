@@ -2427,6 +2427,7 @@ test("O'Regan's removal grace holds a brief feed gap and allows later removal", 
   const harness = await startTestServer({
     env: {
       CARPOSTCLUB_OREGANS_INVENTORY_REMOVAL_GRACE_MS: "80",
+      CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DEALERSHIP_IDS: "15",
     },
   });
 
@@ -2477,6 +2478,69 @@ test("O'Regan's removal grace holds a brief feed gap and allows later removal", 
     assert.ok(removed);
     assert.equal(removed.inventoryStatus.status, "missing");
     assert.equal(removed.inventoryStatus.lifecycle.sourceStatus, "source_removed");
+  } finally {
+    await stopTestServer(harness);
+  }
+});
+
+test("an exact VIN that reappears under another stock and dealership stays source-active", async () => {
+  const transferredCar = {
+    ...TEST_CAR,
+    dealershipId: "6",
+    stockNumber: "V8852",
+    price: "$29,990",
+    detailUrl: "https://www.oregans.com/inventory/Used-2026-Kia-Seltos-V8852/",
+  };
+  const harness = await startTestServer({
+    env: {
+      CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DEALERSHIP_IDS: "15,6",
+    },
+  });
+
+  try {
+    harness.cookie = await login(harness.baseUrl);
+    const uploaded = await uploadPhotos(harness, {
+      dealershipId: "15",
+      inventoryTypeId: "2",
+      vin: TEST_CAR.vin,
+      photos: [{ filename: "transfer-front.jpg", type: "image/jpeg", body: jpegBytes("transfer-front") }],
+    });
+    assert.equal(uploaded.status, 201);
+
+    const baseline = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(baseline.status, 201);
+
+    await writeInventoryMock(harness, [transferredCar]);
+    const transferredSnapshot = await postJson(harness, "/api/inventory/snapshots/run", {});
+    assert.equal(transferredSnapshot.status, 201);
+
+    const albums = await getJson(harness, "/api/albums");
+    const album = albums.albums.find((candidate) => candidate.id === TEST_ALBUM_ID);
+    assert.ok(album);
+    assert.equal(album.inventoryStatus.status, "active");
+    assert.equal(album.inventoryStatus.active, true);
+    assert.equal(album.inventoryStatus.matchedInventoryKey, TEST_CAR.vin);
+    assert.equal(album.inventoryStatus.matchedStockNumber, "V8852");
+    assert.equal(album.inventoryStatus.matchedDealershipId, "6");
+    assert.equal(album.inventoryStatus.matchedDealershipName, "O'Regan's Kia Dartmouth");
+    assert.equal(album.inventoryStatus.stockNumberChanged, true);
+    assert.equal(album.inventoryStatus.dealershipChanged, true);
+    assert.match(album.inventoryStatus.label, /stock V8852 at O'Regan's Kia Dartmouth/);
+    assert.equal(album.inventoryStatus.lifecycle.sourceStatus, "source_active");
+    assert.equal(album.inventoryStatus.lifecycle.shouldMarkFacebookSold, false);
+
+    const liveFacebookStatus = await postJson(harness, `/api/albums/${TEST_ALBUM_ID}/facebook-listing-status`, {
+      state: "live",
+      listingId: "transferred-vin-live-test",
+      title: "2026 Kia Seltos",
+      sellerName: "Konner John",
+      matchedBy: ["vin", "facebook_listing_id"],
+      matchConfidence: "exact",
+    });
+    assert.equal(liveFacebookStatus.status, 201);
+    assert.equal(liveFacebookStatus.body.inventoryStatus.lifecycle.sourceStatus, "source_active");
+    assert.equal(liveFacebookStatus.body.inventoryStatus.lifecycle.facebookAction, "skip_already_live");
+    assert.equal(liveFacebookStatus.body.inventoryStatus.lifecycle.shouldMarkFacebookSold, false);
   } finally {
     await stopTestServer(harness);
   }

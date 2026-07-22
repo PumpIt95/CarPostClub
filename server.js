@@ -2479,24 +2479,33 @@ async function inventoryStatusForAlbum(album) {
     const inventory = await fetchInventoryCarsSnapshot({ dealershipId, inventoryTypeId });
     const matchedCar = inventory.cars.find((car) => inventoryCarMatchesAlbum(car, album));
     const checkedAt = inventory.fetchedAtIso || new Date(inventory.fetchedAt || Date.now()).toISOString();
-    const recentlyConfirmedVehicle = matchedCar
+    const reappearedVehicle = matchedCar
+      ? null
+      : currentInventorySnapshotReappearedVehicleForAlbum(album);
+    const recentlyConfirmedVehicle = matchedCar || reappearedVehicle
       ? null
       : recentInventorySnapshotVehicleForAlbum(album, checkedAt);
-    const temporarilyMissing = !matchedCar && Boolean(recentlyConfirmedVehicle);
-    const sourceActive = Boolean(matchedCar || temporarilyMissing);
+    const temporarilyMissing = !matchedCar && !reappearedVehicle && Boolean(recentlyConfirmedVehicle);
+    const sourceActive = Boolean(matchedCar || reappearedVehicle || temporarilyMissing);
     return {
       source: "oregans",
-      status: matchedCar ? "active" : temporarilyMissing ? "temporarily_missing" : "missing",
+      status: matchedCar || reappearedVehicle ? "active" : temporarilyMissing ? "temporarily_missing" : "missing",
       active: sourceActive,
       checkedAt,
       label: matchedCar
         ? `Active in O'Regan's inventory as of ${checkedAt}.`
+        : reappearedVehicle
+          ? `Active in O'Regan's inventory under stock ${normalizeSpace(reappearedVehicle.stock_number) || "unknown"} at ${normalizeSpace(reappearedVehicle.dealership_name) || "another O'Regan's dealership"} as of ${reappearedVehicle.last_seen_at || checkedAt}.`
         : temporarilyMissing
           ? `Temporarily absent from O'Regan's inventory feed as of ${checkedAt}; last confirmed active at ${recentlyConfirmedVehicle.last_seen_at}. Waiting for the next successful refresh.`
           : `No longer active in O'Regan's inventory as of ${checkedAt}.`,
-      matchedInventoryKey: matchedCar?.inventoryKey || matchedCar?.vin || recentlyConfirmedVehicle?.vin || "",
-      matchedStockNumber: matchedCar?.stockNumber || recentlyConfirmedVehicle?.stock_number || "",
-      lastConfirmedAt: recentlyConfirmedVehicle?.last_seen_at || "",
+      matchedInventoryKey: matchedCar?.inventoryKey || matchedCar?.vin || reappearedVehicle?.vin || reappearedVehicle?.vehicle_key || recentlyConfirmedVehicle?.vin || "",
+      matchedStockNumber: matchedCar?.stockNumber || reappearedVehicle?.stock_number || recentlyConfirmedVehicle?.stock_number || "",
+      matchedDealershipId: matchedCar?.dealership?.id || reappearedVehicle?.dealership_id || dealershipId,
+      matchedDealershipName: matchedCar?.dealership?.name || reappearedVehicle?.dealership_name || album?.dealership?.name || "",
+      stockNumberChanged: Boolean(reappearedVehicle && normalizeSpace(reappearedVehicle.stock_number).toUpperCase() !== normalizeSpace(vehicle.stockNumber).toUpperCase()),
+      dealershipChanged: Boolean(reappearedVehicle && normalizeSpace(reappearedVehicle.dealership_id) !== dealershipId),
+      lastConfirmedAt: reappearedVehicle?.last_seen_at || recentlyConfirmedVehicle?.last_seen_at || "",
       facebookListing,
       lifecycle: inventoryLifecycleState({
         sourceStatus: sourceActive ? "source_active" : "source_removed",
@@ -3146,6 +3155,29 @@ function inventoryCarMatchesAlbum(car, album) {
   const carStock = normalizeSpace(car?.stockNumber).toUpperCase();
   const albumStock = normalizeSpace(vehicle.stockNumber).toUpperCase();
   return Boolean(carStock && albumStock && carStock === albumStock);
+}
+
+function currentInventorySnapshotReappearedVehicleForAlbum(album) {
+  const vehicle = album?.vehicle || {};
+  const vin = normalizeSpace(vehicle.vin).toUpperCase();
+  if (!vin) return null;
+
+  const dealershipId = normalizeSpace(vehicle.dealershipId || album?.dealership?.id);
+  const inventoryTypeId = normalizeSpace(vehicle.inventoryTypeId || album?.inventoryTypeId || defaultInventoryTypeId);
+  const stockNumber = normalizeSpace(vehicle.stockNumber).toUpperCase();
+  const rows = oregansInventorySnapshotsDb.prepare(`
+    SELECT *
+    FROM oregans_inventory_vehicles
+    WHERE UPPER(vin) = ?
+      AND present = 1
+    ORDER BY last_seen_at DESC
+  `).all(vin);
+
+  return rows.find((row) => (
+    normalizeSpace(row?.dealership_id) !== dealershipId
+    || normalizeSpace(row?.inventory_type_id) !== inventoryTypeId
+    || normalizeSpace(row?.stock_number).toUpperCase() !== stockNumber
+  )) || null;
 }
 
 function recentInventorySnapshotVehicleForAlbum(album, checkedAt) {
@@ -5739,7 +5771,7 @@ function oregansInventorySnapshotScopes() {
   const dealershipIds = csvEnvIds(
     process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_DEALERSHIP_IDS
       || process.env.OREGANS_INVENTORY_SNAPSHOT_DEALERSHIP_IDS,
-    inventoryPicklistDealershipIds,
+    oregansDealerships.map((dealership) => dealership.id),
   );
   const inventoryTypeIds = csvEnvIds(
     process.env.CARPOSTCLUB_OREGANS_INVENTORY_SNAPSHOT_INVENTORY_TYPE_IDS
